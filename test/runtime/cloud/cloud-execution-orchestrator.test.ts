@@ -1048,15 +1048,14 @@ describe("Orchestrator — provisioning creates instance", () => {
 			expect(call?.taskId).toBe("task-1");
 			expect(call?.orgId).toBe("org-99");
 			expect(call?.executionMode).toBe("cloud_agent");
-			expect(call?.metadata).toBeDefined();
-			expect((call?.metadata as Record<string, unknown>)?.projectId).toBe("proj-42");
-			expect((call?.metadata as Record<string, unknown>)?.requestedLimits).toEqual({ maxTokens: 10_000 });
+			expect(call?.projectId).toBe("proj-42");
+			expect(call?.requestedLimits).toEqual({ maxTokens: 10_000 });
 
-			const taskSpec = (call?.metadata as Record<string, unknown>)?.taskSpec as Record<string, unknown>;
+			const taskSpec = call?.taskSpec;
 			expect(taskSpec).toBeDefined();
-			expect(taskSpec.prompt).toBe("Implement feature X");
-			expect(taskSpec.baseRef).toBe("main");
-			expect(taskSpec.executionMode).toBe("cloud_agent");
+			expect(taskSpec?.prompt).toBe("Implement feature X");
+			expect(taskSpec?.baseRef).toBe("main");
+			expect(taskSpec?.executionMode).toBe("cloud_agent");
 		});
 
 		it("defaults projectId to 'default' when not configured", async () => {
@@ -1072,7 +1071,7 @@ describe("Orchestrator — provisioning creates instance", () => {
 
 			expect(governance.authorizeCalls).toHaveLength(1);
 			const call = governance.authorizeCalls[0];
-			expect((call?.metadata as Record<string, unknown>)?.projectId).toBe("default");
+			expect(call?.projectId).toBe("default");
 		});
 	});
 
@@ -1148,9 +1147,8 @@ describe("Orchestrator — provisioning creates instance", () => {
 			expect(call?.executionId).toBe("exec-usage-1");
 			expect(call?.terminalState).toBe("failed");
 			expect(call?.durationSeconds).toBe(42);
-			expect(call?.metadata).toBeDefined();
-			expect((call?.metadata as Record<string, unknown>)?.executionMode).toBe("cloud_agent");
-			expect((call?.metadata as Record<string, unknown>)?.tokensIn).toBe(7500);
+			expect(call?.executionMode).toBe("cloud_agent");
+			expect(call?.tokensIn).toBe(7500);
 		});
 
 		it("does not report usage when no governance client is configured", async () => {

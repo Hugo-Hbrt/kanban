@@ -574,24 +574,22 @@ export class CloudExecutionOrchestrator {
 			const meta = latest?.remoteMetadata;
 			const decision = await this.governanceClient.checkAuthorization({
 				taskId,
+				projectId: this.config.projectId ?? "default",
+				taskSpec: {
+					prompt: latest?.resultSummary ?? "",
+					baseRef: meta?.baseBranch,
+					executionMode: latest?.executionMode,
+				},
+				requestedLimits: this.config.requestedLimits,
 				orgId: this.config.orgId,
 				executionMode: latest?.executionMode,
-				metadata: {
-					projectId: this.config.projectId ?? "default",
-					taskSpec: {
-						prompt: latest?.resultSummary ?? "",
-						baseRef: meta?.baseBranch,
-						executionMode: latest?.executionMode,
-					},
-					requestedLimits: this.config.requestedLimits,
-				},
 			});
 
 			if (decision.decision === "authorized") {
 				this.logger.info("Policy check authorized", { taskId, reason: decision.reason });
 				return this.applyTransition(taskId, "policy_check", "authorized", "system", {
 					governanceDecision: "authorized",
-					policySnapshotId: decision.policyId,
+					policySnapshotId: decision.policySnapshotId,
 					reason: decision.reason,
 				});
 			}
@@ -600,7 +598,7 @@ export class CloudExecutionOrchestrator {
 			return this.applyTransition(taskId, "policy_check", "denied", "system", {
 				governanceDecision: "denied",
 				reason: decision.reason,
-				policySnapshotId: decision.policyId,
+				policySnapshotId: decision.policySnapshotId,
 			});
 		} catch (e) {
 			// Governance client already handles fail-open/fail-closed internally,
@@ -790,12 +788,9 @@ export class CloudExecutionOrchestrator {
 					taskId,
 					executionId: latest?.executionId,
 					terminalState: state,
+					executionMode: latest?.executionMode ?? "cloud_agent",
 					durationSeconds: latest?.durationSeconds ?? undefined,
-					metadata: {
-						executionMode: latest?.executionMode ?? "cloud_agent",
-						tokensIn: latest?.remoteMetadata?.tokenUsage,
-						tokensOut: undefined,
-					},
+					tokensIn: latest?.remoteMetadata?.tokenUsage,
 				});
 				this.logger.info("Usage event reported", { taskId, state });
 			} catch (e) {

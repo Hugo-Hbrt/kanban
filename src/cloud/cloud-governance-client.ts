@@ -18,6 +18,18 @@ import { z } from "zod";
 
 export const authorizeRequestSchema = z.object({
 	taskId: z.string().min(1),
+	projectId: z.string().min(1),
+	taskSpec: z.object({
+		prompt: z.string(),
+		baseRef: z.string().optional(),
+		executionMode: z.string().optional(),
+	}),
+	requestedLimits: z
+		.object({
+			maxDurationSeconds: z.number().optional(),
+			maxTokens: z.number().optional(),
+		})
+		.optional(),
 	orgId: z.string().optional(),
 	userId: z.string().optional(),
 	executionMode: z.string().optional(),
@@ -26,12 +38,19 @@ export const authorizeRequestSchema = z.object({
 export type AuthorizeRequest = z.infer<typeof authorizeRequestSchema>;
 
 export const authorizeResponseSchema = z.object({
-	decision: z.enum(["authorized", "denied"]),
+	allowed: z.boolean(),
 	reason: z.string().optional(),
-	policyId: z.string().optional(),
+	policySnapshotId: z.string().optional(),
 	expiresAt: z.string().optional(),
 });
-export type AuthorizeResponse = z.infer<typeof authorizeResponseSchema>;
+
+/** Normalized caller-facing response so existing consumers don't break. */
+export type AuthorizeResponse = {
+	decision: "authorized" | "denied";
+	reason?: string;
+	policySnapshotId?: string;
+	expiresAt?: string;
+};
 
 // ---------------------------------------------------------------------------
 // Usage Event Request / Response Schemas
@@ -43,8 +62,10 @@ export const usageEventRequestSchema = z.object({
 	orgId: z.string().optional(),
 	userId: z.string().optional(),
 	terminalState: z.string().min(1),
+	executionMode: z.string().min(1),
 	durationSeconds: z.number().nonnegative().optional(),
-	tokenUsage: z.number().int().nonnegative().optional(),
+	tokensIn: z.number().int().nonnegative().optional(),
+	tokensOut: z.number().int().nonnegative().optional(),
 	metadata: z.record(z.string(), z.unknown()).optional(),
 });
 export type UsageEventRequest = z.infer<typeof usageEventRequestSchema>;
@@ -205,7 +226,13 @@ export class GovernanceHttpClient implements GovernanceClient {
 				signal,
 			);
 			const body = await response.json();
-			return authorizeResponseSchema.parse(body);
+			const parsed = authorizeResponseSchema.parse(body);
+			return {
+				decision: parsed.allowed ? "authorized" : "denied",
+				reason: parsed.reason,
+				policySnapshotId: parsed.policySnapshotId,
+				expiresAt: parsed.expiresAt,
+			};
 		} catch (e) {
 			this.logger.error("Governance authorization check failed", {
 				taskId: request.taskId,

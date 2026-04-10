@@ -74,41 +74,104 @@ function createMockLogger(): GovernanceLogger & {
 
 describe("authorizeRequestSchema", () => {
 	it("accepts a valid request", () => {
-		const result = authorizeRequestSchema.safeParse({ taskId: "task-1" });
+		const result = authorizeRequestSchema.safeParse({
+			taskId: "task-1",
+			projectId: "proj-1",
+			taskSpec: { prompt: "Fix the bug" },
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("accepts a request with all optional taskSpec and requestedLimits fields", () => {
+		const result = authorizeRequestSchema.safeParse({
+			taskId: "task-1",
+			projectId: "proj-1",
+			taskSpec: { prompt: "Fix the bug", baseRef: "main", executionMode: "cloud_agent" },
+			requestedLimits: { maxDurationSeconds: 300, maxTokens: 5000 },
+		});
 		expect(result.success).toBe(true);
 	});
 
 	it("rejects empty taskId", () => {
-		const result = authorizeRequestSchema.safeParse({ taskId: "" });
+		const result = authorizeRequestSchema.safeParse({
+			taskId: "",
+			projectId: "proj-1",
+			taskSpec: { prompt: "Fix the bug" },
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects missing projectId", () => {
+		const result = authorizeRequestSchema.safeParse({
+			taskId: "task-1",
+			taskSpec: { prompt: "Fix the bug" },
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects missing taskSpec", () => {
+		const result = authorizeRequestSchema.safeParse({
+			taskId: "task-1",
+			projectId: "proj-1",
+		});
 		expect(result.success).toBe(false);
 	});
 });
 
 describe("authorizeResponseSchema", () => {
-	it("accepts authorized decision", () => {
-		const result = authorizeResponseSchema.safeParse({ decision: "authorized" });
+	it("accepts allowed: true", () => {
+		const result = authorizeResponseSchema.safeParse({ allowed: true });
 		expect(result.success).toBe(true);
 	});
 
-	it("accepts denied decision with reason", () => {
-		const result = authorizeResponseSchema.safeParse({ decision: "denied", reason: "over quota" });
+	it("accepts allowed: false with reason and policySnapshotId", () => {
+		const result = authorizeResponseSchema.safeParse({
+			allowed: false,
+			reason: "over quota",
+			policySnapshotId: "snap-1",
+		});
 		expect(result.success).toBe(true);
 	});
 
-	it("rejects unknown decision", () => {
-		const result = authorizeResponseSchema.safeParse({ decision: "maybe" });
+	it("rejects non-boolean allowed", () => {
+		const result = authorizeResponseSchema.safeParse({ allowed: "maybe" });
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects missing allowed field", () => {
+		const result = authorizeResponseSchema.safeParse({ reason: "no allowed" });
 		expect(result.success).toBe(false);
 	});
 });
 
 describe("usageEventRequestSchema", () => {
-	it("accepts a valid usage event", () => {
-		const result = usageEventRequestSchema.safeParse({ taskId: "task-1", terminalState: "completed" });
+	it("accepts a valid usage event with executionMode", () => {
+		const result = usageEventRequestSchema.safeParse({
+			taskId: "task-1",
+			terminalState: "completed",
+			executionMode: "cloud_agent",
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("accepts optional tokensIn and tokensOut", () => {
+		const result = usageEventRequestSchema.safeParse({
+			taskId: "task-1",
+			terminalState: "completed",
+			executionMode: "local_agent",
+			tokensIn: 500,
+			tokensOut: 1200,
+		});
 		expect(result.success).toBe(true);
 	});
 
 	it("rejects missing terminalState", () => {
-		const result = usageEventRequestSchema.safeParse({ taskId: "task-1" });
+		const result = usageEventRequestSchema.safeParse({ taskId: "task-1", executionMode: "cloud_agent" });
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects missing executionMode", () => {
+		const result = usageEventRequestSchema.safeParse({ taskId: "task-1", terminalState: "completed" });
 		expect(result.success).toBe(false);
 	});
 });
@@ -146,15 +209,21 @@ describe("isGovernanceRetryableStatus", () => {
 // GovernanceHttpClient — checkAuthorization
 // ---------------------------------------------------------------------------
 
+const VALID_AUTH_REQUEST = {
+	taskId: "task-1",
+	projectId: "proj-1",
+	taskSpec: { prompt: "Fix the bug" },
+};
+
 describe("GovernanceHttpClient — checkAuthorization", () => {
 	it("returns authorized on successful response", async () => {
 		const fetchMock = vi
 			.fn<typeof globalThis.fetch>()
-			.mockResolvedValue(mockResponse({ decision: "authorized", policyId: "pol-1" }));
+			.mockResolvedValue(mockResponse({ allowed: true, policySnapshotId: "snap-1" }));
 		const client = createTestClient(fetchMock);
-		const result = await client.checkAuthorization({ taskId: "task-1" });
+		const result = await client.checkAuthorization(VALID_AUTH_REQUEST);
 		expect(result.decision).toBe("authorized");
-		expect(result.policyId).toBe("pol-1");
+		expect(result.policySnapshotId).toBe("snap-1");
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 
 		const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -166,9 +235,9 @@ describe("GovernanceHttpClient — checkAuthorization", () => {
 	it("returns denied on denied response", async () => {
 		const fetchMock = vi
 			.fn<typeof globalThis.fetch>()
-			.mockResolvedValue(mockResponse({ decision: "denied", reason: "over quota" }));
+			.mockResolvedValue(mockResponse({ allowed: false, reason: "over quota" }));
 		const client = createTestClient(fetchMock);
-		const result = await client.checkAuthorization({ taskId: "task-1" });
+		const result = await client.checkAuthorization(VALID_AUTH_REQUEST);
 		expect(result.decision).toBe("denied");
 		expect(result.reason).toBe("over quota");
 	});
@@ -177,7 +246,7 @@ describe("GovernanceHttpClient — checkAuthorization", () => {
 		const fetchMock = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error("ECONNREFUSED"));
 		const logger = createMockLogger();
 		const client = createTestClient(fetchMock, { failOpen: true, logger });
-		const result = await client.checkAuthorization({ taskId: "task-1" });
+		const result = await client.checkAuthorization(VALID_AUTH_REQUEST);
 		expect(result.decision).toBe("authorized");
 		expect(result.reason).toContain("fail-open");
 		expect(logger.errorCalls.length).toBeGreaterThan(0);
@@ -187,7 +256,7 @@ describe("GovernanceHttpClient — checkAuthorization", () => {
 	it("fail-closed returns denied when governance is unreachable", async () => {
 		const fetchMock = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error("ECONNREFUSED"));
 		const client = createTestClient(fetchMock, { failOpen: false });
-		const result = await client.checkAuthorization({ taskId: "task-1" });
+		const result = await client.checkAuthorization(VALID_AUTH_REQUEST);
 		expect(result.decision).toBe("denied");
 		expect(result.reason).toContain("Governance unreachable");
 	});
@@ -196,9 +265,9 @@ describe("GovernanceHttpClient — checkAuthorization", () => {
 		const fetchMock = vi
 			.fn<typeof globalThis.fetch>()
 			.mockResolvedValueOnce(mockResponse({}, 500))
-			.mockResolvedValueOnce(mockResponse({ decision: "authorized" }));
+			.mockResolvedValueOnce(mockResponse({ allowed: true }));
 		const client = createTestClient(fetchMock);
-		const result = await client.checkAuthorization({ taskId: "task-1" });
+		const result = await client.checkAuthorization(VALID_AUTH_REQUEST);
 		expect(result.decision).toBe("authorized");
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
@@ -206,7 +275,7 @@ describe("GovernanceHttpClient — checkAuthorization", () => {
 	it("does not retry on 403 (non-retryable)", async () => {
 		const fetchMock = vi.fn<typeof globalThis.fetch>().mockResolvedValue(mockResponse({}, 403));
 		const client = createTestClient(fetchMock, { failOpen: true });
-		const result = await client.checkAuthorization({ taskId: "task-1" });
+		const result = await client.checkAuthorization(VALID_AUTH_REQUEST);
 		// fail-open catches the GovernanceClientError and returns authorized
 		expect(result.decision).toBe("authorized");
 		expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -223,7 +292,11 @@ describe("GovernanceHttpClient — reportUsage", () => {
 			.fn<typeof globalThis.fetch>()
 			.mockResolvedValue(mockResponse({ accepted: true, eventId: "evt-1" }));
 		const client = createTestClient(fetchMock);
-		const result = await client.reportUsage({ taskId: "task-1", terminalState: "completed" });
+		const result = await client.reportUsage({
+			taskId: "task-1",
+			terminalState: "completed",
+			executionMode: "cloud_agent",
+		});
 		expect(result.accepted).toBe(true);
 		expect(result.eventId).toBe("evt-1");
 
@@ -234,7 +307,11 @@ describe("GovernanceHttpClient — reportUsage", () => {
 	it("returns accepted:false on network error (graceful degradation)", async () => {
 		const fetchMock = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error("network down"));
 		const client = createTestClient(fetchMock);
-		const result = await client.reportUsage({ taskId: "task-1", terminalState: "failed" });
+		const result = await client.reportUsage({
+			taskId: "task-1",
+			terminalState: "failed",
+			executionMode: "local_agent",
+		});
 		expect(result.accepted).toBe(false);
 	});
 });
