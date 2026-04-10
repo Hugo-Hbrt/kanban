@@ -83,6 +83,90 @@ export const remoteExecutionMetadataSchema = z.object({
 export type RemoteExecutionMetadata = z.infer<typeof remoteExecutionMetadataSchema>;
 
 // ---------------------------------------------------------------------------
+// Canonical Fields Snapshot
+// ---------------------------------------------------------------------------
+
+/**
+ * The canonical identity-critical fields that define an execution's
+ * relationship to its original dispatch intent.
+ *
+ * **Invariant: Kanban is the source of truth for execution intent.**
+ * Cloud-platform and task-runner are consumers, not authors, of these
+ * canonical fields. After dispatch, these fields are read-only —
+ * callback ingestion, reconciliation, and other post-dispatch operations
+ * must never overwrite them. Only the initial dispatch (or explicit
+ * inheritance during retry/replay/rerun) may set these values.
+ *
+ * @see canonicalFieldsSnapshot — extracts these fields for comparison
+ */
+export interface CanonicalFieldsSnapshot {
+	readonly repoUrl: string | undefined;
+	readonly baseBranch: string | undefined;
+	readonly featureBranch: string | undefined;
+	readonly worktreePath: string | undefined;
+	readonly startingCommitSha: string | undefined;
+	readonly promptHash: string | undefined;
+}
+
+/**
+ * Extract the identity-critical canonical fields from an execution record
+ * for easy comparison across lifecycle phases.
+ *
+ * These fields must be immutable after dispatch:
+ * - `repoUrl`:           Repository this execution targets
+ * - `baseBranch`:        Base branch for the execution
+ * - `featureBranch`:     Feature branch (if set at dispatch)
+ * - `worktreePath`:      Worktree path (deterministic from taskId+attempt)
+ * - `startingCommitSha`: Git commit SHA at execution start
+ * - `promptHash`:        Hash of the prompt used for this execution
+ *
+ * **Invariant: Kanban is the source of truth for execution intent.**
+ * Cloud-platform and task-runner are consumers, not authors, of these
+ * canonical fields.
+ */
+export function canonicalFieldsSnapshot(execution: PersistedTaskExecution): CanonicalFieldsSnapshot {
+	const meta = execution.remoteMetadata;
+	return {
+		repoUrl: meta?.repoUrl,
+		baseBranch: meta?.baseBranch,
+		featureBranch: meta?.featureBranch,
+		worktreePath: meta?.worktreePath,
+		startingCommitSha: meta?.startingCommitSha ?? execution.startingCommitSha,
+		promptHash: meta?.promptHash ?? execution.promptHash,
+	};
+}
+
+/**
+ * Detect drift between two canonical field snapshots.
+ *
+ * Returns a list of fields that differ. An empty array means no drift.
+ * This is used by callback ingestion and reconciliation to assert that
+ * canonical fields are not inadvertently overwritten.
+ *
+ * **Invariant: Kanban is the source of truth for execution intent.**
+ */
+export function detectCanonicalFieldDrift(
+	before: CanonicalFieldsSnapshot,
+	after: CanonicalFieldsSnapshot,
+): readonly string[] {
+	const driftedFields: string[] = [];
+	const fields: (keyof CanonicalFieldsSnapshot)[] = [
+		"repoUrl",
+		"baseBranch",
+		"featureBranch",
+		"worktreePath",
+		"startingCommitSha",
+		"promptHash",
+	];
+	for (const field of fields) {
+		if (before[field] !== after[field]) {
+			driftedFields.push(field);
+		}
+	}
+	return driftedFields;
+}
+
+// ---------------------------------------------------------------------------
 // Attempt Trigger Type
 // @phase Phase2 (P2-2, P3-2) — retry/replay/rerun_snapshot are Phase 2+ triggers.
 //        MVP uses only `initial`. Schema includes all values for forward-compat.

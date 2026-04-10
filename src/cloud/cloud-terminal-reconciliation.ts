@@ -9,7 +9,13 @@ import { randomUUID } from "node:crypto";
 import type { CallbackIngestionResult, CallbackPayload } from "./cloud-callback-ingestion";
 import type { CloudExecutionState } from "./cloud-execution-lifecycle";
 import { isTerminalState, validateCloudExecutionTransition } from "./cloud-execution-lifecycle";
-import type { EventTriggerSource, PersistedTaskEvent, PersistedTaskExecution } from "./cloud-execution-persistence";
+import {
+	canonicalFieldsSnapshot,
+	detectCanonicalFieldDrift,
+	type EventTriggerSource,
+	type PersistedTaskEvent,
+	type PersistedTaskExecution,
+} from "./cloud-execution-persistence";
 
 // ---------------------------------------------------------------------------
 // Terminal Reconciliation Result
@@ -62,6 +68,15 @@ export interface TerminalReconciliationContext {
 	getTaskBoardColumn?(taskId: string): Promise<string | null>;
 	/** Optional clock override for deterministic testing. */
 	now?(): string;
+	/**
+	 * Optional callback invoked when canonical field drift is detected
+	 * during reconciliation. This is a safety-net notification — drift
+	 * should never occur in correct code paths.
+	 *
+	 * **Invariant: Kanban is the source of truth for execution intent.**
+	 * Canonical fields are read-only after dispatch.
+	 */
+	onCanonicalFieldDrift?(taskId: string, executionId: string, driftedFields: readonly string[]): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +275,12 @@ export async function reconcileTerminalCallback(
 	const latestExecution = executions[executions.length - 1];
 
 	if (latestExecution) {
+		// 5a. Capture canonical fields BEFORE any updates.
+		// **Invariant: Kanban is the source of truth for execution intent.**
+		// Canonical fields (repoUrl, baseBranch, featureBranch, worktreePath,
+		// startingCommitSha, promptHash) must never be mutated by reconciliation.
+		const canonicalBefore = canonicalFieldsSnapshot(latestExecution);
+
 		const resultSummary = buildResultSummary(payload);
 		const executionUpdates: Partial<
 			Pick<
@@ -284,6 +305,28 @@ export async function reconcileTerminalCallback(
 		}
 
 		executionUpdated = await ctx.updateExecution(latestExecution.executionId, executionUpdates);
+
+		// 5b. Verify canonical fields were NOT mutated by the update.
+		// This is a defensive assertion — the code above intentionally only
+		// writes callback-specific fields (completedAt, terminalState,
+		// resultSummary, callbackReceivedAt). If drift is detected, it
+		// indicates a bug in the update logic, not in the callback payload.
+		if (executionUpdated && executionUpdates.remoteMetadata) {
+			const projectedExecution: PersistedTaskExecution = {
+				...latestExecution,
+				...executionUpdates,
+			} as PersistedTaskExecution;
+			const canonicalAfter = canonicalFieldsSnapshot(projectedExecution);
+			const driftedFields = detectCanonicalFieldDrift(canonicalBefore, canonicalAfter);
+			if (driftedFields.length > 0) {
+				// Log warning — canonical field drift detected during reconciliation.
+				// This should never happen in correct code paths but is logged as
+				// a safety net per the execution intent invariant.
+				if (ctx.onCanonicalFieldDrift) {
+					ctx.onCanonicalFieldDrift(taskId, latestExecution.executionId, driftedFields);
+				}
+			}
+		}
 	}
 
 	return {
