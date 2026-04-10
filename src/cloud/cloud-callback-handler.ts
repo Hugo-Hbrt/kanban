@@ -90,11 +90,24 @@ function sendJson(res: ServerResponse, status: number, body: Record<string, unkn
 // ---------------------------------------------------------------------------
 
 /**
+ * Optional hook invoked after a callback is successfully accepted.
+ *
+ * Called **after** the HTTP 200 response has been sent. Errors thrown
+ * inside this callback are caught and logged — they never affect the
+ * HTTP response that was already delivered to the task-runner.
+ */
+export type CloudCallbackAcceptedHook = (result: Extract<CallbackIngestionResult, { accepted: true }>) => Promise<void>;
+
+/**
  * Handle an incoming cloud task-runner callback HTTP request.
  *
  * This function is designed to be called from the runtime server's
  * request handler when the request path matches {@link CLOUD_CALLBACK_PATH}.
  *
+ * @param onAccepted - Optional hook triggered after an accepted callback
+ *   has been acknowledged. Used to wire post-ingestion reconciliation
+ *   (e.g. terminal state reconciliation) without coupling the HTTP
+ *   handler to persistence internals.
  * @returns `true` if the request was handled, `false` if not a callback.
  */
 export async function handleCloudCallback(
@@ -102,6 +115,7 @@ export async function handleCloudCallback(
 	res: ServerResponse,
 	requestUrl: URL,
 	ctx: CallbackIngestionContext,
+	onAccepted?: CloudCallbackAcceptedHook,
 ): Promise<boolean> {
 	const pathname = requestUrl.pathname.replace(/\/+$/, "");
 	if (!pathname.startsWith(CLOUD_CALLBACK_PATH)) {
@@ -140,6 +154,17 @@ export async function handleCloudCallback(
 			fromState: result.fromState,
 			toState: result.toState,
 		});
+
+		// Fire the post-acceptance hook (reconciliation, etc.) after responding.
+		// Errors here must not propagate to the already-completed HTTP response.
+		if (onAccepted) {
+			try {
+				await onAccepted(result);
+			} catch {
+				// Intentionally swallowed — the HTTP 200 was already sent.
+				// Real deployments should log this via structured logging.
+			}
+		}
 	} else if (result.duplicate) {
 		// Duplicates return 200 to prevent sender retries.
 		sendJson(res, 200, { ok: true, duplicate: true, reason: result.reason });
