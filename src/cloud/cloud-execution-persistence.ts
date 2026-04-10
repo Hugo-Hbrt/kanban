@@ -66,6 +66,53 @@ export const remoteExecutionMetadataSchema = z.object({
 export type RemoteExecutionMetadata = z.infer<typeof remoteExecutionMetadataSchema>;
 
 // ---------------------------------------------------------------------------
+// Attempt Trigger Type
+// ---------------------------------------------------------------------------
+
+/**
+ * Describes how an execution attempt was triggered.
+ *   - `initial`: First execution of the task
+ *   - `retry`:   Automatic or user-initiated retry of a failed/canceled attempt
+ *   - `replay`:  Deterministic re-execution with pinned snapshot context
+ */
+export const attemptTriggerSchema = z.enum(["initial", "retry", "replay"]);
+export type AttemptTrigger = z.infer<typeof attemptTriggerSchema>;
+
+// ---------------------------------------------------------------------------
+// Attempt Trigger Metadata (persisted)
+// ---------------------------------------------------------------------------
+
+/**
+ * Audit metadata for retry/replay triggers, persisted alongside the execution.
+ * Captures who triggered the attempt, why, and what snapshot context was used.
+ */
+export const persistedTriggerMetadataSchema = z.object({
+	triggeredBy: z.string().min(1),
+	reason: z.string().optional(),
+	triggeredAt: z.string().min(1),
+	sourceState: z.string().optional(),
+	previousExecutionId: z.string().optional(),
+	previousAttemptNumber: z.number().int().positive().optional(),
+	branchIntent: z.string().optional(),
+	pinnedCommitSha: z.string().optional(),
+	pinnedPromptVersion: z.string().optional(),
+});
+export type PersistedTriggerMetadata = z.infer<typeof persistedTriggerMetadataSchema>;
+
+// ---------------------------------------------------------------------------
+// Teardown Decision
+// ---------------------------------------------------------------------------
+
+/**
+ * Describes how teardown was decided for a terminal execution.
+ *   - `auto`:            Automatic teardown on completion/failure/cancel
+ *   - `debug-preserve`:  Sandbox preserved for debugging (PRD 15.11)
+ *   - `manual`:          Operator-initiated manual teardown
+ */
+export const teardownDecisionSchema = z.enum(["auto", "debug-preserve", "manual"]);
+export type TeardownDecision = z.infer<typeof teardownDecisionSchema>;
+
+// ---------------------------------------------------------------------------
 // Task Execution (persisted shape)
 // ---------------------------------------------------------------------------
 
@@ -81,6 +128,50 @@ export const persistedTaskExecutionSchema = z.object({
 	terminalState: cloudExecutionStateSchema.optional(),
 	resultSummary: z.string().optional(),
 	remoteMetadata: remoteExecutionMetadataSchema.optional(),
+
+	// --- Phase 2: enriched attempt detail ---
+
+	/** How this attempt was triggered (initial / retry / replay). */
+	trigger: attemptTriggerSchema.optional(),
+
+	/** Audit metadata for retry/replay triggers. */
+	triggerMetadata: persistedTriggerMetadataSchema.optional(),
+
+	/** Structured error details (separate from resultSummary). */
+	errorDetails: z.string().optional(),
+
+	/** Hostname of the cloud instance for this attempt. */
+	hostname: z.string().optional(),
+
+	/** Cloud instance state at time of last observation. */
+	cloudState: z.string().optional(),
+
+	/** Top-level prompt hash for this attempt. */
+	promptHash: z.string().optional(),
+
+	/** Top-level prompt version for this attempt. */
+	promptVersion: z.string().optional(),
+
+	/** Branch intent for this attempt (fresh_branch / reuse_branch). */
+	branchIntent: z.string().optional(),
+
+	/** Worktree intent / path for this attempt. */
+	worktreeIntent: z.string().optional(),
+
+	/** Git commit SHA at the start of this attempt. */
+	startingCommitSha: z.string().optional(),
+
+	/** Duration in seconds (startedAt to completedAt). */
+	durationSeconds: z.number().nonnegative().optional(),
+
+	/** Token usage for this attempt. */
+	tokenUsage: z.number().int().nonnegative().optional(),
+
+	/** Teardown decision for this attempt. */
+	teardownDecision: teardownDecisionSchema.optional(),
+
+	/** When teardown completed for this attempt. */
+	teardownCompletedAt: z.string().optional(),
 });
 export type PersistedTaskExecution = z.infer<typeof persistedTaskExecutionSchema>;
 
@@ -316,7 +407,26 @@ export class CloudExecutionStore {
 		updates: Partial<
 			Pick<
 				PersistedTaskExecution,
-				"instanceId" | "startedAt" | "completedAt" | "terminalState" | "resultSummary" | "remoteMetadata"
+				| "instanceId"
+				| "startedAt"
+				| "completedAt"
+				| "terminalState"
+				| "resultSummary"
+				| "remoteMetadata"
+				| "trigger"
+				| "triggerMetadata"
+				| "errorDetails"
+				| "hostname"
+				| "cloudState"
+				| "promptHash"
+				| "promptVersion"
+				| "branchIntent"
+				| "worktreeIntent"
+				| "startingCommitSha"
+				| "durationSeconds"
+				| "tokenUsage"
+				| "teardownDecision"
+				| "teardownCompletedAt"
 			>
 		>,
 	): Promise<boolean> {
@@ -343,6 +453,21 @@ export class CloudExecutionStore {
 				if (updates.terminalState !== undefined) merged.terminalState = updates.terminalState;
 				if (updates.resultSummary !== undefined) merged.resultSummary = updates.resultSummary;
 				if (updates.remoteMetadata !== undefined) merged.remoteMetadata = updates.remoteMetadata;
+				// Phase 2 fields
+				if (updates.trigger !== undefined) merged.trigger = updates.trigger;
+				if (updates.triggerMetadata !== undefined) merged.triggerMetadata = updates.triggerMetadata;
+				if (updates.errorDetails !== undefined) merged.errorDetails = updates.errorDetails;
+				if (updates.hostname !== undefined) merged.hostname = updates.hostname;
+				if (updates.cloudState !== undefined) merged.cloudState = updates.cloudState;
+				if (updates.promptHash !== undefined) merged.promptHash = updates.promptHash;
+				if (updates.promptVersion !== undefined) merged.promptVersion = updates.promptVersion;
+				if (updates.branchIntent !== undefined) merged.branchIntent = updates.branchIntent;
+				if (updates.worktreeIntent !== undefined) merged.worktreeIntent = updates.worktreeIntent;
+				if (updates.startingCommitSha !== undefined) merged.startingCommitSha = updates.startingCommitSha;
+				if (updates.durationSeconds !== undefined) merged.durationSeconds = updates.durationSeconds;
+				if (updates.tokenUsage !== undefined) merged.tokenUsage = updates.tokenUsage;
+				if (updates.teardownDecision !== undefined) merged.teardownDecision = updates.teardownDecision;
+				if (updates.teardownCompletedAt !== undefined) merged.teardownCompletedAt = updates.teardownCompletedAt;
 				return persistedTaskExecutionSchema.parse(merged);
 			});
 
