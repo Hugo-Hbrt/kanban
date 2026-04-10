@@ -71,11 +71,12 @@ export type RemoteExecutionMetadata = z.infer<typeof remoteExecutionMetadataSche
 
 /**
  * Describes how an execution attempt was triggered.
- *   - `initial`: First execution of the task
- *   - `retry`:   Automatic or user-initiated retry of a failed/canceled attempt
- *   - `replay`:  Deterministic re-execution with pinned snapshot context
+ *   - `initial`:          First execution of the task
+ *   - `retry`:            Automatic or user-initiated retry of a failed/canceled attempt
+ *   - `replay`:           Deterministic re-execution with pinned snapshot context
+ *   - `rerun_snapshot`:   Re-execution from a specific prior attempt snapshot (P3-2)
  */
-export const attemptTriggerSchema = z.enum(["initial", "retry", "replay"]);
+export const attemptTriggerSchema = z.enum(["initial", "retry", "replay", "rerun_snapshot"]);
 export type AttemptTrigger = z.infer<typeof attemptTriggerSchema>;
 
 // ---------------------------------------------------------------------------
