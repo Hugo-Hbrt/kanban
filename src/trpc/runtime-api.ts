@@ -59,6 +59,10 @@ export interface CreateRuntimeApiDependencies {
 	broadcastTaskChatCleared?: (workspaceId: string, taskId: string) => void;
 	bumpClineSessionContextVersion?: () => void;
 	prepareForStateReset?: () => Promise<void>;
+	/** @phase Phase2 — Log store for cloud execution log streaming. */
+	getCloudExecutionLogStore?: () =>
+		| import("../cloud/cloud-execution-log-store").CloudExecutionLogStoreInterface
+		| null;
 }
 
 async function resolveExistingTaskCwdOrEnsure(options: {
@@ -691,6 +695,25 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 			return {
 				found: summary !== null,
 				summary,
+			};
+		},
+		getCloudExecutionLogs: async (_scope, input) => {
+			const logStore = deps.getCloudExecutionLogStore?.();
+			if (!logStore) {
+				return {
+					entries: [],
+					totalCount: 0,
+					hasMore: false,
+				};
+			}
+			const limit = input.limit ?? 500;
+			const entries = logStore.read(input.taskId, input.afterSequence, limit + 1);
+			const hasMore = entries.length > limit;
+			const sliced = hasMore ? entries.slice(0, limit) : entries;
+			return {
+				entries: sliced as Array<(typeof sliced)[number]>,
+				totalCount: logStore.count(input.taskId),
+				hasMore,
 			};
 		},
 	};

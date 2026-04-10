@@ -51,6 +51,9 @@ import {
 	isTerminalState,
 	validateCloudExecutionTransition,
 } from "./cloud-execution-lifecycle";
+import type { CloudExecutionLogStoreInterface } from "./cloud-execution-log-store";
+import type { CloudExecutionLogStreamClient, LogStreamClientFactory } from "./cloud-execution-log-stream";
+import { defaultLogStreamClientFactory } from "./cloud-execution-log-stream";
 import type { EventTriggerSource, PersistedTaskEvent, PersistedTaskExecution } from "./cloud-execution-persistence";
 import type { GovernanceClient } from "./cloud-governance-client";
 import type { CloudInstanceResponse } from "./cloud-instance-client";
@@ -177,6 +180,8 @@ interface TaskContext {
 	hostname?: string;
 	cancelRequested: boolean;
 	abortController: AbortController;
+	/** @phase Phase2 — SSE log stream client for this task (when running). */
+	logStreamClient?: CloudExecutionLogStreamClient;
 }
 
 // ---------------------------------------------------------------------------
@@ -369,6 +374,10 @@ export class CloudExecutionOrchestrator {
 	private readonly logger: OrchestratorLogger;
 	private readonly concurrencyLimiter: ConcurrencyLimiterExtension | null;
 	private readonly governanceClient: GovernanceClient | null;
+	/** @phase Phase2 — Log store for persisting SSE log entries. */
+	private readonly logStore: CloudExecutionLogStoreInterface | null;
+	/** @phase Phase2 — Factory for creating SSE log stream clients. */
+	private readonly logStreamFactory: LogStreamClientFactory;
 	private readonly activeTasks = new Map<string, TaskContext>();
 	private readonly pendingCancellations = new Set<string>();
 	private running = false;
@@ -382,6 +391,8 @@ export class CloudExecutionOrchestrator {
 		logger: OrchestratorLogger = noopLogger,
 		concurrencyLimiter?: ConcurrencyLimiterExtension | null,
 		governanceClient?: GovernanceClient | null,
+		logStore?: CloudExecutionLogStoreInterface | null,
+		logStreamFactory?: LogStreamClientFactory | null,
 	) {
 		this.store = store;
 		this.client = client;
@@ -390,6 +401,8 @@ export class CloudExecutionOrchestrator {
 		this.logger = logger;
 		this.concurrencyLimiter = concurrencyLimiter ?? null;
 		this.governanceClient = governanceClient ?? null;
+		this.logStore = logStore ?? null;
+		this.logStreamFactory = logStreamFactory ?? defaultLogStreamClientFactory;
 	}
 
 	/** Start the worker loop. */
@@ -723,6 +736,10 @@ export class CloudExecutionOrchestrator {
 				});
 			}
 			this.logger.info("/run accepted", { taskId, instanceId });
+
+			// Phase 2: Start SSE log stream for real-time log consumption
+			this.startLogStream(ctx, taskId, instanceId, hostname, latest?.executionId ?? ctx.executionId);
+
 			return null;
 		} catch (e) {
 			if (ctx.cancelRequested) {
@@ -1051,8 +1068,73 @@ export class CloudExecutionOrchestrator {
 	private cleanupCtx(taskId: string): void {
 		const ctx = this.activeTasks.get(taskId);
 		if (ctx) {
+			// Phase 2: Disconnect SSE log stream before aborting
+			if (ctx.logStreamClient?.isActive) {
+				ctx.logStreamClient.disconnect();
+				this.logger.info("Log stream disconnected", { taskId });
+			}
 			ctx.abortController.abort();
 			this.activeTasks.delete(taskId);
 		}
+	}
+
+	// -- Phase 2: log stream management --------------------------------------
+
+	/**
+	 * Start an SSE log stream for a task after /run is accepted.
+	 * The stream client is stored on the TaskContext for lifecycle tracking.
+	 * Entries are persisted via the log store; errors are logged for observability.
+	 */
+	private startLogStream(
+		ctx: TaskContext,
+		taskId: string,
+		instanceId: string,
+		hostname: string,
+		executionId: string,
+	): void {
+		if (!this.logStore) return; // No log store configured — skip
+
+		const client = this.logStreamFactory.create({
+			hostname,
+			executionId,
+			taskId,
+			callbacks: {
+				onEntry: (entry) => {
+					this.logStore?.append(taskId, entry);
+				},
+				onConnectionStateChange: (state) => {
+					this.logger.info("Log stream connection state", {
+						taskId,
+						instanceId,
+						state,
+					});
+				},
+				onError: (error, recoverable) => {
+					if (recoverable) {
+						this.logger.warn("Log stream transient error", {
+							taskId,
+							instanceId,
+							error: error.message,
+						});
+					} else {
+						this.logger.error("Log stream fatal error", {
+							taskId,
+							instanceId,
+							error: error.message,
+						});
+					}
+				},
+			},
+		});
+
+		ctx.logStreamClient = client;
+
+		// Connect async — don't block the /run acceptance
+		client.connect().catch((e) => {
+			this.logger.error("Log stream connect failed", {
+				taskId,
+				error: e instanceof Error ? e.message : String(e),
+			});
+		});
 	}
 }

@@ -17,6 +17,7 @@ import {
 	handleCloudCallback,
 } from "../cloud/cloud-callback-handler";
 import { type CallbackIngestionContext, InMemoryCallbackDedupeStore } from "../cloud/cloud-callback-ingestion";
+import { CloudExecutionLogStore } from "../cloud/cloud-execution-log-store";
 import { CloudExecutionStore } from "../cloud/cloud-execution-persistence";
 import { reconcileTerminalCallback } from "../cloud/cloud-terminal-reconciliation";
 import type { RuntimeCommandRunResponse, RuntimeWorkspaceStateResponse } from "../core/api-contract";
@@ -208,6 +209,7 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 				broadcastTaskChatCleared: deps.runtimeStateHub.broadcastTaskChatCleared,
 				bumpClineSessionContextVersion: deps.runtimeStateHub.bumpClineSessionContextVersion,
 				prepareForStateReset,
+				getCloudExecutionLogStore: () => cloudExecutionLogStore,
 			}),
 			workspaceApi: createWorkspaceApi({
 				ensureTerminalManagerForWorkspace: deps.ensureTerminalManagerForWorkspace,
@@ -265,6 +267,9 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 				"Set the environment variable to enable HMAC-SHA256 signature checks.",
 		);
 	}
+
+	// ── Phase 2: Cloud execution log store (in-memory, shared) ───────────
+	const cloudExecutionLogStore = new CloudExecutionLogStore();
 
 	// ── Cloud callback ingestion context ───────────────────────────────────
 	const cloudCallbackDedupeStore = new InMemoryCallbackDedupeStore();

@@ -6,6 +6,8 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import { z } from "zod";
 
 import type {
+	CloudExecutionLogsRequest,
+	CloudExecutionLogsResponse,
 	CloudExecutionSummaryRequest,
 	CloudExecutionSummaryResponse,
 	CloudExecutionTimelineRequest,
@@ -96,6 +98,8 @@ import type {
 	TaskRemoteExecutionDetailResponse,
 } from "../core/api-contract";
 import {
+	cloudExecutionLogsRequestSchema,
+	cloudExecutionLogsResponseSchema,
 	cloudExecutionSummaryRequestSchema,
 	cloudExecutionTimelineRequestSchema,
 	runtimeClineAccountBalanceResponseSchema,
@@ -297,6 +301,10 @@ export interface RuntimeTrpcContext {
 			scope: RuntimeTrpcWorkspaceScope,
 			input: CloudExecutionSummaryRequest,
 		) => Promise<CloudExecutionSummaryResponse>;
+		getCloudExecutionLogs: (
+			scope: RuntimeTrpcWorkspaceScope,
+			input: CloudExecutionLogsRequest,
+		) => Promise<CloudExecutionLogsResponse>;
 	};
 	workspaceApi: {
 		loadGitSummary: (
@@ -595,6 +603,12 @@ export const runtimeAppRouter = t.router({
 			.input(cloudExecutionSummaryRequestSchema)
 			.query(async ({ ctx, input }) => {
 				return await ctx.runtimeApi.getCloudExecutionSummary(ctx.workspaceScope, input);
+			}),
+		getCloudExecutionLogs: workspaceProcedure
+			.input(cloudExecutionLogsRequestSchema)
+			.output(cloudExecutionLogsResponseSchema)
+			.query(async ({ ctx, input }) => {
+				return await ctx.runtimeApi.getCloudExecutionLogs(ctx.workspaceScope, input);
 			}),
 	}),
 	workspace: t.router({

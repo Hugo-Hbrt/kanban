@@ -1200,3 +1200,31 @@ export const runtimeHookIngestResponseSchema = z.object({
 	error: z.string().optional(),
 });
 export type RuntimeHookIngestResponse = z.infer<typeof runtimeHookIngestResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Cloud Execution Log Stream (Phase 2 — polling endpoint)
+// @phase Phase2
+// ---------------------------------------------------------------------------
+
+export const cloudExecutionLogEntrySchema = z.object({
+	sequence: z.number().int().nonnegative(),
+	timestamp: z.string().min(1),
+	level: z.enum(["info", "warn", "error", "debug"]),
+	message: z.string(),
+	metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type CloudExecutionLogEntry = z.infer<typeof cloudExecutionLogEntrySchema>;
+
+export const cloudExecutionLogsRequestSchema = z.object({
+	taskId: z.string().min(1),
+	afterSequence: z.number().int().nonnegative().optional(),
+	limit: z.number().int().positive().max(1000).optional(),
+});
+export type CloudExecutionLogsRequest = z.infer<typeof cloudExecutionLogsRequestSchema>;
+
+export const cloudExecutionLogsResponseSchema = z.object({
+	entries: z.array(cloudExecutionLogEntrySchema),
+	totalCount: z.number().int().nonnegative(),
+	hasMore: z.boolean(),
+});
+export type CloudExecutionLogsResponse = z.infer<typeof cloudExecutionLogsResponseSchema>;
