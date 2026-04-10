@@ -161,6 +161,9 @@ export interface OrchestratorConfig {
 	readonly tickIntervalMs: number;
 	readonly pollerConfig: ReadinessPollerConfig;
 	readonly teardownConfig: TeardownConfig;
+	readonly projectId?: string;
+	readonly orgId?: string;
+	readonly requestedLimits?: Record<string, unknown>;
 }
 
 export const DEFAULT_ORCHESTRATOR_CONFIG: Readonly<OrchestratorConfig> = {
@@ -566,13 +569,29 @@ export class CloudExecutionOrchestrator {
 		}
 
 		try {
-			const decision = await this.governanceClient.checkAuthorization({ taskId });
+			const execs = await this.store.readExecutionsForTask(taskId);
+			const latest = execs[execs.length - 1];
+			const meta = latest?.remoteMetadata;
+			const decision = await this.governanceClient.checkAuthorization({
+				taskId,
+				orgId: this.config.orgId,
+				executionMode: latest?.executionMode,
+				metadata: {
+					projectId: this.config.projectId ?? "default",
+					taskSpec: {
+						prompt: latest?.resultSummary ?? "",
+						baseRef: meta?.baseBranch,
+						executionMode: latest?.executionMode,
+					},
+					requestedLimits: this.config.requestedLimits,
+				},
+			});
 
 			if (decision.decision === "authorized") {
 				this.logger.info("Policy check authorized", { taskId, reason: decision.reason });
 				return this.applyTransition(taskId, "policy_check", "authorized", "system", {
 					governanceDecision: "authorized",
-					policyId: decision.policyId,
+					policySnapshotId: decision.policyId,
 					reason: decision.reason,
 				});
 			}
@@ -581,7 +600,7 @@ export class CloudExecutionOrchestrator {
 			return this.applyTransition(taskId, "policy_check", "denied", "system", {
 				governanceDecision: "denied",
 				reason: decision.reason,
-				policyId: decision.policyId,
+				policySnapshotId: decision.policyId,
 			});
 		} catch (e) {
 			// Governance client already handles fail-open/fail-closed internally,
@@ -772,7 +791,11 @@ export class CloudExecutionOrchestrator {
 					executionId: latest?.executionId,
 					terminalState: state,
 					durationSeconds: latest?.durationSeconds ?? undefined,
-					tokenUsage: latest?.tokenUsage ?? undefined,
+					metadata: {
+						executionMode: latest?.executionMode ?? "cloud_agent",
+						tokensIn: latest?.remoteMetadata?.tokenUsage,
+						tokensOut: undefined,
+					},
 				});
 				this.logger.info("Usage event reported", { taskId, state });
 			} catch (e) {

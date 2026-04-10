@@ -18,7 +18,7 @@ import {
 	validateExecutionIdentityFidelity,
 } from "../../../src/cloud/cloud-execution-orchestrator";
 import type { PersistedTaskEvent, PersistedTaskExecution } from "../../../src/cloud/cloud-execution-persistence";
-import type { GovernanceClient } from "../../../src/cloud/cloud-governance-client";
+import type { AuthorizeRequest, GovernanceClient, UsageEventRequest } from "../../../src/cloud/cloud-governance-client";
 import type { CloudInstanceResponse, CloudInstanceState } from "../../../src/cloud/cloud-instance-client";
 
 // ---------------------------------------------------------------------------
@@ -915,8 +915,8 @@ describe("Orchestrator — provisioning creates instance", () => {
 	// ---------------------------------------------------------------------------
 
 	interface MockGovernanceClient extends GovernanceClient {
-		authorizeCalls: Array<{ taskId: string }>;
-		usageCalls: Array<{ taskId: string; terminalState: string }>;
+		authorizeCalls: AuthorizeRequest[];
+		usageCalls: UsageEventRequest[];
 		auditCalls: Array<{ taskId: string; fromState: string; toState: string }>;
 	}
 
@@ -929,14 +929,14 @@ describe("Orchestrator — provisioning creates instance", () => {
 			usageCalls: [],
 			auditCalls: [],
 			async checkAuthorization(request) {
-				mock.authorizeCalls.push({ taskId: request.taskId });
+				mock.authorizeCalls.push(request);
 				return {
 					decision: opts?.decision ?? "authorized",
 					reason: opts?.reason,
 				};
 			},
 			async reportUsage(request) {
-				mock.usageCalls.push({ taskId: request.taskId, terminalState: request.terminalState });
+				mock.usageCalls.push(request);
 				return { accepted: true };
 			},
 			async reportAudit(request) {
@@ -1002,6 +1002,78 @@ describe("Orchestrator — provisioning creates instance", () => {
 			expect(result?.newState).toBe("provisioning");
 			expect(result?.trigger).toBe("authorized");
 		});
+
+		it("passes full request context including projectId and orgId to checkAuthorization", async () => {
+			const store = createMockStore();
+			const client = createMockClient();
+			const invoker = createMockRunInvoker();
+			const governance = createMockGovernanceClient({ decision: "authorized" });
+			const configWithOrg: OrchestratorConfig = {
+				...FAST_CONFIG,
+				projectId: "proj-42",
+				orgId: "org-99",
+				requestedLimits: { maxTokens: 10_000 },
+			};
+			const orch = new CloudExecutionOrchestrator(
+				store,
+				client,
+				invoker,
+				configWithOrg,
+				undefined,
+				null,
+				governance,
+			);
+
+			await seedTaskToState(store, "task-1", "policy_check");
+
+			// Create execution with metadata so handler can read it
+			await store.createExecution({
+				executionId: "exec-pol-1",
+				taskId: "task-1",
+				attemptNumber: 1,
+				executionMode: "cloud_agent",
+				createdAt: new Date().toISOString(),
+				resultSummary: "Implement feature X",
+				remoteMetadata: {
+					instanceId: "pending",
+					repoUrl: "https://github.com/test/repo",
+					baseBranch: "main",
+				},
+			});
+
+			await orch.processTask("task-1");
+
+			expect(governance.authorizeCalls).toHaveLength(1);
+			const call = governance.authorizeCalls[0];
+			expect(call?.taskId).toBe("task-1");
+			expect(call?.orgId).toBe("org-99");
+			expect(call?.executionMode).toBe("cloud_agent");
+			expect(call?.metadata).toBeDefined();
+			expect((call?.metadata as Record<string, unknown>)?.projectId).toBe("proj-42");
+			expect((call?.metadata as Record<string, unknown>)?.requestedLimits).toEqual({ maxTokens: 10_000 });
+
+			const taskSpec = (call?.metadata as Record<string, unknown>)?.taskSpec as Record<string, unknown>;
+			expect(taskSpec).toBeDefined();
+			expect(taskSpec.prompt).toBe("Implement feature X");
+			expect(taskSpec.baseRef).toBe("main");
+			expect(taskSpec.executionMode).toBe("cloud_agent");
+		});
+
+		it("defaults projectId to 'default' when not configured", async () => {
+			const store = createMockStore();
+			const client = createMockClient();
+			const invoker = createMockRunInvoker();
+			const governance = createMockGovernanceClient({ decision: "authorized" });
+			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG, undefined, null, governance);
+
+			await seedTaskToState(store, "task-1", "policy_check");
+
+			await orch.processTask("task-1");
+
+			expect(governance.authorizeCalls).toHaveLength(1);
+			const call = governance.authorizeCalls[0];
+			expect((call?.metadata as Record<string, unknown>)?.projectId).toBe("default");
+		});
 	});
 
 	// ---------------------------------------------------------------------------
@@ -1033,6 +1105,52 @@ describe("Orchestrator — provisioning creates instance", () => {
 			expect(governance.usageCalls).toHaveLength(1);
 			expect(governance.usageCalls[0]?.taskId).toBe("task-1");
 			expect(governance.usageCalls[0]?.terminalState).toBe("failed");
+		});
+
+		it("passes full usage payload including executionMode and token metadata", async () => {
+			const store = createMockStore();
+			const client = createMockClient();
+			const invoker = createMockRunInvoker();
+			const governance = createMockGovernanceClient();
+			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG, undefined, null, governance);
+
+			// Seed to failed state with execution metadata
+			await seedTaskToState(store, "task-1", "provisioning");
+			await store.createExecution({
+				executionId: "exec-usage-1",
+				taskId: "task-1",
+				attemptNumber: 1,
+				executionMode: "cloud_agent",
+				createdAt: new Date().toISOString(),
+				durationSeconds: 42,
+				remoteMetadata: {
+					instanceId: "inst-1",
+					repoUrl: "https://github.com/test/repo",
+					baseBranch: "main",
+					tokenUsage: 7500,
+				},
+			});
+			await store.appendEvent({
+				eventId: randomUUID(),
+				taskId: "task-1",
+				trigger: "provision_timeout",
+				fromState: "provisioning",
+				toState: "failed",
+				timestamp: new Date().toISOString(),
+				triggerSource: "system",
+			});
+
+			await orch.processTask("task-1"); // failed -> teardown (reports usage)
+
+			expect(governance.usageCalls).toHaveLength(1);
+			const call = governance.usageCalls[0];
+			expect(call?.taskId).toBe("task-1");
+			expect(call?.executionId).toBe("exec-usage-1");
+			expect(call?.terminalState).toBe("failed");
+			expect(call?.durationSeconds).toBe(42);
+			expect(call?.metadata).toBeDefined();
+			expect((call?.metadata as Record<string, unknown>)?.executionMode).toBe("cloud_agent");
+			expect((call?.metadata as Record<string, unknown>)?.tokensIn).toBe(7500);
 		});
 
 		it("does not report usage when no governance client is configured", async () => {
