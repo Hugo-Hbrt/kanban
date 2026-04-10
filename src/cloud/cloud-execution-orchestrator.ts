@@ -8,7 +8,7 @@ import {
 	validateCloudExecutionTransition,
 } from "./cloud-execution-lifecycle";
 import type { EventTriggerSource, PersistedTaskEvent, PersistedTaskExecution } from "./cloud-execution-persistence";
-import type { CloudInstanceClient, CloudInstanceResponse } from "./cloud-instance-client";
+import type { CloudInstanceResponse } from "./cloud-instance-client";
 import type { ReadinessPollerConfig } from "./cloud-readiness-poller";
 import { DEFAULT_READINESS_POLLER_CONFIG, pollForReadiness } from "./cloud-readiness-poller";
 
@@ -48,8 +48,17 @@ export interface CreateInstanceRequest {
 	readonly featureBranch?: string;
 }
 
-export interface CloudInstanceFullClient extends CloudInstanceClient {
+/**
+ * Orchestrator-level cloud client interface.
+ *
+ * This is a simplified interface used internally by the orchestrator.
+ * It is structurally compatible with, but intentionally does not extend,
+ * {@link CloudInstanceClient} because the orchestrator uses its own
+ * {@link CreateInstanceRequest} shape for provisioning.
+ */
+export interface CloudInstanceFullClient {
 	createInstance(request: CreateInstanceRequest, signal?: AbortSignal): Promise<CloudInstanceResponse>;
+	getInstance(instanceId: string, signal?: AbortSignal): Promise<CloudInstanceResponse>;
 	deleteInstance(instanceId: string, signal?: AbortSignal): Promise<void>;
 }
 
@@ -76,17 +85,40 @@ export interface CloudRunInvoker {
 }
 
 // ---------------------------------------------------------------------------
+// Teardown Configuration (PRD Section 15.6 + Section 15.11)
+// ---------------------------------------------------------------------------
+
+export interface TeardownConfig {
+	/** Maximum number of retry attempts for instance deletion. @default 3 */
+	readonly maxRetries: number;
+	/** Base delay in milliseconds for exponential backoff. @default 1000 */
+	readonly baseDelayMs: number;
+	/** Maximum delay in milliseconds between retries. @default 15_000 */
+	readonly maxDelayMs: number;
+	/** Custom delay function for dependency injection / testing. */
+	readonly delay?: (ms: number) => Promise<void>;
+}
+
+export const DEFAULT_TEARDOWN_CONFIG: Readonly<TeardownConfig> = {
+	maxRetries: 3,
+	baseDelayMs: 1_000,
+	maxDelayMs: 15_000,
+};
+
+// ---------------------------------------------------------------------------
 // Orchestrator Configuration
 // ---------------------------------------------------------------------------
 
 export interface OrchestratorConfig {
 	readonly tickIntervalMs: number;
 	readonly pollerConfig: ReadinessPollerConfig;
+	readonly teardownConfig: TeardownConfig;
 }
 
 export const DEFAULT_ORCHESTRATOR_CONFIG: Readonly<OrchestratorConfig> = {
 	tickIntervalMs: 5_000,
 	pollerConfig: DEFAULT_READINESS_POLLER_CONFIG,
+	teardownConfig: DEFAULT_TEARDOWN_CONFIG,
 };
 
 // ---------------------------------------------------------------------------
@@ -205,7 +237,7 @@ export class CloudExecutionOrchestrator {
 
 		for (const taskId of [...this.pendingCancellations]) {
 			const s = taskStates.get(taskId);
-			if (s && !isTerminalState(s) && !isFinalState(s)) {
+			if (s && !isTerminalState(s) && !isFinalState(s) && s !== "teardown") {
 				const r = await this.applyCancellation(taskId, s);
 				if (r) {
 					results.push(r);
@@ -216,7 +248,7 @@ export class CloudExecutionOrchestrator {
 		}
 
 		for (const [taskId, state] of taskStates) {
-			if (isTerminalState(state) || isFinalState(state)) continue;
+			if (isFinalState(state)) continue;
 			const r = await this.advanceTask(taskId, state);
 			if (r) results.push(r);
 		}
@@ -228,11 +260,11 @@ export class CloudExecutionOrchestrator {
 		const s = await this.store.deriveTaskState(taskId);
 		if (this.pendingCancellations.has(taskId)) {
 			this.pendingCancellations.delete(taskId);
-			if (!isTerminalState(s) && !isFinalState(s)) {
+			if (!isTerminalState(s) && !isFinalState(s) && s !== "teardown") {
 				return this.applyCancellation(taskId, s);
 			}
 		}
-		if (isTerminalState(s) || isFinalState(s)) return null;
+		if (isFinalState(s)) return null;
 		return this.advanceTask(taskId, s);
 	}
 
@@ -280,6 +312,12 @@ export class CloudExecutionOrchestrator {
 				return this.handleProvisioning(taskId);
 			case "running":
 				return this.handleRunning(taskId);
+			case "completed":
+			case "failed":
+			case "canceled":
+				return this.handleTerminal(taskId, state);
+			case "teardown":
+				return this.handleTeardown(taskId);
 			default:
 				return null;
 		}
@@ -344,8 +382,10 @@ export class CloudExecutionOrchestrator {
 
 			if (ctx.cancelRequested) return this.cancelProvision(taskId);
 
+			// Cast is safe: pollForReadiness only uses getInstance(), which
+			// CloudInstanceFullClient provides with a compatible signature.
 			const poll = await pollForReadiness(
-				this.client,
+				this.client as unknown as Parameters<typeof pollForReadiness>[0],
 				ctx.instanceId,
 				this.config.pollerConfig,
 				ctx.abortController.signal,
@@ -446,6 +486,145 @@ export class CloudExecutionOrchestrator {
 				error: e instanceof Error ? e.message : String(e),
 			});
 		}
+	}
+
+	// -- terminal -> teardown (A4) -------------------------------------------
+
+	/**
+	 * Handle terminal states (completed, failed, canceled).
+	 * Transitions to teardown via auto_teardown trigger.
+	 * PRD: Terminal states always transition to teardown then archived.
+	 */
+	private handleTerminal(taskId: string, state: "completed" | "failed" | "canceled"): Promise<TaskStepResult> {
+		this.logger.info("Terminal state reached, initiating teardown", { taskId, state });
+		return this.applyTransition(taskId, state, "auto_teardown", "system");
+	}
+
+	// -- teardown -> archived (A4) -------------------------------------------
+
+	/**
+	 * Handle teardown state:
+	 * - Look up the instance ID from execution metadata
+	 * - If debug-preserve is enabled on a failed task, skip deletion
+	 * - Otherwise, delete the cloud instance with retry/backoff
+	 * - Transition to archived via sandbox_terminated
+	 *
+	 * PRD Section 15.11: Failure preservation rule — when debug-preserve is
+	 * enabled, teardown intentionally skips instance deletion so the sandbox
+	 * remains available for inspection.
+	 */
+	private async handleTeardown(taskId: string): Promise<TaskStepResult> {
+		const execs = await this.store.readExecutionsForTask(taskId);
+		const latest = execs[execs.length - 1];
+		const instanceId = latest?.instanceId ?? latest?.remoteMetadata?.instanceId;
+		const debugPreserve = latest?.remoteMetadata?.debugPreserve === true;
+		const terminalState = latest?.terminalState;
+
+		// Check debug-preserve mode: only applies to failed tasks
+		if (debugPreserve && terminalState === "failed") {
+			this.logger.info("Debug-preserve enabled, skipping instance deletion", {
+				taskId,
+				instanceId,
+			});
+
+			// Record that teardown was intentionally skipped
+			return this.applyTransition(taskId, "teardown", "sandbox_terminated", "system", {
+				teardownSkipped: true,
+				debugPreserve: true,
+				reason: "Debug-preserve mode: sandbox preserved for inspection",
+				instanceId,
+			});
+		}
+
+		// Delete the cloud instance
+		if (instanceId) {
+			try {
+				await this.deleteInstanceWithRetry(instanceId, taskId);
+				this.logger.info("Instance deleted during teardown", { taskId, instanceId });
+			} catch (e) {
+				// Even if all retries fail, we still transition to archived
+				// to avoid leaving the task stuck in teardown forever.
+				// Cloud-platform has TTL auto-cleanup as a safety net.
+				this.logger.error("Teardown deletion failed after retries, proceeding to archived", {
+					taskId,
+					instanceId,
+					error: e instanceof Error ? e.message : String(e),
+				});
+			}
+		} else {
+			this.logger.warn("No instance ID found during teardown, proceeding to archived", { taskId });
+		}
+
+		this.cleanupCtx(taskId);
+		return this.applyTransition(taskId, "teardown", "sandbox_terminated", "system", {
+			instanceId,
+			instanceDeleted: !!instanceId,
+		});
+	}
+
+	/**
+	 * Delete a cloud instance with retry and exponential backoff.
+	 *
+	 * Handles special cases:
+	 * - If instance is already terminated (404/410), treat as success
+	 * - If cloud-platform is unreachable, retry with backoff
+	 * - After maxRetries, throw to let the caller handle gracefully
+	 */
+	private async deleteInstanceWithRetry(instanceId: string, taskId: string): Promise<void> {
+		const { maxRetries, baseDelayMs, maxDelayMs } = this.config.teardownConfig;
+		const delayFn = this.config.teardownConfig.delay ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+
+		let lastError: Error | null = null;
+
+		for (let attempt = 0; attempt <= maxRetries; attempt++) {
+			try {
+				await this.client.deleteInstance(instanceId);
+				return; // Success
+			} catch (e) {
+				lastError = e instanceof Error ? e : new Error(String(e));
+
+				// If instance is already terminated, treat as success.
+				// Cloud-platform returns 404 or 410 for terminated instances.
+				if (this.isAlreadyTerminatedError(lastError)) {
+					this.logger.info("Instance already terminated, treating as successful teardown", {
+						taskId,
+						instanceId,
+						attempt,
+					});
+					return;
+				}
+
+				if (attempt < maxRetries) {
+					const delay = Math.min(baseDelayMs * 2 ** attempt, maxDelayMs);
+					this.logger.warn("Teardown delete failed, retrying", {
+						taskId,
+						instanceId,
+						attempt: attempt + 1,
+						maxRetries,
+						nextRetryMs: delay,
+						error: lastError.message,
+					});
+					await delayFn(delay);
+				}
+			}
+		}
+
+		throw lastError ?? new Error("Teardown delete failed after retries");
+	}
+
+	/**
+	 * Determines if an error indicates the instance is already terminated.
+	 * Cloud-platform returns 404 or 410 for non-existent/terminated instances.
+	 */
+	private isAlreadyTerminatedError(error: Error): boolean {
+		// Check for CloudInstanceClientError with 404 or 410 status codes
+		const errWithStatus = error as Error & { statusCode?: number };
+		if (errWithStatus.statusCode === 404 || errWithStatus.statusCode === 410) {
+			return true;
+		}
+		// Heuristic: check message for common indicators
+		const msg = error.message.toLowerCase();
+		return msg.includes("not found") || msg.includes("already terminated") || msg.includes("gone");
 	}
 
 	// -- cancellation --------------------------------------------------------

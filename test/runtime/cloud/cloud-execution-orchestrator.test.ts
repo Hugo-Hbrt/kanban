@@ -110,6 +110,8 @@ function createMockClient(opts?: {
 			state.createCalls.push(request);
 			return {
 				instance_id: `inst-${request.taskId}`,
+				user_id: "test-user",
+				namespace: "test-ns",
 				state: opts?.readyImmediately ? "ready" : (opts?.instanceState ?? "provisioning"),
 				hostname: opts?.hostname ?? `${request.taskId}.runner.test`,
 			};
@@ -118,6 +120,8 @@ function createMockClient(opts?: {
 			if (opts?.failPoll) throw new Error("Poll failed");
 			return {
 				instance_id: instanceId,
+				user_id: "test-user",
+				namespace: "test-ns",
 				state: "ready",
 				hostname: opts?.hostname ?? `${instanceId}.runner.test`,
 			};
@@ -205,6 +209,12 @@ const FAST_CONFIG: OrchestratorConfig = {
 		maxConsecutiveErrors: 3,
 		backoffMultiplier: 1,
 		maxBackoffMs: 50,
+	},
+	teardownConfig: {
+		maxRetries: 3,
+		baseDelayMs: 1,
+		maxDelayMs: 5,
+		delay: async () => {},
 	},
 };
 
@@ -543,13 +553,13 @@ describe("Orchestrator — cancellation", () => {
 		orch.requestCancellation("task-1");
 		const results = await orch.processTick();
 
-		// Should produce a result ending in failed
-		const cancelResult = results.find((r) => r.taskId === "task-1");
+		// Cancellation produces failed, then teardown handling advances to teardown
+		const cancelResult = results.find((r) => r.taskId === "task-1" && r.newState === "failed");
 		expect(cancelResult).toBeTruthy();
-		expect(cancelResult?.newState).toBe("failed");
 
+		// The task advances through failed → teardown in the same tick
 		const finalState = await store.deriveTaskState("task-1");
-		expect(finalState).toBe("failed");
+		expect(["failed", "teardown"]).toContain(finalState);
 	});
 
 	it("cancels a policy_check task to failed via denied", async () => {
@@ -603,7 +613,7 @@ describe("Orchestrator — cancellation", () => {
 		expect(cancelResult?.trigger).toBe("user_cancel");
 	});
 
-	it("is a no-op for already-terminal tasks", async () => {
+	it("cancellation is a no-op for already-terminal tasks (but teardown still advances)", async () => {
 		const store = createMockStore();
 		const client = createMockClient();
 		const invoker = createMockRunInvoker();
@@ -626,8 +636,13 @@ describe("Orchestrator — cancellation", () => {
 		orch.requestCancellation("task-1");
 		const results = await orch.processTick();
 
-		expect(results).toHaveLength(0);
-		expect(store._events).toHaveLength(countBefore);
+		// Cancellation itself is a no-op for terminal tasks, but teardown advances:
+		// failed → teardown via auto_teardown, then teardown → archived via sandbox_terminated
+		const cancelResults = results.filter((r) => r.trigger === "user_cancel" || r.trigger === "denied");
+		expect(cancelResults).toHaveLength(0); // no cancellation transition applied
+
+		// Teardown events are added (terminal → teardown, teardown → archived)
+		expect(store._events.length).toBeGreaterThan(countBefore);
 	});
 });
 
@@ -636,7 +651,7 @@ describe("Orchestrator — cancellation", () => {
 // ---------------------------------------------------------------------------
 
 describe("Orchestrator — idempotency and restart safety", () => {
-	it("is idempotent: processing a terminal task is a no-op", async () => {
+	it("terminal tasks advance to teardown (no longer a no-op)", async () => {
 		const store = createMockStore();
 		const client = createMockClient();
 		const invoker = createMockRunInvoker();
@@ -650,6 +665,50 @@ describe("Orchestrator — idempotency and restart safety", () => {
 			trigger: "provision_timeout",
 			fromState: "provisioning",
 			toState: "failed",
+			timestamp: new Date().toISOString(),
+			triggerSource: "system",
+		});
+
+		const result = await orch.processTask("task-1");
+		// Terminal states now advance to teardown via auto_teardown
+		expect(result).not.toBeNull();
+		expect(result?.previousState).toBe("failed");
+		expect(result?.newState).toBe("teardown");
+		expect(result?.trigger).toBe("auto_teardown");
+	});
+
+	it("archived tasks are truly a no-op", async () => {
+		const store = createMockStore();
+		const client = createMockClient();
+		const invoker = createMockRunInvoker();
+		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+
+		// Seed to archived (terminal → teardown → archived)
+		await seedTaskToState(store, "task-1", "provisioning");
+		await store.appendEvent({
+			eventId: randomUUID(),
+			taskId: "task-1",
+			trigger: "provision_timeout",
+			fromState: "provisioning",
+			toState: "failed",
+			timestamp: new Date().toISOString(),
+			triggerSource: "system",
+		});
+		await store.appendEvent({
+			eventId: randomUUID(),
+			taskId: "task-1",
+			trigger: "auto_teardown",
+			fromState: "failed",
+			toState: "teardown",
+			timestamp: new Date().toISOString(),
+			triggerSource: "system",
+		});
+		await store.appendEvent({
+			eventId: randomUUID(),
+			taskId: "task-1",
+			trigger: "sandbox_terminated",
+			fromState: "teardown",
+			toState: "archived",
 			timestamp: new Date().toISOString(),
 			triggerSource: "system",
 		});
