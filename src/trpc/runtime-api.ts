@@ -657,5 +657,15 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 			openInBrowser(filePath);
 			return { ok: true };
 		},
+		getTaskRemoteExecutionDetail: async (scope, input) => {
+			const { assembleTaskRemoteExecutionDetail } = await import("../cloud/cloud-remote-execution-detail");
+			const { CloudExecutionStore } = await import("../cloud/cloud-execution-persistence");
+			const store = new CloudExecutionStore(scope.workspacePath);
+			const detail = await assembleTaskRemoteExecutionDetail(store, input.taskId);
+			return {
+				found: detail !== null,
+				detail,
+			};
+		},
 	};
 }

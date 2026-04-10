@@ -88,6 +88,8 @@ import type {
 	RuntimeWorktreeDeleteResponse,
 	RuntimeWorktreeEnsureRequest,
 	RuntimeWorktreeEnsureResponse,
+	TaskRemoteExecutionDetailRequest,
+	TaskRemoteExecutionDetailResponse,
 } from "../core/api-contract";
 import {
 	runtimeClineAccountBalanceResponseSchema,
@@ -172,6 +174,8 @@ import {
 	runtimeWorktreeDeleteResponseSchema,
 	runtimeWorktreeEnsureRequestSchema,
 	runtimeWorktreeEnsureResponseSchema,
+	taskRemoteExecutionDetailRequestSchema,
+	taskRemoteExecutionDetailResponseSchema,
 } from "../core/api-contract";
 
 export interface RuntimeTrpcWorkspaceScope {
@@ -275,6 +279,10 @@ export interface RuntimeTrpcContext {
 		) => Promise<RuntimeCommandRunResponse>;
 		resetAllState: (scope: RuntimeTrpcWorkspaceScope | null) => Promise<RuntimeDebugResetAllStateResponse>;
 		openFile: (input: RuntimeOpenFileRequest) => Promise<RuntimeOpenFileResponse>;
+		getTaskRemoteExecutionDetail: (
+			scope: RuntimeTrpcWorkspaceScope,
+			input: TaskRemoteExecutionDetailRequest,
+		) => Promise<TaskRemoteExecutionDetailResponse>;
 	};
 	workspaceApi: {
 		loadGitSummary: (
@@ -557,6 +565,12 @@ export const runtimeAppRouter = t.router({
 			.output(runtimeOpenFileResponseSchema)
 			.mutation(async ({ ctx, input }) => {
 				return await ctx.runtimeApi.openFile(input);
+			}),
+		getTaskRemoteExecutionDetail: workspaceProcedure
+			.input(taskRemoteExecutionDetailRequestSchema)
+			.output(taskRemoteExecutionDetailResponseSchema)
+			.query(async ({ ctx, input }) => {
+				return await ctx.runtimeApi.getTaskRemoteExecutionDetail(ctx.workspaceScope, input);
 			}),
 	}),
 	workspace: t.router({

@@ -60,6 +60,8 @@ export const remoteExecutionMetadataSchema = z.object({
 	callbackUrl: z.string().optional(),
 	callbackReceivedAt: z.string().optional(),
 	debugPreserve: z.boolean().optional(),
+	executionDurationSeconds: z.number().nonnegative().optional(),
+	tokenUsage: z.number().int().nonnegative().optional(),
 });
 export type RemoteExecutionMetadata = z.infer<typeof remoteExecutionMetadataSchema>;
 

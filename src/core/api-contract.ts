@@ -1124,6 +1124,19 @@ export const runtimeGitRefsResponseSchema = z.object({
 });
 export type RuntimeGitRefsResponse = z.infer<typeof runtimeGitRefsResponseSchema>;
 
+// ---------------------------------------------------------------------------
+// Task Remote Execution Detail (E2 — cloud execution metadata inspection)
+// ---------------------------------------------------------------------------
+
+export {
+	type TaskRemoteExecutionDetailRequest,
+	type TaskRemoteExecutionDetailResponse,
+	taskRemoteExecutionDetailRequestSchema,
+	taskRemoteExecutionDetailResponseSchema,
+} from "../cloud/cloud-remote-execution-detail";
+
+// ---------------------------------------------------------------------------
+
 export const runtimeHookEventSchema = z.enum(["to_review", "to_in_progress", "activity"]);
 export type RuntimeHookEvent = z.infer<typeof runtimeHookEventSchema>;
 
