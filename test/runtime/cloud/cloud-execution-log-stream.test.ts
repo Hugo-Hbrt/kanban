@@ -30,14 +30,14 @@ import type { CloudInstanceResponse, CloudInstanceState } from "../../../src/clo
 // Helpers
 // ---------------------------------------------------------------------------
 
-function buildSSEChunk(entries: Array<{ sequence: number; message: string; level?: string }>): Uint8Array {
+function buildSSEChunk(entries: Array<{ sequence: number; message: string; type?: string }>): Uint8Array {
 	let text = "";
 	for (const e of entries) {
 		const json = JSON.stringify({
 			sequence: e.sequence,
 			timestamp: new Date().toISOString(),
-			level: e.level ?? "info",
-			message: e.message,
+			type: e.type ?? "info",
+			data: e.message,
 		});
 		text += `data: ${json}\n\n`;
 	}
@@ -68,28 +68,45 @@ describe("parseSSEDataLine", () => {
 		const data = JSON.stringify({
 			sequence: 5,
 			timestamp: "2024-01-01T00:00:00Z",
-			level: "info",
-			message: "Hello world",
+			type: "info",
+			data: "Hello world",
 		});
 		const entry = parseSSEDataLine(data, 1);
 		expect(entry).not.toBeNull();
 		expect(entry?.sequence).toBe(5);
 		expect(entry?.message).toBe("Hello world");
 		expect(entry?.level).toBe("info");
+		expect(entry?.eventType).toBe("info");
 	});
 
 	it("uses fallback sequence when missing", () => {
-		const entry = parseSSEDataLine(JSON.stringify({ message: "No seq" }), 42);
+		const entry = parseSSEDataLine(JSON.stringify({ data: "No seq" }), 42);
 		expect(entry?.sequence).toBe(42);
 	});
 
-	it("defaults level to info when invalid", () => {
-		const entry = parseSSEDataLine(JSON.stringify({ message: "Bad level", level: "critical" }), 1);
+	it("defaults level to info when type is unrecognized", () => {
+		const entry = parseSSEDataLine(JSON.stringify({ data: "Bad level", type: "critical" }), 1);
 		expect(entry?.level).toBe("info");
 	});
 
-	it("returns null for empty JSON message", () => {
-		expect(parseSSEDataLine(JSON.stringify({ message: "" }), 1)).toBeNull();
+	it("maps type=error to level=error", () => {
+		const entry = parseSSEDataLine(JSON.stringify({ data: "Boom", type: "error" }), 1);
+		expect(entry?.level).toBe("error");
+		expect(entry?.eventType).toBe("error");
+	});
+
+	it("maps type=system to level=debug", () => {
+		const entry = parseSSEDataLine(JSON.stringify({ data: "internal", type: "system" }), 1);
+		expect(entry?.level).toBe("debug");
+		expect(entry?.eventType).toBe("system");
+	});
+
+	it("returns null for empty JSON data", () => {
+		expect(parseSSEDataLine(JSON.stringify({ data: "" }), 1)).toBeNull();
+	});
+
+	it("returns null for missing data field", () => {
+		expect(parseSSEDataLine(JSON.stringify({ type: "info" }), 1)).toBeNull();
 	});
 
 	it("returns null for blank raw string", () => {
@@ -106,10 +123,22 @@ describe("parseSSEDataLine", () => {
 	it("preserves metadata when present", () => {
 		const data = JSON.stringify({
 			sequence: 1,
-			message: "with meta",
+			data: "with meta",
 			metadata: { key: "val" },
 		});
 		expect(parseSSEDataLine(data, 1)?.metadata).toEqual({ key: "val" });
+	});
+
+	it("stringifies non-string data as JSON", () => {
+		const payload = { nested: true, count: 42 };
+		const data = JSON.stringify({
+			sequence: 1,
+			type: "info",
+			data: payload,
+		});
+		const entry = parseSSEDataLine(data, 1);
+		expect(entry?.message).toBe(JSON.stringify(payload));
+		expect(entry?.eventType).toBe("info");
 	});
 });
 

@@ -30,6 +30,8 @@ export interface LogStreamEntry {
 	readonly message: string;
 	/** Optional structured metadata attached to the entry. */
 	readonly metadata?: Record<string, unknown>;
+	/** The raw `type` field from the cloud-platform SSE event. */
+	readonly eventType?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,14 +132,16 @@ export function parseSSEDataLine(data: string, fallbackSequence: number): LogStr
 		const parsed = JSON.parse(data) as Record<string, unknown>;
 		const sequence = typeof parsed.sequence === "number" ? parsed.sequence : fallbackSequence;
 		const timestamp = typeof parsed.timestamp === "string" ? parsed.timestamp : new Date().toISOString();
-		const level = isValidLevel(parsed.level) ? parsed.level : "info";
-		const message = typeof parsed.message === "string" ? parsed.message : String(parsed.message ?? "");
+		const level = mapTypeToLevel(typeof parsed.type === "string" ? parsed.type : "");
+		const rawData = parsed.data;
+		const message = typeof rawData === "string" ? rawData : rawData != null ? JSON.stringify(rawData) : "";
 		if (!message) return null;
 		const metadata =
 			typeof parsed.metadata === "object" && parsed.metadata !== null
 				? (parsed.metadata as Record<string, unknown>)
 				: undefined;
-		return { sequence, timestamp, level, message, metadata };
+		const eventType = typeof parsed.type === "string" ? parsed.type : undefined;
+		return { sequence, timestamp, level, message, metadata, eventType };
 	} catch {
 		if (!data.trim()) return null;
 		return {
@@ -149,8 +153,10 @@ export function parseSSEDataLine(data: string, fallbackSequence: number): LogStr
 	}
 }
 
-function isValidLevel(v: unknown): v is LogStreamEntry["level"] {
-	return v === "info" || v === "warn" || v === "error" || v === "debug";
+function mapTypeToLevel(type: string): LogStreamEntry["level"] {
+	if (type === "error") return "error";
+	if (type === "system") return "debug";
+	return "info";
 }
 
 // ---------------------------------------------------------------------------
