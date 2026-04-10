@@ -52,6 +52,7 @@ import {
 	validateCloudExecutionTransition,
 } from "./cloud-execution-lifecycle";
 import type { EventTriggerSource, PersistedTaskEvent, PersistedTaskExecution } from "./cloud-execution-persistence";
+import type { GovernanceClient } from "./cloud-governance-client";
 import type { CloudInstanceResponse } from "./cloud-instance-client";
 import type { ReadinessPollerConfig } from "./cloud-readiness-poller";
 import { DEFAULT_READINESS_POLLER_CONFIG, pollForReadiness } from "./cloud-readiness-poller";
@@ -226,6 +227,7 @@ export class CloudExecutionOrchestrator {
 	private readonly config: OrchestratorConfig;
 	private readonly logger: OrchestratorLogger;
 	private readonly concurrencyLimiter: ConcurrencyLimiterExtension | null;
+	private readonly governanceClient: GovernanceClient | null;
 	private readonly activeTasks = new Map<string, TaskContext>();
 	private readonly pendingCancellations = new Set<string>();
 	private running = false;
@@ -238,6 +240,7 @@ export class CloudExecutionOrchestrator {
 		config: OrchestratorConfig = DEFAULT_ORCHESTRATOR_CONFIG,
 		logger: OrchestratorLogger = noopLogger,
 		concurrencyLimiter?: ConcurrencyLimiterExtension | null,
+		governanceClient?: GovernanceClient | null,
 	) {
 		this.store = store;
 		this.client = client;
@@ -245,6 +248,7 @@ export class CloudExecutionOrchestrator {
 		this.config = config;
 		this.logger = logger;
 		this.concurrencyLimiter = concurrencyLimiter ?? null;
+		this.governanceClient = governanceClient ?? null;
 	}
 
 	/** Start the worker loop. */
@@ -399,11 +403,43 @@ export class CloudExecutionOrchestrator {
 		});
 	}
 
-	// -- policy_check -> provisioning (stub authorized for MVP) --------------
+	// -- policy_check -> provisioning (real governance or fallback) -----------
 
-	private handlePolicyCheck(taskId: string): Promise<TaskStepResult> {
-		// MVP stub: always authorized. D-track adds real governance.
-		return this.applyTransition(taskId, "policy_check", "authorized", "system");
+	private async handlePolicyCheck(taskId: string): Promise<TaskStepResult> {
+		if (!this.governanceClient) {
+			// No governance client configured — auto-authorize (backward-compatible).
+			return this.applyTransition(taskId, "policy_check", "authorized", "system");
+		}
+
+		try {
+			const decision = await this.governanceClient.checkAuthorization({ taskId });
+
+			if (decision.decision === "authorized") {
+				this.logger.info("Policy check authorized", { taskId, reason: decision.reason });
+				return this.applyTransition(taskId, "policy_check", "authorized", "system", {
+					governanceDecision: "authorized",
+					policyId: decision.policyId,
+					reason: decision.reason,
+				});
+			}
+
+			this.logger.info("Policy check denied", { taskId, reason: decision.reason });
+			return this.applyTransition(taskId, "policy_check", "denied", "system", {
+				governanceDecision: "denied",
+				reason: decision.reason,
+				policyId: decision.policyId,
+			});
+		} catch (e) {
+			// Governance client already handles fail-open/fail-closed internally,
+			// but if an unexpected error escapes, log and auto-authorize.
+			this.logger.error("Unexpected governance error, auto-authorizing", {
+				taskId,
+				error: e instanceof Error ? e.message : String(e),
+			});
+			return this.applyTransition(taskId, "policy_check", "authorized", "system", {
+				governanceFallback: true,
+			});
+		}
 	}
 
 	// -- provisioning -> running ---------------------------------------------
@@ -565,8 +601,30 @@ export class CloudExecutionOrchestrator {
 	 * Transitions to teardown via auto_teardown trigger.
 	 * PRD: Terminal states always transition to teardown then archived.
 	 */
-	private handleTerminal(taskId: string, state: "completed" | "failed" | "canceled"): Promise<TaskStepResult> {
+	private async handleTerminal(taskId: string, state: "completed" | "failed" | "canceled"): Promise<TaskStepResult> {
 		this.logger.info("Terminal state reached, initiating teardown", { taskId, state });
+
+		// Emit usage event before teardown (best-effort, never blocks transition)
+		if (this.governanceClient) {
+			try {
+				const execs = await this.store.readExecutionsForTask(taskId);
+				const latest = execs[execs.length - 1];
+				await this.governanceClient.reportUsage({
+					taskId,
+					executionId: latest?.executionId,
+					terminalState: state,
+					durationSeconds: latest?.durationSeconds ?? undefined,
+					tokenUsage: latest?.tokenUsage ?? undefined,
+				});
+				this.logger.info("Usage event reported", { taskId, state });
+			} catch (e) {
+				this.logger.warn("Usage event reporting failed (best-effort)", {
+					taskId,
+					error: e instanceof Error ? e.message : String(e),
+				});
+			}
+		}
+
 		return this.applyTransition(taskId, state, "auto_teardown", "system");
 	}
 
@@ -802,6 +860,28 @@ export class CloudExecutionOrchestrator {
 			to: result.to,
 			trigger,
 		});
+
+		// Emit audit event on key lifecycle transitions (best-effort, fire-and-forget)
+		if (this.governanceClient) {
+			this.governanceClient
+				.reportAudit({
+					taskId,
+					eventType: "lifecycle_transition",
+					fromState: result.from,
+					toState: result.to,
+					trigger,
+					triggerSource,
+					timestamp: event.timestamp,
+					metadata,
+				})
+				.catch((e) => {
+					this.logger.warn("Audit event reporting failed (best-effort)", {
+						taskId,
+						error: e instanceof Error ? e.message : String(e),
+					});
+				});
+		}
+
 		return {
 			taskId,
 			previousState: result.from,

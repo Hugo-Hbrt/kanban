@@ -16,6 +16,7 @@ import {
 	DEFAULT_ORCHESTRATOR_CONFIG,
 } from "../../../src/cloud/cloud-execution-orchestrator";
 import type { PersistedTaskEvent, PersistedTaskExecution } from "../../../src/cloud/cloud-execution-persistence";
+import type { GovernanceClient } from "../../../src/cloud/cloud-governance-client";
 import type { CloudInstanceResponse, CloudInstanceState } from "../../../src/cloud/cloud-instance-client";
 
 // ---------------------------------------------------------------------------
@@ -905,5 +906,201 @@ describe("Orchestrator — provisioning creates instance", () => {
 		expect(client.createCalls[0]?.repoUrl).toBe("https://github.com/test/repo");
 		expect(client.createCalls[0]?.baseBranch).toBe("develop");
 		expect(client.createCalls[0]?.featureBranch).toBe("feat/cloud");
+	});
+
+	// ---------------------------------------------------------------------------
+	// Mock Governance Client
+	// ---------------------------------------------------------------------------
+
+	interface MockGovernanceClient extends GovernanceClient {
+		authorizeCalls: Array<{ taskId: string }>;
+		usageCalls: Array<{ taskId: string; terminalState: string }>;
+		auditCalls: Array<{ taskId: string; fromState: string; toState: string }>;
+	}
+
+	function createMockGovernanceClient(opts?: {
+		decision?: "authorized" | "denied";
+		reason?: string;
+	}): MockGovernanceClient {
+		const mock: MockGovernanceClient = {
+			authorizeCalls: [],
+			usageCalls: [],
+			auditCalls: [],
+			async checkAuthorization(request) {
+				mock.authorizeCalls.push({ taskId: request.taskId });
+				return {
+					decision: opts?.decision ?? "authorized",
+					reason: opts?.reason,
+				};
+			},
+			async reportUsage(request) {
+				mock.usageCalls.push({ taskId: request.taskId, terminalState: request.terminalState });
+				return { accepted: true };
+			},
+			async reportAudit(request) {
+				mock.auditCalls.push({ taskId: request.taskId, fromState: request.fromState, toState: request.toState });
+				return { accepted: true };
+			},
+		};
+		return mock;
+	}
+
+	// ---------------------------------------------------------------------------
+	// Governance — policy check: authorized flow
+	// ---------------------------------------------------------------------------
+
+	describe("Orchestrator — governance policy check", () => {
+		it("transitions policy_check -> provisioning when governance authorizes", async () => {
+			const store = createMockStore();
+			const client = createMockClient();
+			const invoker = createMockRunInvoker();
+			const governance = createMockGovernanceClient({ decision: "authorized" });
+			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG, undefined, null, governance);
+
+			await seedTaskToState(store, "task-1", "policy_check");
+			const result = await orch.processTask("task-1");
+
+			expect(result).not.toBeNull();
+			expect(result?.previousState).toBe("policy_check");
+			expect(result?.newState).toBe("provisioning");
+			expect(result?.trigger).toBe("authorized");
+			expect(governance.authorizeCalls).toHaveLength(1);
+			expect(governance.authorizeCalls[0]?.taskId).toBe("task-1");
+		});
+
+		it("transitions policy_check -> failed when governance denies", async () => {
+			const store = createMockStore();
+			const client = createMockClient();
+			const invoker = createMockRunInvoker();
+			const governance = createMockGovernanceClient({ decision: "denied", reason: "over quota" });
+			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG, undefined, null, governance);
+
+			await seedTaskToState(store, "task-1", "policy_check");
+			const result = await orch.processTask("task-1");
+
+			expect(result).not.toBeNull();
+			expect(result?.previousState).toBe("policy_check");
+			expect(result?.newState).toBe("failed");
+			expect(result?.trigger).toBe("denied");
+			expect(governance.authorizeCalls).toHaveLength(1);
+		});
+
+		it("auto-authorizes when no governance client is configured", async () => {
+			const store = createMockStore();
+			const client = createMockClient();
+			const invoker = createMockRunInvoker();
+			// No governance client — backward compatible behavior
+			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+
+			await seedTaskToState(store, "task-1", "policy_check");
+			const result = await orch.processTask("task-1");
+
+			expect(result).not.toBeNull();
+			expect(result?.previousState).toBe("policy_check");
+			expect(result?.newState).toBe("provisioning");
+			expect(result?.trigger).toBe("authorized");
+		});
+	});
+
+	// ---------------------------------------------------------------------------
+	// Governance — usage event emission
+	// ---------------------------------------------------------------------------
+
+	describe("Orchestrator — governance usage events", () => {
+		it("reports usage event when terminal state transitions to teardown", async () => {
+			const store = createMockStore();
+			const client = createMockClient();
+			const invoker = createMockRunInvoker();
+			const governance = createMockGovernanceClient();
+			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG, undefined, null, governance);
+
+			// Seed to failed state
+			await seedTaskToState(store, "task-1", "provisioning");
+			await store.appendEvent({
+				eventId: randomUUID(),
+				taskId: "task-1",
+				trigger: "provision_timeout",
+				fromState: "provisioning",
+				toState: "failed",
+				timestamp: new Date().toISOString(),
+				triggerSource: "system",
+			});
+
+			await orch.processTask("task-1"); // failed -> teardown (reports usage)
+
+			expect(governance.usageCalls).toHaveLength(1);
+			expect(governance.usageCalls[0]?.taskId).toBe("task-1");
+			expect(governance.usageCalls[0]?.terminalState).toBe("failed");
+		});
+
+		it("does not report usage when no governance client is configured", async () => {
+			const store = createMockStore();
+			const client = createMockClient();
+			const invoker = createMockRunInvoker();
+			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+
+			await seedTaskToState(store, "task-1", "provisioning");
+			await store.appendEvent({
+				eventId: randomUUID(),
+				taskId: "task-1",
+				trigger: "provision_timeout",
+				fromState: "provisioning",
+				toState: "failed",
+				timestamp: new Date().toISOString(),
+				triggerSource: "system",
+			});
+
+			// Should not throw — just no usage event
+			const result = await orch.processTask("task-1");
+			expect(result).not.toBeNull();
+			expect(result?.newState).toBe("teardown");
+		});
+	});
+
+	// ---------------------------------------------------------------------------
+	// Governance — audit event emission
+	// ---------------------------------------------------------------------------
+
+	describe("Orchestrator — governance audit events", () => {
+		it("emits audit events on lifecycle transitions", async () => {
+			const store = createMockStore();
+			const client = createMockClient();
+			const invoker = createMockRunInvoker();
+			const governance = createMockGovernanceClient();
+			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG, undefined, null, governance);
+
+			await seedTaskToState(store, "task-1", "queued");
+
+			await orch.processTask("task-1"); // queued -> policy_check
+
+			// Allow fire-and-forget audit promise to resolve
+			await new Promise((r) => setTimeout(r, 10));
+
+			expect(governance.auditCalls.length).toBeGreaterThanOrEqual(1);
+			const auditCall = governance.auditCalls.find((c) => c.fromState === "queued" && c.toState === "policy_check");
+			expect(auditCall).toBeTruthy();
+			expect(auditCall?.taskId).toBe("task-1");
+		});
+
+		it("audit failures do not block transitions", async () => {
+			const store = createMockStore();
+			const client = createMockClient();
+			const invoker = createMockRunInvoker();
+			const governance: MockGovernanceClient = {
+				...createMockGovernanceClient(),
+				async reportAudit() {
+					throw new Error("Audit service down");
+				},
+			};
+			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG, undefined, null, governance);
+
+			await seedTaskToState(store, "task-1", "queued");
+			const result = await orch.processTask("task-1");
+
+			// Transition succeeds despite audit failure
+			expect(result).not.toBeNull();
+			expect(result?.success).toBe(true);
+			expect(result?.newState).toBe("policy_check");
+		});
 	});
 });

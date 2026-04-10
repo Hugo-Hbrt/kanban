@@ -1,0 +1,354 @@
+// ---------------------------------------------------------------------------
+// Cloud Governance Client — D-track
+// @phase Phase2
+// @prd-section 6, 15.6
+// ---------------------------------------------------------------------------
+//
+// Makes real HTTP calls to core-platform governance endpoints:
+//   - POST /api/v1/execution/authorize — policy check authorization
+//   - POST /api/v1/usage/events        — usage event reporting
+//   - POST /api/v1/audit/events        — audit trail events
+// ---------------------------------------------------------------------------
+
+import { z } from "zod";
+
+// ---------------------------------------------------------------------------
+// Authorization Request / Response Schemas
+// ---------------------------------------------------------------------------
+
+export const authorizeRequestSchema = z.object({
+	taskId: z.string().min(1),
+	orgId: z.string().optional(),
+	userId: z.string().optional(),
+	executionMode: z.string().optional(),
+	metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type AuthorizeRequest = z.infer<typeof authorizeRequestSchema>;
+
+export const authorizeResponseSchema = z.object({
+	decision: z.enum(["authorized", "denied"]),
+	reason: z.string().optional(),
+	policyId: z.string().optional(),
+	expiresAt: z.string().optional(),
+});
+export type AuthorizeResponse = z.infer<typeof authorizeResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Usage Event Request / Response Schemas
+// ---------------------------------------------------------------------------
+
+export const usageEventRequestSchema = z.object({
+	taskId: z.string().min(1),
+	executionId: z.string().optional(),
+	orgId: z.string().optional(),
+	userId: z.string().optional(),
+	terminalState: z.string().min(1),
+	durationSeconds: z.number().nonnegative().optional(),
+	tokenUsage: z.number().int().nonnegative().optional(),
+	metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type UsageEventRequest = z.infer<typeof usageEventRequestSchema>;
+
+export const usageEventResponseSchema = z.object({
+	accepted: z.boolean(),
+	eventId: z.string().optional(),
+});
+export type UsageEventResponse = z.infer<typeof usageEventResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Audit Event Request / Response Schemas
+// ---------------------------------------------------------------------------
+
+export const auditEventRequestSchema = z.object({
+	taskId: z.string().min(1),
+	eventType: z.string().min(1),
+	fromState: z.string().min(1),
+	toState: z.string().min(1),
+	trigger: z.string().min(1),
+	triggerSource: z.string().min(1),
+	timestamp: z.string().min(1),
+	orgId: z.string().optional(),
+	userId: z.string().optional(),
+	metadata: z.record(z.string(), z.unknown()).optional(),
+});
+export type AuditEventRequest = z.infer<typeof auditEventRequestSchema>;
+
+export const auditEventResponseSchema = z.object({
+	accepted: z.boolean(),
+	eventId: z.string().optional(),
+});
+export type AuditEventResponse = z.infer<typeof auditEventResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Error Types
+// ---------------------------------------------------------------------------
+
+export class GovernanceClientError extends Error {
+	readonly statusCode: number;
+	readonly retryable: boolean;
+	readonly errorCode: string | undefined;
+
+	constructor(opts: { message: string; statusCode: number; retryable: boolean; errorCode?: string }) {
+		super(opts.message);
+		this.name = "GovernanceClientError";
+		this.statusCode = opts.statusCode;
+		this.retryable = opts.retryable;
+		this.errorCode = opts.errorCode;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Retry Configuration
+// ---------------------------------------------------------------------------
+
+export interface GovernanceRetryConfig {
+	readonly maxRetries: number;
+	readonly baseDelayMs: number;
+	readonly maxDelayMs: number;
+	readonly timeoutMs: number;
+}
+
+export const DEFAULT_GOVERNANCE_RETRY_CONFIGS = {
+	authorize: { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5_000, timeoutMs: 10_000 },
+	usage: { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5_000, timeoutMs: 10_000 },
+	audit: { maxRetries: 1, baseDelayMs: 300, maxDelayMs: 3_000, timeoutMs: 5_000 },
+} as const satisfies Record<string, GovernanceRetryConfig>;
+
+// ---------------------------------------------------------------------------
+// Client Configuration
+// ---------------------------------------------------------------------------
+
+export interface GovernanceClientConfig {
+	readonly baseUrl: string;
+	readonly authToken: string;
+	/** When true, unreachable governance returns 'authorized'. @default true */
+	readonly failOpen: boolean;
+	readonly retryConfigs?: Partial<
+		Record<keyof typeof DEFAULT_GOVERNANCE_RETRY_CONFIGS, Partial<GovernanceRetryConfig>>
+	>;
+	readonly fetch?: typeof globalThis.fetch;
+	readonly delay?: (ms: number) => Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// Logger
+// ---------------------------------------------------------------------------
+
+export interface GovernanceLogger {
+	info(message: string, meta?: Record<string, unknown>): void;
+	warn(message: string, meta?: Record<string, unknown>): void;
+	error(message: string, meta?: Record<string, unknown>): void;
+}
+
+const noopLogger: GovernanceLogger = { info: () => {}, warn: () => {}, error: () => {} };
+
+// ---------------------------------------------------------------------------
+// GovernanceClient Interface
+// ---------------------------------------------------------------------------
+
+export interface GovernanceClient {
+	checkAuthorization(request: AuthorizeRequest, signal?: AbortSignal): Promise<AuthorizeResponse>;
+	reportUsage(request: UsageEventRequest, signal?: AbortSignal): Promise<UsageEventResponse>;
+	reportAudit(request: AuditEventRequest, signal?: AbortSignal): Promise<AuditEventResponse>;
+}
+
+// ---------------------------------------------------------------------------
+// Retry-safe status code classification
+// ---------------------------------------------------------------------------
+
+export function isGovernanceRetryableStatus(statusCode: number): boolean {
+	if (statusCode === 408 || statusCode === 429) return true;
+	if (statusCode >= 400 && statusCode < 500) return false;
+	if (statusCode >= 500) return true;
+	return false;
+}
+
+// ---------------------------------------------------------------------------
+// HTTP Client Implementation
+// ---------------------------------------------------------------------------
+
+export class GovernanceHttpClient implements GovernanceClient {
+	private readonly baseUrl: string;
+	private readonly authToken: string;
+	private readonly failOpen: boolean;
+	private readonly retryConfigs: Record<keyof typeof DEFAULT_GOVERNANCE_RETRY_CONFIGS, GovernanceRetryConfig>;
+	private readonly fetchFn: typeof globalThis.fetch;
+	private readonly delayFn: (ms: number) => Promise<void>;
+	private readonly logger: GovernanceLogger;
+
+	constructor(config: GovernanceClientConfig, logger: GovernanceLogger = noopLogger) {
+		this.baseUrl = config.baseUrl.replace(/\/+$/, "");
+		this.authToken = config.authToken;
+		this.failOpen = config.failOpen;
+		this.fetchFn = config.fetch ?? globalThis.fetch;
+		this.delayFn = config.delay ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+		this.logger = logger;
+		this.retryConfigs = {
+			authorize: { ...DEFAULT_GOVERNANCE_RETRY_CONFIGS.authorize, ...config.retryConfigs?.authorize },
+			usage: { ...DEFAULT_GOVERNANCE_RETRY_CONFIGS.usage, ...config.retryConfigs?.usage },
+			audit: { ...DEFAULT_GOVERNANCE_RETRY_CONFIGS.audit, ...config.retryConfigs?.audit },
+		};
+	}
+
+	async checkAuthorization(request: AuthorizeRequest, signal?: AbortSignal): Promise<AuthorizeResponse> {
+		const validated = authorizeRequestSchema.parse(request);
+		try {
+			const response = await this.executeWithRetry(
+				async (sig) =>
+					this.fetchFn(`${this.baseUrl}/api/v1/execution/authorize`, {
+						method: "POST",
+						headers: this.buildHeaders(),
+						body: JSON.stringify(validated),
+						signal: sig,
+					}),
+				this.retryConfigs.authorize,
+				signal,
+			);
+			const body = await response.json();
+			return authorizeResponseSchema.parse(body);
+		} catch (e) {
+			this.logger.error("Governance authorization check failed", {
+				taskId: request.taskId,
+				error: e instanceof Error ? e.message : String(e),
+				failOpen: this.failOpen,
+			});
+			if (this.failOpen) {
+				this.logger.warn("Fail-open: returning authorized despite governance error", {
+					taskId: request.taskId,
+				});
+				return { decision: "authorized", reason: "fail-open: governance unreachable" };
+			}
+			return {
+				decision: "denied",
+				reason: `Governance unreachable: ${e instanceof Error ? e.message : String(e)}`,
+			};
+		}
+	}
+
+	async reportUsage(request: UsageEventRequest, signal?: AbortSignal): Promise<UsageEventResponse> {
+		const validated = usageEventRequestSchema.parse(request);
+		try {
+			const response = await this.executeWithRetry(
+				async (sig) =>
+					this.fetchFn(`${this.baseUrl}/api/v1/usage/events`, {
+						method: "POST",
+						headers: this.buildHeaders(),
+						body: JSON.stringify(validated),
+						signal: sig,
+					}),
+				this.retryConfigs.usage,
+				signal,
+			);
+			const body = await response.json();
+			return usageEventResponseSchema.parse(body);
+		} catch (e) {
+			this.logger.error("Governance usage event report failed", {
+				taskId: request.taskId,
+				error: e instanceof Error ? e.message : String(e),
+			});
+			return { accepted: false };
+		}
+	}
+
+	async reportAudit(request: AuditEventRequest, signal?: AbortSignal): Promise<AuditEventResponse> {
+		const validated = auditEventRequestSchema.parse(request);
+		try {
+			const response = await this.executeWithRetry(
+				async (sig) =>
+					this.fetchFn(`${this.baseUrl}/api/v1/audit/events`, {
+						method: "POST",
+						headers: this.buildHeaders(),
+						body: JSON.stringify(validated),
+						signal: sig,
+					}),
+				this.retryConfigs.audit,
+				signal,
+			);
+			const body = await response.json();
+			return auditEventResponseSchema.parse(body);
+		} catch (e) {
+			this.logger.error("Governance audit event report failed", {
+				taskId: request.taskId,
+				error: e instanceof Error ? e.message : String(e),
+			});
+			return { accepted: false };
+		}
+	}
+
+	private buildHeaders(): Record<string, string> {
+		return {
+			"Content-Type": "application/json",
+			Authorization: `Bearer ${this.authToken}`,
+		};
+	}
+
+	private async executeWithRetry(
+		operation: (signal: AbortSignal) => Promise<Response>,
+		config: GovernanceRetryConfig,
+		externalSignal?: AbortSignal,
+	): Promise<Response> {
+		let lastError: unknown;
+		for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
+			if (externalSignal?.aborted) throw new Error("Request aborted");
+			if (attempt > 0) {
+				const delay = Math.min(config.baseDelayMs * 2 ** (attempt - 1), config.maxDelayMs);
+				await this.delayFn(delay);
+			}
+			try {
+				const controller = new AbortController();
+				const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
+				const onAbort = () => controller.abort();
+				externalSignal?.addEventListener("abort", onAbort, { once: true });
+				let response: Response;
+				try {
+					response = await operation(controller.signal);
+				} finally {
+					clearTimeout(timeoutId);
+					externalSignal?.removeEventListener("abort", onAbort);
+				}
+				if (response.ok) return response;
+				const retryable = isGovernanceRetryableStatus(response.status);
+				if (!retryable) {
+					throw new GovernanceClientError({
+						message: `Governance API error: HTTP ${response.status}`,
+						statusCode: response.status,
+						retryable: false,
+					});
+				}
+				lastError = new GovernanceClientError({
+					message: `Governance API error: HTTP ${response.status}`,
+					statusCode: response.status,
+					retryable: true,
+				});
+			} catch (err) {
+				if (err instanceof GovernanceClientError && !err.retryable) throw err;
+				lastError = err;
+			}
+		}
+		throw lastError;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Configuration from Environment
+// ---------------------------------------------------------------------------
+
+export const GOVERNANCE_BASE_URL_ENV = "KANBAN_GOVERNANCE_BASE_URL";
+export const GOVERNANCE_AUTH_TOKEN_ENV = "KANBAN_GOVERNANCE_AUTH_TOKEN";
+export const GOVERNANCE_FAIL_OPEN_ENV = "KANBAN_GOVERNANCE_FAIL_OPEN";
+
+/**
+ * Parse governance client configuration from environment variables.
+ * Returns `null` if the required base URL is not configured.
+ */
+export function parseGovernanceConfig(
+	env: Record<string, string | undefined>,
+	overrides?: Partial<GovernanceClientConfig>,
+): GovernanceClientConfig | null {
+	const baseUrl = overrides?.baseUrl ?? env[GOVERNANCE_BASE_URL_ENV];
+	if (!baseUrl) return null;
+	const authToken = overrides?.authToken ?? env[GOVERNANCE_AUTH_TOKEN_ENV] ?? "";
+	const failOpenEnv = env[GOVERNANCE_FAIL_OPEN_ENV];
+	const failOpen = overrides?.failOpen ?? (failOpenEnv !== undefined ? failOpenEnv !== "false" : true);
+	return { baseUrl, authToken, failOpen, ...overrides };
+}
