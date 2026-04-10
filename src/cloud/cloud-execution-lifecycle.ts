@@ -1,7 +1,9 @@
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
-// Cloud Execution Lifecycle States
+// Cloud Execution Lifecycle States — A1
+// @phase MVP
+// @prd-section 3, 15.5
 // ---------------------------------------------------------------------------
 
 /**

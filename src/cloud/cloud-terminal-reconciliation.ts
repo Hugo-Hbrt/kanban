@@ -1,3 +1,9 @@
+// ---------------------------------------------------------------------------
+// Cloud Terminal Reconciliation — B4
+// @phase MVP
+// @prd-section 6, 15.8
+// ---------------------------------------------------------------------------
+
 import { randomUUID } from "node:crypto";
 
 import type { CallbackIngestionResult, CallbackPayload } from "./cloud-callback-ingestion";

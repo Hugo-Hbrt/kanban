@@ -1,3 +1,9 @@
+// ---------------------------------------------------------------------------
+// Cloud Callback Handler — B1
+// @phase MVP
+// @prd-section 5, 15.8
+// ---------------------------------------------------------------------------
+
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {

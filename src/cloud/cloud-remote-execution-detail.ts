@@ -1,5 +1,7 @@
 // ---------------------------------------------------------------------------
-// Cloud Remote Execution Detail — Task-level metadata aggregation (E2)
+// Cloud Remote Execution Detail — Task-level metadata aggregation — P3-1
+// @phase Phase3
+// @prd-section 7, 12, 15.7, 16
 // ---------------------------------------------------------------------------
 //
 // Assembles remote execution metadata from task_executions and task_events

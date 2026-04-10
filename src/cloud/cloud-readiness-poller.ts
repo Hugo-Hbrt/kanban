@@ -1,3 +1,9 @@
+// ---------------------------------------------------------------------------
+// Cloud Readiness Poller — B2
+// @phase MVP
+// @prd-section 6, 15.6
+// ---------------------------------------------------------------------------
+
 import type { CloudInstanceClient, CloudInstanceState } from "./cloud-instance-client";
 import type { CloudStateMapping } from "./cloud-instance-state-mapping";
 import { isInstanceFailed, isInstanceReady, mapCloudInstanceState } from "./cloud-instance-state-mapping";

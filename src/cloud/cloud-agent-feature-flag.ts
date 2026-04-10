@@ -1,5 +1,7 @@
 // ---------------------------------------------------------------------------
-// Cloud Agent Feature Flag + Internal Allowlist
+// Cloud Agent Feature Flag + Internal Allowlist — B3
+// @phase MVP
+// @prd-section 0, 15.9
 // ---------------------------------------------------------------------------
 //
 // Gates cloud-agent task execution behind:

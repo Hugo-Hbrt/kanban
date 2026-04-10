@@ -1,7 +1,9 @@
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
-// Cloud-platform Instance API Types
+// Cloud-platform Instance API Types — A4
+// @phase MVP
+// @prd-section 4, 15.6
 // ---------------------------------------------------------------------------
 
 /**

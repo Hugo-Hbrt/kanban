@@ -1,3 +1,9 @@
+// ---------------------------------------------------------------------------
+// Cloud Execution Retry/Replay — P2-2
+// @phase Phase2
+// @prd-section 10, 15.7
+// ---------------------------------------------------------------------------
+
 import { randomUUID } from "node:crypto";
 
 import { z } from "zod";

@@ -1,3 +1,9 @@
+// ---------------------------------------------------------------------------
+// Cloud Stuck-Task Reconciler — P2-3
+// @phase Phase2
+// @prd-section 8, 10
+// ---------------------------------------------------------------------------
+
 import { randomUUID } from "node:crypto";
 
 import type { CloudExecutionState, CloudExecutionTrigger } from "./cloud-execution-lifecycle";

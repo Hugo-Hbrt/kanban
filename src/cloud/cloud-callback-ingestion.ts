@@ -1,3 +1,9 @@
+// ---------------------------------------------------------------------------
+// Cloud Callback Ingestion — B2
+// @phase MVP
+// @prd-section 5, 15.8
+// ---------------------------------------------------------------------------
+
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 import { z } from "zod";

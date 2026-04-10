@@ -1,5 +1,7 @@
 // ---------------------------------------------------------------------------
-// Cloud Debug-Preserve Visibility — E4
+// Cloud Debug-Preserve Visibility — P3-1
+// @phase Phase3
+// @prd-section 15.11, 16
 // ---------------------------------------------------------------------------
 //
 // Surfaces debug-preserve state so operators can see when a failed task's

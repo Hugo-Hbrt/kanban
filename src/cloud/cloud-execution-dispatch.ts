@@ -1,5 +1,7 @@
 // ---------------------------------------------------------------------------
-// Cloud Execution Dispatch — Route tasks to local or cloud execution
+// Cloud Execution Dispatch — Route tasks to local or cloud execution — B6
+// @phase MVP
+// @prd-section 12, 15.9, 16
 // ---------------------------------------------------------------------------
 //
 // Determines the effective execution path for a task based on:

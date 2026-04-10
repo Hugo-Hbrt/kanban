@@ -1,3 +1,9 @@
+// ---------------------------------------------------------------------------
+// Cloud Execution Persistence — A2
+// @phase MVP
+// @prd-section 7, 15.7
+// ---------------------------------------------------------------------------
+
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";

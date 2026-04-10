@@ -1,3 +1,9 @@
+// ---------------------------------------------------------------------------
+// Cloud Execution Cancel — P2-1
+// @phase Phase2
+// @prd-section 6.2, 10
+// ---------------------------------------------------------------------------
+
 import { randomUUID } from "node:crypto";
 
 import type { CloudExecutionState } from "./cloud-execution-lifecycle";

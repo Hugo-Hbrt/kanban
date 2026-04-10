@@ -1,5 +1,7 @@
 // ---------------------------------------------------------------------------
-// Cloud Concurrency Limiter — Per-org admission control for cloud execution
+// Cloud Concurrency Limiter — Per-org admission control — P2-4
+// @phase Phase2
+// @prd-section 8, 10, 12
 // ---------------------------------------------------------------------------
 //
 // Enforces bounded concurrency per organization at the Kanban dispatch layer.

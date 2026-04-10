@@ -1,5 +1,7 @@
 // ---------------------------------------------------------------------------
-// Cloud Execution Timeline — Rich execution history and timeline (P2-5)
+// Cloud Execution Timeline — Rich execution history and timeline — P2-5
+// @phase Phase2
+// @prd-section 7, 10, 15.7, 20.1
 // ---------------------------------------------------------------------------
 //
 // Provides queryable execution timeline, attempt comparison, and execution

@@ -1,5 +1,7 @@
 // ---------------------------------------------------------------------------
 // Cloud Execution Rerun-from-Snapshot — P3-2
+// @phase Phase3
+// @prd-section 10, 15.13, 15.14
 // ---------------------------------------------------------------------------
 //
 // Implements rerun-from-snapshot: re-execution using a specific combination

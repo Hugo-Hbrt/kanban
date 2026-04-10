@@ -1,3 +1,9 @@
+// ---------------------------------------------------------------------------
+// Cloud Execution Orchestrator — A3
+// @phase MVP
+// @prd-section 6, 15.6
+// ---------------------------------------------------------------------------
+
 import { randomUUID } from "node:crypto";
 
 import type { OrgConcurrencyLimiter } from "./cloud-concurrency-limiter";

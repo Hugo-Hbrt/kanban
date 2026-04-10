@@ -1,9 +1,11 @@
+// ---------------------------------------------------------------------------
+// Cloud Instance State → Kanban Lifecycle Mapping — B5
+// @phase MVP
+// @prd-section 4, 15.5
+// ---------------------------------------------------------------------------
+
 import type { CloudExecutionState, CloudExecutionTrigger } from "./cloud-execution-lifecycle";
 import { type CloudInstanceState, cloudInstanceStateSchema } from "./cloud-instance-client";
-
-// ---------------------------------------------------------------------------
-// Cloud Instance State → Kanban Lifecycle Mapping
-// ---------------------------------------------------------------------------
 
 /**
  * The Kanban lifecycle phase that a cloud instance state maps to.
