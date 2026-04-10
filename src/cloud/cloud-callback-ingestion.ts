@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 import { z } from "zod";
 
@@ -151,8 +151,10 @@ export function verifyCallbackSignature(
 	if (!signature) {
 		return { valid: false, reason: "Missing X-Cline-Signature header." };
 	}
-	const expectedSignature = createHash("sha256").update(`${secret}:${body}`).digest("hex");
-	const sigBuffer = Buffer.from(signature, "utf8");
+	// Strip optional 'sha256=' prefix (PRD Section 5.3 format) for forward compatibility.
+	const rawSignature = signature.startsWith("sha256=") ? signature.slice(7) : signature;
+	const expectedSignature = createHmac("sha256", secret).update(body).digest("hex");
+	const sigBuffer = Buffer.from(rawSignature, "utf8");
 	const expectedBuffer = Buffer.from(expectedSignature, "utf8");
 	if (sigBuffer.length !== expectedBuffer.length || !timingSafeEqual(sigBuffer, expectedBuffer)) {
 		return { valid: false, reason: "Invalid callback signature." };

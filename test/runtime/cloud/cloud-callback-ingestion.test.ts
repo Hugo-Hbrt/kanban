@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
@@ -207,12 +207,33 @@ describe("verifyCallbackSignature", () => {
 		expect(result.valid).toBe(true);
 	});
 
-	it("accepts valid signature when secret is configured", () => {
+	it("accepts valid HMAC-SHA256 signature when secret is configured", () => {
 		const body = '{"test": true}';
 		const secret = "my-signing-secret";
-		const expectedSig = createHash("sha256").update(`${secret}:${body}`).digest("hex");
+		const expectedSig = createHmac("sha256", secret).update(body).digest("hex");
 		const result = verifyCallbackSignature(body, expectedSig, secret);
 		expect(result.valid).toBe(true);
+	});
+
+	it("accepts valid signature with 'sha256=' prefix (PRD Section 5.3 format)", () => {
+		const body = '{"test": true}';
+		const secret = "my-signing-secret";
+		const hmacHex = createHmac("sha256", secret).update(body).digest("hex");
+		const prefixedSig = `sha256=${hmacHex}`;
+		const result = verifyCallbackSignature(body, prefixedSig, secret);
+		expect(result.valid).toBe(true);
+	});
+
+	it("rejects the old concatenation-based hash format", () => {
+		const body = '{"test": true}';
+		const secret = "my-signing-secret";
+		// Old incorrect format: SHA-256 hash of "secret:body"
+		const oldFormatSig = createHash("sha256").update(`${secret}:${body}`).digest("hex");
+		const result = verifyCallbackSignature(body, oldFormatSig, secret);
+		expect(result.valid).toBe(false);
+		if (result.valid === false) {
+			expect(result.reason).toContain("Invalid callback signature");
+		}
 	});
 
 	it("rejects missing signature when secret is configured", () => {
@@ -674,11 +695,21 @@ describe("ingestTerminalCallback — signature verification", () => {
 		}
 	});
 
-	it("accepts callback with correct signature", async () => {
+	it("accepts callback with correct HMAC-SHA256 signature", async () => {
 		const secret = "test-secret";
 		const payload = createBasePayload();
 		const body = toRawBody(payload);
-		const validSig = createHash("sha256").update(`${secret}:${body}`).digest("hex");
+		const validSig = createHmac("sha256", secret).update(body).digest("hex");
+		const ctx = createFakeContext({ taskStates: { "task-1": "running" }, signingSecret: secret });
+		const result = await ingestTerminalCallback(body, createBaseHeaders({ signature: validSig }), {}, ctx);
+		expect(result.accepted).toBe(true);
+	});
+
+	it("accepts callback with 'sha256=' prefixed signature", async () => {
+		const secret = "test-secret";
+		const payload = createBasePayload();
+		const body = toRawBody(payload);
+		const validSig = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
 		const ctx = createFakeContext({ taskStates: { "task-1": "running" }, signingSecret: secret });
 		const result = await ingestTerminalCallback(body, createBaseHeaders({ signature: validSig }), {}, ctx);
 		expect(result.accepted).toBe(true);
