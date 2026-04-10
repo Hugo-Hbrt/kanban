@@ -541,59 +541,48 @@ describe("Orchestrator — error paths", () => {
 // Cancellation
 // ---------------------------------------------------------------------------
 
-describe("Orchestrator — cancellation", () => {
-	it("cancels a queued task to failed via dequeue + denied", async () => {
+describe("Orchestrator — cancellation (P2-1: explicit cancel flow)", () => {
+	it("cancels a queued task to canceled via user_cancel", async () => {
 		const store = createMockStore();
 		const client = createMockClient();
 		const invoker = createMockRunInvoker();
 		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
 		await seedTaskToState(store, "task-1", "queued");
-
 		orch.requestCancellation("task-1");
 		const results = await orch.processTick();
-
-		// Cancellation produces failed, then teardown handling advances to teardown
-		const cancelResult = results.find((r) => r.taskId === "task-1" && r.newState === "failed");
+		const cancelResult = results.find((r) => r.taskId === "task-1" && r.newState === "canceled");
 		expect(cancelResult).toBeTruthy();
-
-		// The task advances through failed → teardown in the same tick
+		expect(cancelResult?.trigger).toBe("user_cancel");
 		const finalState = await store.deriveTaskState("task-1");
-		expect(["failed", "teardown"]).toContain(finalState);
+		expect(["canceled", "teardown"]).toContain(finalState);
 	});
 
-	it("cancels a policy_check task to failed via denied", async () => {
+	it("cancels a policy_check task to canceled via user_cancel", async () => {
 		const store = createMockStore();
 		const client = createMockClient();
 		const invoker = createMockRunInvoker();
 		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
 		await seedTaskToState(store, "task-1", "policy_check");
-
 		orch.requestCancellation("task-1");
 		const results = await orch.processTick();
-
 		const cancelResult = results.find((r) => r.taskId === "task-1");
 		expect(cancelResult).toBeTruthy();
-		expect(cancelResult?.newState).toBe("failed");
-		expect(cancelResult?.trigger).toBe("denied");
+		expect(cancelResult?.newState).toBe("canceled");
+		expect(cancelResult?.trigger).toBe("user_cancel");
 	});
 
-	it("cancels a provisioning task to failed", async () => {
+	it("cancels a provisioning task to canceled via user_cancel", async () => {
 		const store = createMockStore();
 		const client = createMockClient();
 		const invoker = createMockRunInvoker();
 		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
 		await seedTaskToState(store, "task-1", "provisioning");
-
 		orch.requestCancellation("task-1");
 		const results = await orch.processTick();
-
 		const cancelResult = results.find((r) => r.taskId === "task-1");
 		expect(cancelResult).toBeTruthy();
-		expect(cancelResult?.newState).toBe("failed");
-		expect(cancelResult?.trigger).toBe("provision_timeout");
+		expect(cancelResult?.newState).toBe("canceled");
+		expect(cancelResult?.trigger).toBe("user_cancel");
 	});
 
 	it("cancels a running task to canceled via user_cancel", async () => {
@@ -601,12 +590,9 @@ describe("Orchestrator — cancellation", () => {
 		const client = createMockClient();
 		const invoker = createMockRunInvoker();
 		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
 		await seedTaskToState(store, "task-1", "running");
-
 		orch.requestCancellation("task-1");
 		const results = await orch.processTick();
-
 		const cancelResult = results.find((r) => r.taskId === "task-1");
 		expect(cancelResult).toBeTruthy();
 		expect(cancelResult?.newState).toBe("canceled");

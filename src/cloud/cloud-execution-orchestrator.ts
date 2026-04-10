@@ -419,7 +419,7 @@ export class CloudExecutionOrchestrator {
 	private cancelProvision(taskId: string): Promise<TaskStepResult> {
 		this.cleanupCtx(taskId);
 		this.pendingCancellations.delete(taskId);
-		return this.applyTransition(taskId, "provisioning", "provision_timeout", "user", {
+		return this.applyTransition(taskId, "provisioning", "user_cancel", "user", {
 			cancelledDuringProvisioning: true,
 		});
 	}
@@ -629,25 +629,43 @@ export class CloudExecutionOrchestrator {
 
 	// -- cancellation --------------------------------------------------------
 
+	/**
+	 * Apply cancellation from any pre-terminal state via `user_cancel`.
+	 *
+	 * P2-1: Cancel always transitions to `canceled` state, regardless of
+	 * which pre-terminal state the task is in. This provides deterministic
+	 * cancel behavior per PRD Section 6.2.
+	 *
+	 * If an instance exists, triggers DELETE /instances/{id} immediately.
+	 */
 	private async applyCancellation(taskId: string, state: CloudExecutionState): Promise<TaskStepResult | null> {
 		this.cleanupCtx(taskId);
-		switch (state) {
-			case "queued": {
-				await this.applyTransition(taskId, "queued", "dequeue", "system");
-				return this.applyTransition(taskId, "policy_check", "denied", "user", { cancelledByUser: true });
-			}
-			case "policy_check":
-				return this.applyTransition(taskId, "policy_check", "denied", "user", { cancelledByUser: true });
-			case "provisioning":
-				return this.applyTransition(taskId, "provisioning", "provision_timeout", "user", { cancelledByUser: true });
-			case "running":
-				return this.applyTransition(taskId, "running", "user_cancel", "user");
-			case "completing":
-				this.logger.warn("Cannot cancel completing", { taskId });
-				return null;
-			default:
-				return null;
+
+		// Validate that user_cancel is valid from the current state
+		const validation = validateCloudExecutionTransition(state, "user_cancel");
+		if (!validation.valid) {
+			this.logger.warn("Cannot cancel from current state", { taskId, state, reason: validation.reason });
+			return null;
 		}
+
+		// Delete instance if one exists (fire-and-forget best-effort)
+		const execs = await this.store.readExecutionsForTask(taskId);
+		const latest = execs[execs.length - 1];
+		const instanceId = latest?.instanceId ?? latest?.remoteMetadata?.instanceId;
+		if (instanceId) {
+			try {
+				await this.client.deleteInstance(instanceId);
+				this.logger.info("Instance deleted on cancel", { taskId, instanceId });
+			} catch (e) {
+				this.logger.warn("Instance deletion failed on cancel (best-effort)", {
+					taskId,
+					instanceId,
+					error: e instanceof Error ? e.message : String(e),
+				});
+			}
+		}
+
+		return this.applyTransition(taskId, state, "user_cancel", "user", { cancelledByUser: true });
 	}
 
 	// -- transition application (single point of truth) ----------------------

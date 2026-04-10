@@ -11,6 +11,7 @@ import {
 	getValidTriggers,
 	isActiveSandboxState,
 	isFinalState,
+	isPreTerminalState,
 	isTerminalState,
 	validateCloudExecutionTransition,
 } from "../../../src/cloud/cloud-execution-lifecycle";
@@ -60,8 +61,8 @@ describe("cloudExecutionTriggerSchema", () => {
 // ---------------------------------------------------------------------------
 
 describe("CLOUD_EXECUTION_TRANSITIONS", () => {
-	it("defines exactly 15 valid edges", () => {
-		expect(CLOUD_EXECUTION_TRANSITIONS).toHaveLength(15);
+	it("defines exactly 19 valid edges", () => {
+		expect(CLOUD_EXECUTION_TRANSITIONS).toHaveLength(19);
 	});
 
 	it("contains no duplicate (from, trigger) pairs", () => {
@@ -88,15 +89,19 @@ describe("validateCloudExecutionTransition — valid transitions", () => {
 	const validCases: Array<[CloudExecutionState, CloudExecutionTrigger, CloudExecutionState]> = [
 		["draft", "submit", "queued"],
 		["queued", "dequeue", "policy_check"],
+		["queued", "user_cancel", "canceled"],
 		["policy_check", "authorized", "provisioning"],
 		["policy_check", "denied", "failed"],
+		["policy_check", "user_cancel", "canceled"],
 		["provisioning", "sandbox_ready", "running"],
 		["provisioning", "provision_timeout", "failed"],
+		["provisioning", "user_cancel", "canceled"],
 		["running", "execution_done", "completing"],
 		["running", "execution_error", "failed"],
 		["running", "user_cancel", "canceled"],
 		["completing", "finalize_success", "completed"],
 		["completing", "finalize_error", "failed"],
+		["completing", "user_cancel", "canceled"],
 		["completed", "auto_teardown", "teardown"],
 		["failed", "auto_teardown", "teardown"],
 		["canceled", "auto_teardown", "teardown"],
@@ -150,10 +155,9 @@ describe("validateCloudExecutionTransition — invalid transitions", () => {
 		["running", "auto_teardown"],
 		["running", "finalize_success"],
 
-		// completing only accepts "finalize_success" or "finalize_error"
+		// completing accepts "finalize_success", "finalize_error", or "user_cancel"
 		["completing", "execution_done"],
 		["completing", "auto_teardown"],
-		["completing", "user_cancel"],
 
 		// terminal states only accept "auto_teardown"
 		["completed", "submit"],
@@ -281,16 +285,24 @@ describe("getValidTriggers", () => {
 		expect(getValidTriggers("draft")).toEqual(["submit"]);
 	});
 
-	it("returns [dequeue] for queued", () => {
-		expect(getValidTriggers("queued")).toEqual(["dequeue"]);
+	it("returns [dequeue, user_cancel] for queued", () => {
+		expect(getValidTriggers("queued")).toEqual(["dequeue", "user_cancel"]);
 	});
 
-	it("returns [authorized, denied] for policy_check", () => {
-		expect(getValidTriggers("policy_check")).toEqual(["authorized", "denied"]);
+	it("returns [authorized, denied, user_cancel] for policy_check", () => {
+		expect(getValidTriggers("policy_check")).toEqual(["authorized", "denied", "user_cancel"]);
 	});
 
 	it("returns three triggers for running", () => {
 		expect(getValidTriggers("running")).toEqual(["execution_done", "execution_error", "user_cancel"]);
+	});
+
+	it("returns [sandbox_ready, provision_timeout, user_cancel] for provisioning", () => {
+		expect(getValidTriggers("provisioning")).toEqual(["provision_timeout", "sandbox_ready", "user_cancel"]);
+	});
+
+	it("returns [finalize_error, finalize_success, user_cancel] for completing", () => {
+		expect(getValidTriggers("completing")).toEqual(["finalize_error", "finalize_success", "user_cancel"]);
 	});
 
 	it("returns [auto_teardown] for each terminal state", () => {
@@ -489,7 +501,70 @@ describe("exhaustive invalid transition coverage", () => {
 			}
 		}
 		// 11 states * 13 triggers = 143 total combinations
-		// 15 valid edges -> 128 invalid combinations
-		expect(testedCount).toBe(143 - 15);
+		// 19 valid edges -> 124 invalid combinations
+		expect(testedCount).toBe(143 - 19);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// isPreTerminalState
+// ---------------------------------------------------------------------------
+
+describe("isPreTerminalState", () => {
+	it("returns true for queued, policy_check, provisioning, running, completing", () => {
+		const preTerminal: CloudExecutionState[] = ["queued", "policy_check", "provisioning", "running", "completing"];
+		for (const state of preTerminal) {
+			expect(isPreTerminalState(state)).toBe(true);
+		}
+	});
+
+	it("returns false for non-pre-terminal states", () => {
+		const nonPreTerminal: CloudExecutionState[] = [
+			"draft",
+			"completed",
+			"failed",
+			"canceled",
+			"teardown",
+			"archived",
+		];
+		for (const state of nonPreTerminal) {
+			expect(isPreTerminalState(state)).toBe(false);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Cancel from every pre-terminal state (P2-1)
+// ---------------------------------------------------------------------------
+
+describe("user_cancel from every pre-terminal state", () => {
+	const cancelableStates: CloudExecutionState[] = ["queued", "policy_check", "provisioning", "running", "completing"];
+
+	for (const state of cancelableStates) {
+		it(`${state} + user_cancel -> canceled`, () => {
+			const result = validateCloudExecutionTransition(state, "user_cancel");
+			expect(result.valid).toBe(true);
+			if (result.valid) {
+				expect(result.to).toBe("canceled");
+			}
+		});
+	}
+
+	it("canceled -> teardown -> archived after cancel", () => {
+		const t1 = validateCloudExecutionTransition("canceled", "auto_teardown");
+		expect(t1.valid).toBe(true);
+		if (t1.valid) expect(t1.to).toBe("teardown");
+
+		const t2 = validateCloudExecutionTransition("teardown", "sandbox_terminated");
+		expect(t2.valid).toBe(true);
+		if (t2.valid) expect(t2.to).toBe("archived");
+	});
+
+	it("user_cancel is not valid from terminal or post-terminal states", () => {
+		const nonCancelable: CloudExecutionState[] = ["completed", "failed", "canceled", "teardown", "archived"];
+		for (const state of nonCancelable) {
+			const result = validateCloudExecutionTransition(state, "user_cancel");
+			expect(result.valid).toBe(false);
+		}
 	});
 });
