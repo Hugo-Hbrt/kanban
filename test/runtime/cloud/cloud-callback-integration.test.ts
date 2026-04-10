@@ -1,8 +1,13 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
+import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from "node:http";
+import { Readable } from "node:stream";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { CLOUD_CALLBACK_PATH, handleCloudCallback } from "../../../src/cloud/cloud-callback-handler";
 import {
+	buildCanonicalSigningInput,
 	type CallbackHeaders,
 	type CallbackIngestionContext,
 	type CallbackPayload,
@@ -269,6 +274,8 @@ describe("cloud callback integration — real persistence round-trip", () => {
 		const dedupeStore = new InMemoryCallbackDedupeStore();
 		const ctx = createIngestionContext(store, dedupeStore, { signingSecret: secret });
 		const body = JSON.stringify(createBasePayload({ instanceId: "inst-sig", status: "success", task_id: taskId }));
+		const ts = new Date().toISOString();
+		const evtId = "evt-sig-test";
 
 		// No signature → 401
 		const r1 = await ingestTerminalCallback(body, createBaseHeaders(), {}, ctx);
@@ -276,13 +283,24 @@ describe("cloud callback integration — real persistence round-trip", () => {
 		if (!r1.accepted) expect(r1.httpStatus).toBe(401);
 
 		// Wrong signature → 401
-		const r2 = await ingestTerminalCallback(body, createBaseHeaders({ signature: "wrong" }), {}, ctx);
+		const r2 = await ingestTerminalCallback(
+			body,
+			createBaseHeaders({ signature: "wrong", timestamp: ts, eventId: evtId }),
+			{},
+			ctx,
+		);
 		expect(r2.accepted).toBe(false);
 		if (!r2.accepted) expect(r2.httpStatus).toBe(401);
 
-		// Correct signature → accepted
-		const sig = createHash("sha256").update(`${secret}:${body}`).digest("hex");
-		const r3 = await ingestTerminalCallback(body, createBaseHeaders({ signature: sig }), {}, ctx);
+		// Correct canonical HMAC-SHA256 signature → accepted
+		const canonicalInput = buildCanonicalSigningInput(ts, evtId, body);
+		const sig = createHmac("sha256", secret).update(canonicalInput).digest("hex");
+		const r3 = await ingestTerminalCallback(
+			body,
+			createBaseHeaders({ signature: sig, timestamp: ts, eventId: evtId }),
+			{},
+			ctx,
+		);
 		expect(r3.accepted).toBe(true);
 	});
 
@@ -377,5 +395,180 @@ describe("cloud callback integration — real persistence round-trip", () => {
 			expect(result.httpStatus).toBe(404);
 			expect(result.reason).toContain("Unknown task");
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// HTTP Handler Integration Tests (handleCloudCallback)
+// ---------------------------------------------------------------------------
+
+function createMockRequest(
+	body: string,
+	method = "POST",
+	url = CLOUD_CALLBACK_PATH,
+	headers: Record<string, string> = {},
+): IncomingMessage {
+	const readable = new Readable({
+		read() {
+			this.push(Buffer.from(body, "utf8"));
+			this.push(null);
+		},
+	});
+	(readable as unknown as Record<string, unknown>).method = method;
+	(readable as unknown as Record<string, unknown>).url = url;
+	(readable as unknown as Record<string, unknown>).headers = {
+		"content-type": "application/json",
+		...headers,
+	} as IncomingHttpHeaders;
+	return readable as unknown as IncomingMessage;
+}
+
+function createMockResponse(): {
+	res: ServerResponse;
+	getStatus: () => number;
+	getBody: () => string;
+} {
+	let status = 0;
+	let body = "";
+	const res = new EventEmitter() as unknown as ServerResponse;
+	(res as unknown as Record<string, unknown>).headersSent = false;
+	res.writeHead = ((statusCode: number, _headers?: Record<string, string>) => {
+		status = statusCode;
+		(res as unknown as Record<string, unknown>).headersSent = true;
+		return res;
+	}) as ServerResponse["writeHead"];
+	res.end = ((chunk?: string) => {
+		if (chunk) body += chunk;
+		return res;
+	}) as ServerResponse["end"];
+	return { res, getStatus: () => status, getBody: () => body };
+}
+
+function computeCanonicalHmac(
+	secret: string,
+	body: string,
+	timestamp: string | null = null,
+	eventId: string | null = null,
+): string {
+	const input = buildCanonicalSigningInput(timestamp, eventId, body);
+	return createHmac("sha256", secret).update(input).digest("hex");
+}
+
+function createHandlerCtx(
+	taskStates: Record<string, CloudExecutionState>,
+	dedupeStore: InMemoryCallbackDedupeStore,
+	signingSecret: string | null = null,
+): CallbackIngestionContext {
+	return {
+		getTaskExecutionState: async (taskId) => taskStates[taskId] ?? null,
+		hasProcessedCallback: async (key) => dedupeStore.has(key),
+		recordProcessedCallback: async (key) => {
+			dedupeStore.add(key);
+		},
+		signingSecret,
+	};
+}
+
+describe("cloud callback HTTP handler — handleCloudCallback", () => {
+	it("callback with valid HMAC returns 200 and updates execution state", async () => {
+		const secret = "test-handler-secret";
+		const dedupeStore = new InMemoryCallbackDedupeStore();
+		const ctx = createHandlerCtx({ "task-http-1": "running" }, dedupeStore, secret);
+
+		const payload = createBasePayload({ task_id: "task-http-1", status: "success" });
+		const body = JSON.stringify(payload);
+		const ts = new Date().toISOString();
+		const evtId = "evt-handler-1";
+		const sig = computeCanonicalHmac(secret, body, ts, evtId);
+
+		const req = createMockRequest(body, "POST", CLOUD_CALLBACK_PATH, {
+			"x-cline-timestamp": ts,
+			"x-cline-signature": sig,
+			"x-cline-event-id": evtId,
+		});
+		const requestUrl = new URL(CLOUD_CALLBACK_PATH, "http://localhost");
+		const { res, getStatus, getBody } = createMockResponse();
+
+		let acceptedResult: unknown = null;
+		const handled = await handleCloudCallback(req, res, requestUrl, ctx, async (result) => {
+			acceptedResult = result;
+		});
+
+		expect(handled).toBe(true);
+		expect(getStatus()).toBe(200);
+		const parsed = JSON.parse(getBody());
+		expect(parsed.ok).toBe(true);
+		expect(parsed.taskId).toBe("task-http-1");
+		expect(parsed.toState).toBe("completing");
+		expect(acceptedResult).not.toBeNull();
+	});
+
+	it("duplicate callback returns 200 with duplicate:true", async () => {
+		const dedupeStore = new InMemoryCallbackDedupeStore();
+		const ctx = createHandlerCtx({ "task-dup": "running" }, dedupeStore);
+		const payload = createBasePayload({ task_id: "task-dup", status: "success" });
+		const body = JSON.stringify(payload);
+
+		// First request — accepted
+		const req1 = createMockRequest(body);
+		const mock1 = createMockResponse();
+		await handleCloudCallback(req1, mock1.res, new URL(CLOUD_CALLBACK_PATH, "http://localhost"), ctx);
+		expect(mock1.getStatus()).toBe(200);
+		expect(JSON.parse(mock1.getBody()).ok).toBe(true);
+
+		// Second request — duplicate
+		const req2 = createMockRequest(body);
+		const mock2 = createMockResponse();
+		await handleCloudCallback(req2, mock2.res, new URL(CLOUD_CALLBACK_PATH, "http://localhost"), ctx);
+
+		expect(mock2.getStatus()).toBe(200);
+		const parsed = JSON.parse(mock2.getBody());
+		expect(parsed.ok).toBe(true);
+		expect(parsed.duplicate).toBe(true);
+	});
+
+	it("callback for unknown task returns 404", async () => {
+		const dedupeStore = new InMemoryCallbackDedupeStore();
+		const ctx = createHandlerCtx({}, dedupeStore);
+		const body = JSON.stringify(createBasePayload({ task_id: "nonexistent-task" }));
+
+		const req = createMockRequest(body);
+		const { res, getStatus, getBody } = createMockResponse();
+		await handleCloudCallback(req, res, new URL(CLOUD_CALLBACK_PATH, "http://localhost"), ctx);
+
+		expect(getStatus()).toBe(404);
+		expect(JSON.parse(getBody()).error).toContain("Unknown task");
+	});
+	it("callback with invalid signature returns 401", async () => {
+		const secret = "handler-signing-secret";
+		const dedupeStore = new InMemoryCallbackDedupeStore();
+		const ctx = createHandlerCtx({ "task-sig": "running" }, dedupeStore, secret);
+
+		const body = JSON.stringify(createBasePayload({ task_id: "task-sig", status: "success" }));
+		const ts = new Date().toISOString();
+		const req = createMockRequest(body, "POST", CLOUD_CALLBACK_PATH, {
+			"x-cline-timestamp": ts,
+			"x-cline-signature": "invalid-signature-value",
+			"x-cline-event-id": "evt-bad",
+		});
+		const { res, getStatus, getBody } = createMockResponse();
+		await handleCloudCallback(req, res, new URL(CLOUD_CALLBACK_PATH, "http://localhost"), ctx);
+
+		expect(getStatus()).toBe(401);
+		expect(JSON.parse(getBody()).error).toContain("Invalid callback signature");
+	});
+
+	it("oversized body returns 400", async () => {
+		const dedupeStore = new InMemoryCallbackDedupeStore();
+		const ctx = createHandlerCtx({ "task-big": "running" }, dedupeStore);
+
+		// 65 KB exceeds the 64 KB MAX_CALLBACK_BODY_BYTES limit
+		const oversizedBody = "x".repeat(65 * 1024);
+		const req = createMockRequest(oversizedBody);
+		const { res, getStatus, getBody } = createMockResponse();
+		await handleCloudCallback(req, res, new URL(CLOUD_CALLBACK_PATH, "http://localhost"), ctx);
+
+		expect(getStatus()).toBe(400);
+		expect(JSON.parse(getBody()).error).toContain("oversized");
 	});
 });

@@ -316,6 +316,7 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 		getTaskExecutionState: async (taskId: string) => {
 			const resolved = await resolveStoreForTask(taskId);
 			if (!resolved) {
+				deps.warn(`Cloud callback: could not resolve store for task ${taskId}`);
 				return null;
 			}
 			const state = await resolved.store.deriveTaskState(taskId);
@@ -336,14 +337,21 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 		if (!resolved) {
 			return;
 		}
-		const { store } = resolved;
-		await reconcileTerminalCallback(result, {
+		const { store, workspaceId } = resolved;
+		const reconResult = await reconcileTerminalCallback(result, {
 			deriveTaskState: (taskId) => store.deriveTaskState(taskId),
 			appendEvent: (event) => store.appendEvent(event),
 			appendEvents: (events) => store.appendEvents(events),
 			readExecutionsForTask: (taskId) => store.readExecutionsForTask(taskId),
 			updateExecution: (executionId, updates) => store.updateExecution(executionId, updates),
 		});
+
+		// After successful reconciliation, if the callback moved the task to a
+		// terminal state (completing/failed/canceled), notify the web UI so it
+		// can move the board card from in_progress → review.
+		if (reconResult.reconciled) {
+			deps.runtimeStateHub.broadcastTaskReadyForReview(workspaceId, result.taskId);
+		}
 	};
 
 	const isRemoteMode = isKanbanRemoteHost();
@@ -376,7 +384,18 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 			// Callbacks come from cloud-platform task-runner, not user browsers.
 			// Authentication is via callback signature, not user session.
 			if (pathname.startsWith(CLOUD_CALLBACK_PATH)) {
-				await handleCloudCallback(req, res, requestUrl, cloudCallbackContext, onCallbackAccepted);
+				try {
+					await handleCloudCallback(req, res, requestUrl, cloudCallbackContext, onCallbackAccepted);
+				} catch (error) {
+					deps.warn(`Cloud callback handler error: ${error instanceof Error ? error.message : String(error)}`);
+					if (!res.headersSent) {
+						res.writeHead(500, {
+							"Content-Type": "application/json; charset=utf-8",
+							"Cache-Control": "no-store",
+						});
+						res.end(JSON.stringify({ error: "Internal server error" }));
+					}
+				}
 				return;
 			}
 
