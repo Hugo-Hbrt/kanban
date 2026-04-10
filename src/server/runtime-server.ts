@@ -10,6 +10,8 @@ import {
 	createInMemoryClineTaskSessionService,
 } from "../cline-sdk/cline-task-session-service";
 import { createClineWatcherRegistry } from "../cline-sdk/cline-watcher-registry";
+import { CLOUD_CALLBACK_PATH, handleCloudCallback } from "../cloud/cloud-callback-handler";
+import { type CallbackIngestionContext, InMemoryCallbackDedupeStore } from "../cloud/cloud-callback-ingestion";
 import type { RuntimeCommandRunResponse, RuntimeWorkspaceStateResponse } from "../core/api-contract";
 import {
 	buildKanbanRuntimeUrl,
@@ -244,6 +246,21 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 		createContext: async ({ req }) => await createTrpcContext(req),
 	});
 
+	// ── Cloud callback ingestion context (B4) ─────────────────────────────
+	const cloudCallbackDedupeStore = new InMemoryCallbackDedupeStore();
+	const cloudCallbackContext: CallbackIngestionContext = {
+		getTaskExecutionState: async (_taskId: string) => {
+			// TODO(B5): Wire to real task execution state lookup once persistence is integrated.
+			// For now, return null (unknown task) until the orchestration layer is connected.
+			return null;
+		},
+		hasProcessedCallback: async (key: string) => cloudCallbackDedupeStore.has(key),
+		recordProcessedCallback: async (key: string) => {
+			cloudCallbackDedupeStore.add(key);
+		},
+		signingSecret: null, // MVP stub — signature verification deferred to C1.
+	};
+
 	const isRemoteMode = isKanbanRemoteHost();
 
 	const readRequestBody = (req: IncomingMessage, maxBytes = 4096): Promise<string> =>
@@ -269,6 +286,14 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 		try {
 			const requestUrl = new URL(req.url ?? "/", "http://localhost");
 			const pathname = normalizeRequestPath(requestUrl.pathname);
+
+			// ── Cloud callback endpoint (B4) — bypasses passcode gate ────────
+			// Callbacks come from cloud-platform task-runner, not user browsers.
+			// Authentication is via callback signature, not user session.
+			if (pathname.startsWith(CLOUD_CALLBACK_PATH)) {
+				await handleCloudCallback(req, res, requestUrl, cloudCallbackContext);
+				return;
+			}
 
 			// ── Passcode gate (remote mode only) ──────────────────────────────
 			const passcodeActive = isRemoteMode && isPasscodeEnabled();
