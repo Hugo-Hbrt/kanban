@@ -349,7 +349,34 @@ describe("retryTask — branch intent", () => {
 		const meta = (result as RetryReplaySuccess).execution.remoteMetadata;
 		expect(meta?.repoUrl).toBe("https://github.com/cline/kanban.git");
 		expect(meta?.baseBranch).toBe("main");
+		// Default is fresh_branch, so worktreePath should be cleared
+		expect(meta?.worktreePath).toBeUndefined();
+	});
+
+	it("fresh_branch retry clears worktreePath in remoteMetadata", async () => {
+		await setupTerminalTask("failed");
+		const result = await retryTask(store, {
+			taskId: TASK_ID,
+			triggeredBy: "user-123",
+			branchIntent: "fresh_branch",
+		});
+		expect(result.success).toBe(true);
+		const meta = (result as RetryReplaySuccess).execution.remoteMetadata;
+		expect(meta?.worktreePath).toBeUndefined();
+		expect(meta?.featureBranch).toBeUndefined();
+	});
+
+	it("reuse_branch retry preserves worktreePath in remoteMetadata", async () => {
+		await setupTerminalTask("failed");
+		const result = await retryTask(store, {
+			taskId: TASK_ID,
+			triggeredBy: "user-123",
+			branchIntent: "reuse_branch",
+		});
+		expect(result.success).toBe(true);
+		const meta = (result as RetryReplaySuccess).execution.remoteMetadata;
 		expect(meta?.worktreePath).toBe("/workspace");
+		expect(meta?.featureBranch).toBe("task/task-retry-001");
 	});
 });
 
@@ -624,6 +651,150 @@ describe("execution record correctness", () => {
 		await setupTerminalTask("failed", makeRemoteMetadata({ debugPreserve: true }));
 		const result = await retryTask(store, { taskId: TASK_ID, triggeredBy: "user-123" });
 		expect((result as RetryReplaySuccess).execution.remoteMetadata?.debugPreserve).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Trigger / branchIntent / worktreeIntent / triggerMetadata on execution record
+// ---------------------------------------------------------------------------
+
+describe("execution record — trigger, branchIntent, worktreeIntent, triggerMetadata", () => {
+	it("retry sets execution.trigger to 'retry'", async () => {
+		await setupTerminalTask("failed");
+		const result = await retryTask(store, { taskId: TASK_ID, triggeredBy: "user-123" });
+		expect(result.success).toBe(true);
+		expect((result as RetryReplaySuccess).execution.trigger).toBe("retry");
+	});
+
+	it("replay sets execution.trigger to 'replay'", async () => {
+		await setupTerminalTask("failed");
+		const result = await replayTask(store, { taskId: TASK_ID, triggeredBy: "user-456" });
+		expect(result.success).toBe(true);
+		expect((result as RetryReplaySuccess).execution.trigger).toBe("replay");
+	});
+
+	it("retry sets execution.branchIntent to fresh_branch by default", async () => {
+		await setupTerminalTask("failed");
+		const result = await retryTask(store, { taskId: TASK_ID, triggeredBy: "user-123" });
+		expect(result.success).toBe(true);
+		expect((result as RetryReplaySuccess).execution.branchIntent).toBe("fresh_branch");
+	});
+
+	it("retry sets execution.branchIntent to reuse_branch when specified", async () => {
+		await setupTerminalTask("failed");
+		const result = await retryTask(store, {
+			taskId: TASK_ID,
+			triggeredBy: "user-123",
+			branchIntent: "reuse_branch",
+		});
+		expect(result.success).toBe(true);
+		expect((result as RetryReplaySuccess).execution.branchIntent).toBe("reuse_branch");
+	});
+
+	it("replay sets execution.branchIntent correctly", async () => {
+		await setupTerminalTask("failed");
+		const result = await replayTask(store, {
+			taskId: TASK_ID,
+			triggeredBy: "user-456",
+			branchIntent: "reuse_branch",
+		});
+		expect(result.success).toBe(true);
+		expect((result as RetryReplaySuccess).execution.branchIntent).toBe("reuse_branch");
+	});
+
+	it("fresh_branch retry clears worktreeIntent", async () => {
+		await setupTerminalTask("failed");
+		const result = await retryTask(store, {
+			taskId: TASK_ID,
+			triggeredBy: "user-123",
+			branchIntent: "fresh_branch",
+		});
+		expect(result.success).toBe(true);
+		expect((result as RetryReplaySuccess).execution.worktreeIntent).toBeUndefined();
+	});
+
+	it("reuse_branch retry sets worktreeIntent from previous worktreePath", async () => {
+		await setupTerminalTask("failed");
+		const result = await retryTask(store, {
+			taskId: TASK_ID,
+			triggeredBy: "user-123",
+			branchIntent: "reuse_branch",
+		});
+		expect(result.success).toBe(true);
+		expect((result as RetryReplaySuccess).execution.worktreeIntent).toBe("/workspace");
+	});
+
+	it("retry persists triggerMetadata on the execution record", async () => {
+		await setupTerminalTask("failed");
+		const result = await retryTask(store, {
+			taskId: TASK_ID,
+			triggeredBy: "user-789",
+			reason: "Transient failure",
+		});
+		expect(result.success).toBe(true);
+		const exec = (result as RetryReplaySuccess).execution;
+		expect(exec.triggerMetadata).toBeDefined();
+		expect(exec.triggerMetadata?.triggeredBy).toBe("user-789");
+		expect(exec.triggerMetadata?.reason).toBe("Transient failure");
+		expect(exec.triggerMetadata?.branchIntent).toBe("fresh_branch");
+		expect(exec.triggerMetadata?.triggeredAt).toBeTruthy();
+		expect(exec.triggerMetadata?.sourceState).toBe("failed");
+		expect(exec.triggerMetadata?.previousExecutionId).toBe("exec-initial");
+		expect(exec.triggerMetadata?.previousAttemptNumber).toBe(1);
+	});
+
+	it("replay persists triggerMetadata on the execution record", async () => {
+		await setupTerminalTask("completed");
+		const result = await replayTask(store, {
+			taskId: TASK_ID,
+			triggeredBy: "user-debug",
+			reason: "Reproduce issue",
+			startingCommitSha: "pin123",
+			promptVersion: "42",
+			branchIntent: "reuse_branch",
+		});
+		expect(result.success).toBe(true);
+		const exec = (result as RetryReplaySuccess).execution;
+		expect(exec.triggerMetadata).toBeDefined();
+		expect(exec.triggerMetadata?.triggeredBy).toBe("user-debug");
+		expect(exec.triggerMetadata?.reason).toBe("Reproduce issue");
+		expect(exec.triggerMetadata?.branchIntent).toBe("reuse_branch");
+		expect(exec.triggerMetadata?.pinnedCommitSha).toBe("pin123");
+		expect(exec.triggerMetadata?.pinnedPromptVersion).toBe("42");
+	});
+
+	it("triggerMetadata is persisted to the store on retry", async () => {
+		await setupTerminalTask("failed");
+		await retryTask(store, {
+			taskId: TASK_ID,
+			triggeredBy: "user-store-check",
+			reason: "Store persistence check",
+		});
+		const executions = await store.readExecutionsForTask(TASK_ID);
+		const retryExec = executions.find((e) => e.attemptNumber === 2);
+		expect(retryExec).toBeDefined();
+		expect(retryExec?.trigger).toBe("retry");
+		expect(retryExec?.triggerMetadata).toBeDefined();
+		expect(retryExec?.triggerMetadata?.triggeredBy).toBe("user-store-check");
+		expect(retryExec?.branchIntent).toBe("fresh_branch");
+	});
+
+	it("triggerMetadata is persisted to the store on replay", async () => {
+		await setupTerminalTask("failed");
+		await replayTask(store, {
+			taskId: TASK_ID,
+			triggeredBy: "user-store-check",
+			reason: "Replay store persistence check",
+			startingCommitSha: "abc999",
+		});
+		const executions = await store.readExecutionsForTask(TASK_ID);
+		const replayExec = executions.find((e) => e.attemptNumber === 2);
+		expect(replayExec).toBeDefined();
+		expect(replayExec?.trigger).toBe("replay");
+		expect(replayExec?.triggerMetadata).toBeDefined();
+		expect(replayExec?.triggerMetadata?.triggeredBy).toBe("user-store-check");
+		expect(replayExec?.triggerMetadata?.pinnedCommitSha).toBe("abc999");
+		expect(replayExec?.branchIntent).toBe("fresh_branch");
 	});
 });
 

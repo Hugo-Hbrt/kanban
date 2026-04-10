@@ -10,6 +10,7 @@ import { z } from "zod";
 
 import type { CloudExecutionState } from "./cloud-execution-lifecycle";
 import type {
+	AttemptTrigger,
 	CloudExecutionStore,
 	PersistedTaskExecution,
 	RemoteExecutionMetadata,
@@ -208,6 +209,7 @@ function buildRetryReplayExecution(
 	taskId: string,
 	previousExecution: PersistedTaskExecution,
 	branchIntent: BranchIntent,
+	trigger: AttemptTrigger,
 	overrides: { startingCommitSha?: string; promptVersion?: string } = {},
 ): { execution: PersistedTaskExecution; newAttemptNumber: number; newExecutionId: string } {
 	const newAttemptNumber = previousExecution.attemptNumber + 1;
@@ -221,7 +223,7 @@ function buildRetryReplayExecution(
 			repoUrl: prev.repoUrl,
 			baseBranch: prev.baseBranch,
 			featureBranch: branchIntent === "reuse_branch" ? prev.featureBranch : undefined,
-			worktreePath: prev.worktreePath,
+			worktreePath: branchIntent === "reuse_branch" ? prev.worktreePath : undefined,
 			startingCommitSha: overrides.startingCommitSha ?? prev.startingCommitSha,
 			promptVersion: overrides.promptVersion ?? prev.promptVersion,
 			promptHash: undefined,
@@ -247,6 +249,12 @@ function buildRetryReplayExecution(
 		terminalState: undefined,
 		resultSummary: undefined,
 		remoteMetadata,
+		trigger,
+		branchIntent,
+		worktreeIntent:
+			branchIntent === "reuse_branch"
+				? (previousExecution.worktreeIntent ?? previousExecution.remoteMetadata?.worktreePath ?? undefined)
+				: undefined,
 	};
 
 	return { execution, newAttemptNumber, newExecutionId };
@@ -290,6 +298,7 @@ export async function retryTask(store: CloudExecutionStore, options: RetryTaskOp
 		taskId,
 		latestExecution,
 		branchIntent,
+		"retry",
 	);
 
 	const triggerMetadata: RetryTriggerMetadata = {
@@ -303,8 +312,10 @@ export async function retryTask(store: CloudExecutionStore, options: RetryTaskOp
 		branchIntent,
 	};
 
+	const finalExecution: PersistedTaskExecution = { ...execution, triggerMetadata };
+
 	try {
-		await store.createExecution(execution);
+		await store.createExecution(finalExecution);
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
 		return {
@@ -322,7 +333,7 @@ export async function retryTask(store: CloudExecutionStore, options: RetryTaskOp
 		newAttemptNumber,
 		branchIntent,
 		triggerMetadata,
-		execution,
+		execution: finalExecution,
 	};
 }
 
@@ -363,6 +374,7 @@ export async function replayTask(store: CloudExecutionStore, options: ReplayTask
 		taskId,
 		latestExecution,
 		branchIntent,
+		"replay",
 		{ startingCommitSha, promptVersion },
 	);
 
@@ -379,8 +391,10 @@ export async function replayTask(store: CloudExecutionStore, options: ReplayTask
 		pinnedPromptVersion: promptVersion,
 	};
 
+	const finalExecution: PersistedTaskExecution = { ...execution, triggerMetadata };
+
 	try {
-		await store.createExecution(execution);
+		await store.createExecution(finalExecution);
 	} catch (e) {
 		const msg = e instanceof Error ? e.message : String(e);
 		return {
@@ -398,7 +412,7 @@ export async function replayTask(store: CloudExecutionStore, options: ReplayTask
 		newAttemptNumber,
 		branchIntent,
 		triggerMetadata,
-		execution,
+		execution: finalExecution,
 	};
 }
 
