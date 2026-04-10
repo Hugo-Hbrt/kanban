@@ -141,15 +141,37 @@ export function mapCallbackStatusToTerminalState(status: CallbackTerminalStatus)
 // ---------------------------------------------------------------------------
 
 /**
- * Verify the callback signature using HMAC-SHA256.
+ * Build the canonical signing input that cloud-platform uses when producing
+ * HMAC-SHA256 callback signatures.
+ *
+ * Format: `<timestamp>.<eventId>.<body>`
+ *
+ * When a component is absent the empty string is used so that the canonical
+ * structure is always three dot-separated segments. This prevents an attacker
+ * from shuffling content between segments.
+ */
+export function buildCanonicalSigningInput(timestamp: string | null, eventId: string | null, body: string): string {
+	return `${timestamp ?? ""}.${eventId ?? ""}.${body}`;
+}
+
+/**
+ * Verify the callback signature using HMAC-SHA256 over the canonical
+ * signing input (`timestamp.eventId.body`).
+ *
  * For MVP (before C1 lands), returns `{ valid: true }` when no signing
  * secret is configured. Once C1 is implemented, the signing secret should
  * always be present and unsigned callbacks should be rejected.
+ *
+ * When a signing secret **is** configured the timestamp header is
+ * security-critical because it is part of the signed payload. A missing
+ * timestamp is therefore rejected.
  */
 export function verifyCallbackSignature(
 	body: string,
 	signature: string | null,
 	secret: string | null,
+	timestamp: string | null = null,
+	eventId: string | null = null,
 ): { valid: true } | { valid: false; reason: string } {
 	if (!secret) {
 		return { valid: true };
@@ -157,9 +179,13 @@ export function verifyCallbackSignature(
 	if (!signature) {
 		return { valid: false, reason: "Missing X-Cline-Signature header." };
 	}
+	if (!timestamp) {
+		return { valid: false, reason: "Missing X-Cline-Timestamp header — required for signature verification." };
+	}
 	// Strip optional 'sha256=' prefix (PRD Section 5.3 format) for forward compatibility.
 	const rawSignature = signature.startsWith("sha256=") ? signature.slice(7) : signature;
-	const expectedSignature = createHmac("sha256", secret).update(body).digest("hex");
+	const canonicalInput = buildCanonicalSigningInput(timestamp, eventId, body);
+	const expectedSignature = createHmac("sha256", secret).update(canonicalInput).digest("hex");
 	const sigBuffer = Buffer.from(rawSignature, "utf8");
 	const expectedBuffer = Buffer.from(expectedSignature, "utf8");
 	if (sigBuffer.length !== expectedBuffer.length || !timingSafeEqual(sigBuffer, expectedBuffer)) {
@@ -275,7 +301,13 @@ export async function ingestTerminalCallback(
 	}
 
 	// 2. Verify signature (MVP stub — accept if no secret configured).
-	const sigResult = verifyCallbackSignature(rawBody, headers.signature, ctx.signingSecret);
+	const sigResult = verifyCallbackSignature(
+		rawBody,
+		headers.signature,
+		ctx.signingSecret,
+		headers.timestamp,
+		headers.eventId,
+	);
 	if (sigResult.valid === false) {
 		return { accepted: false, duplicate: false, reason: sigResult.reason, httpStatus: 401 };
 	}

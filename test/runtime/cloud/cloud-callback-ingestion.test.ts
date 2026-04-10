@@ -3,6 +3,7 @@ import { createHash, createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+	buildCanonicalSigningInput,
 	buildDedupeKey,
 	type CallbackHeaders,
 	type CallbackIngestionContext,
@@ -65,6 +66,20 @@ function createFakeContext(
 
 function toRawBody(payload: CallbackPayload): string {
 	return JSON.stringify(payload);
+}
+
+/**
+ * Compute HMAC-SHA256 signature over the canonical signing input
+ * (`timestamp.eventId.body`) — matches cloud-platform's signing format.
+ */
+function computeCanonicalHmac(
+	secret: string,
+	body: string,
+	timestamp: string | null = null,
+	eventId: string | null = null,
+): string {
+	const canonicalInput = buildCanonicalSigningInput(timestamp, eventId, body);
+	return createHmac("sha256", secret).update(canonicalInput).digest("hex");
 }
 
 // ---------------------------------------------------------------------------
@@ -201,55 +216,133 @@ describe("extractCallbackHeaders", () => {
 // verifyCallbackSignature
 // ---------------------------------------------------------------------------
 
+describe("buildCanonicalSigningInput", () => {
+	it("builds three-segment canonical string with all fields", () => {
+		expect(buildCanonicalSigningInput("2026-04-09T12:00:00Z", "evt-1", '{"ok":true}')).toBe(
+			'2026-04-09T12:00:00Z.evt-1.{"ok":true}',
+		);
+	});
+
+	it("uses empty strings for null timestamp and eventId", () => {
+		expect(buildCanonicalSigningInput(null, null, "body")).toBe("..body");
+	});
+
+	it("uses empty string for null eventId only", () => {
+		expect(buildCanonicalSigningInput("ts", null, "body")).toBe("ts..body");
+	});
+
+	it("uses empty string for null timestamp only", () => {
+		expect(buildCanonicalSigningInput(null, "evt", "body")).toBe(".evt.body");
+	});
+});
+
 describe("verifyCallbackSignature", () => {
+	const ts = "2026-04-09T12:00:00Z";
+	const evtId = "evt-abc";
+
 	it("accepts any callback when no secret is configured (MVP stub)", () => {
 		const result = verifyCallbackSignature("body", null, null);
 		expect(result.valid).toBe(true);
 	});
 
-	it("accepts valid HMAC-SHA256 signature when secret is configured", () => {
+	it("accepts valid HMAC-SHA256 over canonical input (timestamp.eventId.body)", () => {
 		const body = '{"test": true}';
 		const secret = "my-signing-secret";
-		const expectedSig = createHmac("sha256", secret).update(body).digest("hex");
-		const result = verifyCallbackSignature(body, expectedSig, secret);
+		const sig = computeCanonicalHmac(secret, body, ts, evtId);
+		const result = verifyCallbackSignature(body, sig, secret, ts, evtId);
 		expect(result.valid).toBe(true);
 	});
 
-	it("accepts valid signature with 'sha256=' prefix (PRD Section 5.3 format)", () => {
+	it("accepts valid signature with 'sha256=' prefix", () => {
 		const body = '{"test": true}';
 		const secret = "my-signing-secret";
-		const hmacHex = createHmac("sha256", secret).update(body).digest("hex");
-		const prefixedSig = `sha256=${hmacHex}`;
-		const result = verifyCallbackSignature(body, prefixedSig, secret);
+		const hmacHex = computeCanonicalHmac(secret, body, ts, evtId);
+		const result = verifyCallbackSignature(body, `sha256=${hmacHex}`, secret, ts, evtId);
 		expect(result.valid).toBe(true);
+	});
+
+	it("strips 'sha256=' prefix before comparison", () => {
+		const body = '{"test": true}';
+		const secret = "my-signing-secret";
+		const hmacHex = computeCanonicalHmac(secret, body, ts, evtId);
+		const withPrefix = verifyCallbackSignature(body, `sha256=${hmacHex}`, secret, ts, evtId);
+		const withoutPrefix = verifyCallbackSignature(body, hmacHex, secret, ts, evtId);
+		expect(withPrefix.valid).toBe(true);
+		expect(withoutPrefix.valid).toBe(true);
 	});
 
 	it("rejects the old concatenation-based hash format", () => {
 		const body = '{"test": true}';
 		const secret = "my-signing-secret";
-		// Old incorrect format: SHA-256 hash of "secret:body"
-		const oldFormatSig = createHash("sha256").update(`${secret}:${body}`).digest("hex");
-		const result = verifyCallbackSignature(body, oldFormatSig, secret);
+		const oldSig = createHash("sha256").update(`${secret}:${body}`).digest("hex");
+		const result = verifyCallbackSignature(body, oldSig, secret, ts, evtId);
 		expect(result.valid).toBe(false);
-		if (result.valid === false) {
-			expect(result.reason).toContain("Invalid callback signature");
-		}
+		if (!result.valid) expect(result.reason).toContain("Invalid callback signature");
+	});
+
+	it("rejects HMAC computed over body-only (without timestamp/eventId)", () => {
+		const body = '{"test": true}';
+		const secret = "my-signing-secret";
+		const bodyOnlySig = createHmac("sha256", secret).update(body).digest("hex");
+		const result = verifyCallbackSignature(body, bodyOnlySig, secret, ts, evtId);
+		expect(result.valid).toBe(false);
+		if (!result.valid) expect(result.reason).toContain("Invalid callback signature");
 	});
 
 	it("rejects missing signature when secret is configured", () => {
-		const result = verifyCallbackSignature("body", null, "secret");
+		const result = verifyCallbackSignature("body", null, "secret", ts, evtId);
 		expect(result.valid).toBe(false);
-		if (result.valid === false) {
-			expect(result.reason).toContain("Missing X-Cline-Signature");
-		}
+		if (!result.valid) expect(result.reason).toContain("Missing X-Cline-Signature");
+	});
+
+	it("rejects missing timestamp when secret is configured", () => {
+		const body = '{"test": true}';
+		const secret = "my-signing-secret";
+		const sig = computeCanonicalHmac(secret, body, null, evtId);
+		const result = verifyCallbackSignature(body, sig, secret, null, evtId);
+		expect(result.valid).toBe(false);
+		if (!result.valid) expect(result.reason).toContain("Missing X-Cline-Timestamp");
 	});
 
 	it("rejects wrong signature", () => {
-		const result = verifyCallbackSignature("body", "wrong-sig", "secret");
+		const result = verifyCallbackSignature("body", "wrong-sig", "secret", ts, evtId);
 		expect(result.valid).toBe(false);
-		if (result.valid === false) {
-			expect(result.reason).toContain("Invalid callback signature");
-		}
+		if (!result.valid) expect(result.reason).toContain("Invalid callback signature");
+	});
+
+	it("rejects signature when timestamp differs (timestamp is in HMAC)", () => {
+		const body = '{"test": true}';
+		const secret = "my-signing-secret";
+		const sig = computeCanonicalHmac(secret, body, "2026-04-09T12:00:00Z", evtId);
+		const result = verifyCallbackSignature(body, sig, secret, "2026-04-09T13:00:00Z", evtId);
+		expect(result.valid).toBe(false);
+		if (!result.valid) expect(result.reason).toContain("Invalid callback signature");
+	});
+
+	it("rejects signature when eventId (nonce) differs", () => {
+		const body = '{"test": true}';
+		const secret = "my-signing-secret";
+		const sig = computeCanonicalHmac(secret, body, ts, "evt-1");
+		const result = verifyCallbackSignature(body, sig, secret, ts, "evt-2");
+		expect(result.valid).toBe(false);
+		if (!result.valid) expect(result.reason).toContain("Invalid callback signature");
+	});
+
+	it("accepts signature when eventId is null", () => {
+		const body = '{"test": true}';
+		const secret = "my-signing-secret";
+		const sig = computeCanonicalHmac(secret, body, ts, null);
+		const result = verifyCallbackSignature(body, sig, secret, ts, null);
+		expect(result.valid).toBe(true);
+	});
+
+	it("rejects sig computed with null eventId when actual eventId present", () => {
+		const body = '{"test": true}';
+		const secret = "my-signing-secret";
+		const sig = computeCanonicalHmac(secret, body, ts, null);
+		const result = verifyCallbackSignature(body, sig, secret, ts, "evt-injected");
+		expect(result.valid).toBe(false);
+		if (!result.valid) expect(result.reason).toContain("Invalid callback signature");
 	});
 });
 
@@ -668,12 +761,15 @@ describe("ingestTerminalCallback — replay protection", () => {
 // ---------------------------------------------------------------------------
 
 describe("ingestTerminalCallback — signature verification", () => {
+	const recentTs = new Date(Date.now() - 10_000).toISOString();
+	const evtId = "evt-integ";
+
 	it("rejects callback with invalid signature when secret is set", async () => {
 		const ctx = createFakeContext({ taskStates: { "task-1": "running" }, signingSecret: "test-secret" });
 		const payload = createBasePayload();
 		const result = await ingestTerminalCallback(
 			toRawBody(payload),
-			createBaseHeaders({ signature: "bad-sig" }),
+			createBaseHeaders({ signature: "bad-sig", timestamp: recentTs, eventId: evtId }),
 			{},
 			ctx,
 		);
@@ -687,7 +783,12 @@ describe("ingestTerminalCallback — signature verification", () => {
 	it("rejects callback with missing signature when secret is set", async () => {
 		const ctx = createFakeContext({ taskStates: { "task-1": "running" }, signingSecret: "test-secret" });
 		const payload = createBasePayload();
-		const result = await ingestTerminalCallback(toRawBody(payload), createBaseHeaders(), {}, ctx);
+		const result = await ingestTerminalCallback(
+			toRawBody(payload),
+			createBaseHeaders({ timestamp: recentTs }),
+			{},
+			ctx,
+		);
 		expect(result.accepted).toBe(false);
 		if (result.accepted === false) {
 			expect(result.httpStatus).toBe(401);
@@ -695,23 +796,47 @@ describe("ingestTerminalCallback — signature verification", () => {
 		}
 	});
 
-	it("accepts callback with correct HMAC-SHA256 signature", async () => {
+	it("rejects callback with missing timestamp when secret is set", async () => {
+		const secret = "test-secret";
+		const ctx = createFakeContext({ taskStates: { "task-1": "running" }, signingSecret: secret });
+		const payload = createBasePayload();
+		const body = toRawBody(payload);
+		const sig = computeCanonicalHmac(secret, body, null, evtId);
+		const result = await ingestTerminalCallback(body, createBaseHeaders({ signature: sig, eventId: evtId }), {}, ctx);
+		expect(result.accepted).toBe(false);
+		if (result.accepted === false) {
+			expect(result.httpStatus).toBe(401);
+			expect(result.reason).toContain("Missing X-Cline-Timestamp");
+		}
+	});
+
+	it("accepts callback with correct canonical HMAC-SHA256 signature", async () => {
 		const secret = "test-secret";
 		const payload = createBasePayload();
 		const body = toRawBody(payload);
-		const validSig = createHmac("sha256", secret).update(body).digest("hex");
+		const sig = computeCanonicalHmac(secret, body, recentTs, evtId);
 		const ctx = createFakeContext({ taskStates: { "task-1": "running" }, signingSecret: secret });
-		const result = await ingestTerminalCallback(body, createBaseHeaders({ signature: validSig }), {}, ctx);
+		const result = await ingestTerminalCallback(
+			body,
+			createBaseHeaders({ signature: sig, timestamp: recentTs, eventId: evtId }),
+			{},
+			ctx,
+		);
 		expect(result.accepted).toBe(true);
 	});
 
-	it("accepts callback with 'sha256=' prefixed signature", async () => {
+	it("accepts callback with 'sha256=' prefixed canonical signature", async () => {
 		const secret = "test-secret";
 		const payload = createBasePayload();
 		const body = toRawBody(payload);
-		const validSig = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+		const sig = `sha256=${computeCanonicalHmac(secret, body, recentTs, evtId)}`;
 		const ctx = createFakeContext({ taskStates: { "task-1": "running" }, signingSecret: secret });
-		const result = await ingestTerminalCallback(body, createBaseHeaders({ signature: validSig }), {}, ctx);
+		const result = await ingestTerminalCallback(
+			body,
+			createBaseHeaders({ signature: sig, timestamp: recentTs, eventId: evtId }),
+			{},
+			ctx,
+		);
 		expect(result.accepted).toBe(true);
 	});
 });
