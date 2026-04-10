@@ -5,6 +5,7 @@ import {
 	addTaskDependency,
 	addTaskToColumn,
 	deleteTasksFromBoard,
+	moveTaskToColumn,
 	trashTaskAndGetReadyLinkedTaskIds,
 	updateTask,
 } from "../../src/core/task-board-mutations";
@@ -101,5 +102,80 @@ describe("task images", () => {
 				mimeType: "image/jpeg",
 			},
 		]);
+	});
+});
+
+describe("task executionMode", () => {
+	it("defaults to undefined when executionMode is not specified", () => {
+		const created = addTaskToColumn(
+			createBoard(),
+			"backlog",
+			{ prompt: "Task A", baseRef: "main" },
+			() => "aaaaa111",
+		);
+		expect(created.task.executionMode).toBeUndefined();
+	});
+
+	it("persists cloud_agent executionMode on create", () => {
+		const created = addTaskToColumn(
+			createBoard(),
+			"backlog",
+			{ prompt: "Cloud task", baseRef: "main", executionMode: "cloud_agent" },
+			() => "aaaaa111",
+		);
+		expect(created.task.executionMode).toBe("cloud_agent");
+	});
+
+	it("persists local_agent executionMode as undefined on create", () => {
+		const created = addTaskToColumn(
+			createBoard(),
+			"backlog",
+			{ prompt: "Local task", baseRef: "main", executionMode: "local_agent" },
+			() => "aaaaa111",
+		);
+		expect(created.task.executionMode).toBeUndefined();
+	});
+
+	it("updates executionMode to cloud_agent", () => {
+		const created = addTaskToColumn(
+			createBoard(),
+			"backlog",
+			{ prompt: "Task A", baseRef: "main" },
+			() => "aaaaa111",
+		);
+		const updated = updateTask(created.board, "aaaaa", {
+			prompt: "Task A",
+			baseRef: "main",
+			executionMode: "cloud_agent",
+		});
+		expect(updated.task?.executionMode).toBe("cloud_agent");
+	});
+
+	it("clears executionMode when set back to local_agent", () => {
+		const created = addTaskToColumn(
+			createBoard(),
+			"backlog",
+			{ prompt: "Task A", baseRef: "main", executionMode: "cloud_agent" },
+			() => "aaaaa111",
+		);
+		expect(created.task.executionMode).toBe("cloud_agent");
+
+		const updated = updateTask(created.board, "aaaaa", {
+			prompt: "Task A",
+			baseRef: "main",
+			executionMode: "local_agent",
+		});
+		expect(updated.task?.executionMode).toBeUndefined();
+	});
+
+	it("executionMode survives task move between columns", () => {
+		const created = addTaskToColumn(
+			createBoard(),
+			"backlog",
+			{ prompt: "Cloud task", baseRef: "main", executionMode: "cloud_agent" },
+			() => "aaaaa111",
+		);
+		const moved = moveTaskToColumn(created.board, "aaaaa", "in_progress");
+		expect(moved.task?.executionMode).toBe("cloud_agent");
 	});
 });

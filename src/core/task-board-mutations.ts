@@ -4,6 +4,7 @@ import type {
 	RuntimeBoardData,
 	RuntimeBoardDependency,
 	RuntimeTaskAutoReviewMode,
+	RuntimeTaskExecutionMode,
 	RuntimeTaskImage,
 } from "./api-contract";
 import { createUniqueTaskId } from "./task-id";
@@ -14,6 +15,7 @@ export interface RuntimeCreateTaskInput {
 	startInPlanMode?: boolean;
 	autoReviewEnabled?: boolean;
 	autoReviewMode?: RuntimeTaskAutoReviewMode;
+	executionMode?: RuntimeTaskExecutionMode;
 	images?: RuntimeTaskImage[];
 	baseRef: string;
 }
@@ -23,6 +25,7 @@ export interface RuntimeUpdateTaskInput {
 	startInPlanMode?: boolean;
 	autoReviewEnabled?: boolean;
 	autoReviewMode?: RuntimeTaskAutoReviewMode;
+	executionMode?: RuntimeTaskExecutionMode;
 	images?: RuntimeTaskImage[];
 	baseRef: string;
 }
@@ -283,6 +286,7 @@ export function addTaskToColumn(
 		startInPlanMode: Boolean(input.startInPlanMode),
 		autoReviewEnabled: Boolean(input.autoReviewEnabled),
 		autoReviewMode: normalizeTaskAutoReviewMode(input.autoReviewMode),
+		executionMode: input.executionMode === "cloud_agent" ? "cloud_agent" : undefined,
 		images: cloneTaskImages(input.images),
 		baseRef,
 		createdAt: now,
@@ -596,6 +600,7 @@ export function updateTask(
 				startInPlanMode: Boolean(input.startInPlanMode),
 				autoReviewEnabled: Boolean(input.autoReviewEnabled),
 				autoReviewMode: normalizeTaskAutoReviewMode(input.autoReviewMode),
+				executionMode: input.executionMode === "cloud_agent" ? "cloud_agent" : undefined,
 				images: input.images === undefined ? card.images : cloneTaskImages(input.images),
 				baseRef,
 				updatedAt: now,

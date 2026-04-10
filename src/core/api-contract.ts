@@ -87,12 +87,16 @@ export const runtimeTaskImageSchema = z.object({
 });
 export type RuntimeTaskImage = z.infer<typeof runtimeTaskImageSchema>;
 
+export const runtimeTaskExecutionModeSchema = z.enum(["local_agent", "cloud_agent"]);
+export type RuntimeTaskExecutionMode = z.infer<typeof runtimeTaskExecutionModeSchema>;
+
 export const runtimeBoardCardSchema = z.object({
 	id: z.string(),
 	prompt: z.string(),
 	startInPlanMode: z.boolean(),
 	autoReviewEnabled: z.boolean().optional(),
 	autoReviewMode: runtimeTaskAutoReviewModeSchema.optional(),
+	executionMode: runtimeTaskExecutionModeSchema.optional(),
 	images: z.array(runtimeTaskImageSchema).optional(),
 	baseRef: z.string(),
 	createdAt: z.number(),
