@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import type { OrgConcurrencyLimiter } from "./cloud-concurrency-limiter";
 import type { CloudExecutionState, CloudExecutionTrigger } from "./cloud-execution-lifecycle";
 import {
 	deriveCurrentState,
@@ -181,6 +182,7 @@ export class CloudExecutionOrchestrator {
 	private readonly runInvoker: CloudRunInvoker;
 	private readonly config: OrchestratorConfig;
 	private readonly logger: OrchestratorLogger;
+	private readonly concurrencyLimiter: OrgConcurrencyLimiter | null;
 	private readonly activeTasks = new Map<string, TaskContext>();
 	private readonly pendingCancellations = new Set<string>();
 	private running = false;
@@ -192,12 +194,14 @@ export class CloudExecutionOrchestrator {
 		runInvoker: CloudRunInvoker,
 		config: OrchestratorConfig = DEFAULT_ORCHESTRATOR_CONFIG,
 		logger: OrchestratorLogger = noopLogger,
+		concurrencyLimiter?: OrgConcurrencyLimiter | null,
 	) {
 		this.store = store;
 		this.client = client;
 		this.runInvoker = runInvoker;
 		this.config = config;
 		this.logger = logger;
+		this.concurrencyLimiter = concurrencyLimiter ?? null;
 	}
 
 	/** Start the worker loop. */
@@ -323,10 +327,33 @@ export class CloudExecutionOrchestrator {
 		}
 	}
 
-	// -- queued -> policy_check ----------------------------------------------
+	// -- queued -> policy_check (with concurrency gate) ----------------------
 
-	private handleQueued(taskId: string): Promise<TaskStepResult> {
-		return this.applyTransition(taskId, "queued", "dequeue", "system");
+	private async handleQueued(taskId: string): Promise<TaskStepResult | null> {
+		// P2-4: Check per-org concurrency before dequeuing
+		if (this.concurrencyLimiter) {
+			const decision = await this.concurrencyLimiter.checkAdmission(taskId);
+			if (!decision.admitted) {
+				this.logger.info("Concurrency limit: task stays queued", {
+					taskId,
+					orgId: decision.orgId,
+					activeCount: decision.activeCount,
+					limit: decision.limit,
+					queuePosition: decision.queuePosition,
+					reason: decision.reason,
+				});
+				return null; // Stay queued — will be re-evaluated on next tick
+			}
+			this.logger.info("Concurrency check passed", {
+				taskId,
+				orgId: decision.orgId,
+				activeCount: decision.activeCount,
+				limit: decision.limit,
+			});
+		}
+		return this.applyTransition(taskId, "queued", "dequeue", "system", {
+			...(this.concurrencyLimiter ? { concurrencyAdmitted: true } : {}),
+		});
 	}
 
 	// -- policy_check -> provisioning (stub authorized for MVP) --------------
