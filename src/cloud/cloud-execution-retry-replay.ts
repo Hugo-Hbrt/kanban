@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import type { CloudExecutionState } from "./cloud-execution-lifecycle";
+import { deriveWorktreePath } from "./cloud-execution-orchestrator";
 import type {
 	AttemptTrigger,
 	CloudExecutionStore,
@@ -215,6 +216,9 @@ function buildRetryReplayExecution(
 	const newAttemptNumber = previousExecution.attemptNumber + 1;
 	const newExecutionId = randomUUID();
 
+	// Deterministic worktree path from taskId + attemptNumber
+	const deterministicWorktreePath = deriveWorktreePath(taskId, newAttemptNumber);
+
 	let remoteMetadata: RemoteExecutionMetadata | undefined;
 	if (previousExecution.remoteMetadata) {
 		const prev = previousExecution.remoteMetadata;
@@ -223,7 +227,10 @@ function buildRetryReplayExecution(
 			repoUrl: prev.repoUrl,
 			baseBranch: prev.baseBranch,
 			featureBranch: branchIntent === "reuse_branch" ? prev.featureBranch : undefined,
-			worktreePath: branchIntent === "reuse_branch" ? prev.worktreePath : undefined,
+			worktreePath:
+				branchIntent === "reuse_branch"
+					? (prev.worktreePath ?? deterministicWorktreePath)
+					: deterministicWorktreePath,
 			startingCommitSha: overrides.startingCommitSha ?? prev.startingCommitSha,
 			promptVersion: overrides.promptVersion ?? prev.promptVersion,
 			promptHash: undefined,
@@ -253,8 +260,10 @@ function buildRetryReplayExecution(
 		branchIntent,
 		worktreeIntent:
 			branchIntent === "reuse_branch"
-				? (previousExecution.worktreeIntent ?? previousExecution.remoteMetadata?.worktreePath ?? undefined)
-				: undefined,
+				? (previousExecution.worktreeIntent ??
+					previousExecution.remoteMetadata?.worktreePath ??
+					deterministicWorktreePath)
+				: deterministicWorktreePath,
 	};
 
 	return { execution, newAttemptNumber, newExecutionId };

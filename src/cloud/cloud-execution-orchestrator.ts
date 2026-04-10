@@ -192,6 +192,147 @@ export interface OrchestratorLogger {
 const noopLogger: OrchestratorLogger = { info: () => {}, warn: () => {}, error: () => {} };
 
 // ---------------------------------------------------------------------------
+// Execution Identity Fidelity Validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical identity fields that define an execution's relationship to the
+ * original dispatch. These fields must be consistent across retry/replay/rerun
+ * flows unless explicitly overridden (e.g. rerun-from-snapshot creating a
+ * fresh feature branch).
+ */
+export interface ExecutionCanonicalIdentity {
+	readonly repoUrl: string;
+	readonly baseBranch: string;
+	readonly featureBranch?: string;
+	readonly worktreePath?: string;
+	readonly attemptNumber: number;
+}
+
+export interface IdentityDriftViolation {
+	readonly field: string;
+	readonly expected: string | number | undefined;
+	readonly actual: string | number | undefined;
+	readonly severity: "error" | "warning";
+}
+
+export interface ExecutionIdentityFidelityResult {
+	readonly valid: boolean;
+	readonly violations: readonly IdentityDriftViolation[];
+	readonly taskId: string;
+	readonly executionId: string;
+	readonly flowType: "retry" | "replay" | "rerun_snapshot" | "initial";
+}
+
+/**
+ * Derive a deterministic worktree path from taskId and attemptNumber.
+ *
+ * Format: `{taskId}/attempt-{attemptNumber}`
+ */
+export function deriveWorktreePath(taskId: string, attemptNumber: number): string {
+	return `${taskId}/attempt-${attemptNumber}`;
+}
+
+/**
+ * Validate that a new execution record's canonical identity fields match
+ * expectations relative to the source execution.
+ *
+ * Rules:
+ * - repoUrl must match (never drifts)
+ * - baseBranch must match (reflects original base ref, not current HEAD)
+ * - featureBranch: reuse_branch must match source; fresh_branch must be undefined
+ * - worktreePath: must be deterministic from taskId + attemptNumber
+ * - attemptNumber: must be greater than source
+ */
+export function validateExecutionIdentityFidelity(
+	newExecution: PersistedTaskExecution,
+	sourceExecution: PersistedTaskExecution,
+	flowType: "retry" | "replay" | "rerun_snapshot",
+	logger?: OrchestratorLogger,
+): ExecutionIdentityFidelityResult {
+	const violations: IdentityDriftViolation[] = [];
+	const newMeta = newExecution.remoteMetadata;
+	const srcMeta = sourceExecution.remoteMetadata;
+
+	// 1. repoUrl — must always match
+	if (newMeta?.repoUrl !== undefined && srcMeta?.repoUrl !== undefined) {
+		if (newMeta.repoUrl !== srcMeta.repoUrl) {
+			violations.push({ field: "repoUrl", expected: srcMeta.repoUrl, actual: newMeta.repoUrl, severity: "error" });
+		}
+	}
+
+	// 2. baseBranch — must always match
+	if (newMeta?.baseBranch !== undefined && srcMeta?.baseBranch !== undefined) {
+		if (newMeta.baseBranch !== srcMeta.baseBranch) {
+			violations.push({
+				field: "baseBranch",
+				expected: srcMeta.baseBranch,
+				actual: newMeta.baseBranch,
+				severity: "error",
+			});
+		}
+	}
+
+	// 3. featureBranch — depends on branchIntent
+	const branchIntent = newExecution.branchIntent;
+	if (branchIntent === "reuse_branch") {
+		if (newMeta?.featureBranch !== srcMeta?.featureBranch) {
+			violations.push({
+				field: "featureBranch",
+				expected: srcMeta?.featureBranch,
+				actual: newMeta?.featureBranch,
+				severity: "error",
+			});
+		}
+	} else if (branchIntent === "fresh_branch" && newMeta?.featureBranch !== undefined) {
+		violations.push({
+			field: "featureBranch",
+			expected: undefined,
+			actual: newMeta?.featureBranch,
+			severity: "warning",
+		});
+	}
+
+	// 4. worktreePath — deterministic from taskId + attemptNumber
+	const expectedWt = deriveWorktreePath(newExecution.taskId, newExecution.attemptNumber);
+	const actualWt = newMeta?.worktreePath ?? newExecution.worktreeIntent;
+	if (actualWt !== undefined && actualWt !== expectedWt) {
+		violations.push({ field: "worktreePath", expected: expectedWt, actual: actualWt, severity: "warning" });
+	}
+
+	// 5. attemptNumber — must be greater than source
+	if (newExecution.attemptNumber <= sourceExecution.attemptNumber) {
+		violations.push({
+			field: "attemptNumber",
+			expected: sourceExecution.attemptNumber + 1,
+			actual: newExecution.attemptNumber,
+			severity: "error",
+		});
+	}
+
+	if (violations.length > 0 && logger) {
+		for (const v of violations) {
+			const logFn = v.severity === "error" ? logger.error : logger.warn;
+			logFn.call(logger, `Execution identity drift: ${v.field}`, {
+				taskId: newExecution.taskId,
+				executionId: newExecution.executionId,
+				flowType,
+				expected: v.expected,
+				actual: v.actual,
+			});
+		}
+	}
+
+	return {
+		valid: violations.filter((v) => v.severity === "error").length === 0,
+		violations,
+		taskId: newExecution.taskId,
+		executionId: newExecution.executionId,
+		flowType,
+	};
+}
+
+// ---------------------------------------------------------------------------
 // Result Types
 // ---------------------------------------------------------------------------
 

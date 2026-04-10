@@ -349,11 +349,11 @@ describe("retryTask — branch intent", () => {
 		const meta = (result as RetryReplaySuccess).execution.remoteMetadata;
 		expect(meta?.repoUrl).toBe("https://github.com/cline/kanban.git");
 		expect(meta?.baseBranch).toBe("main");
-		// Default is fresh_branch, so worktreePath should be cleared
-		expect(meta?.worktreePath).toBeUndefined();
+		// Default is fresh_branch; worktreePath is deterministic from taskId + attemptNumber
+		expect(meta?.worktreePath).toBe(`${TASK_ID}/attempt-2`);
 	});
 
-	it("fresh_branch retry clears worktreePath in remoteMetadata", async () => {
+	it("fresh_branch retry sets deterministic worktreePath in remoteMetadata", async () => {
 		await setupTerminalTask("failed");
 		const result = await retryTask(store, {
 			taskId: TASK_ID,
@@ -362,7 +362,8 @@ describe("retryTask — branch intent", () => {
 		});
 		expect(result.success).toBe(true);
 		const meta = (result as RetryReplaySuccess).execution.remoteMetadata;
-		expect(meta?.worktreePath).toBeUndefined();
+		// fresh_branch gets a deterministic worktreePath from taskId + attemptNumber
+		expect(meta?.worktreePath).toBe(`${TASK_ID}/attempt-2`);
 		expect(meta?.featureBranch).toBeUndefined();
 	});
 
@@ -702,7 +703,7 @@ describe("execution record — trigger, branchIntent, worktreeIntent, triggerMet
 		expect((result as RetryReplaySuccess).execution.branchIntent).toBe("reuse_branch");
 	});
 
-	it("fresh_branch retry clears worktreeIntent", async () => {
+	it("fresh_branch retry sets deterministic worktreeIntent", async () => {
 		await setupTerminalTask("failed");
 		const result = await retryTask(store, {
 			taskId: TASK_ID,
@@ -710,7 +711,8 @@ describe("execution record — trigger, branchIntent, worktreeIntent, triggerMet
 			branchIntent: "fresh_branch",
 		});
 		expect(result.success).toBe(true);
-		expect((result as RetryReplaySuccess).execution.worktreeIntent).toBeUndefined();
+		// fresh_branch gets a deterministic worktreeIntent from taskId + attemptNumber
+		expect((result as RetryReplaySuccess).execution.worktreeIntent).toBe(`${TASK_ID}/attempt-2`);
 	});
 
 	it("reuse_branch retry sets worktreeIntent from previous worktreePath", async () => {

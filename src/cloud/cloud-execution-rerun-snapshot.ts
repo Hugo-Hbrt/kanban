@@ -30,6 +30,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import type { CloudExecutionState } from "./cloud-execution-lifecycle";
+import { deriveWorktreePath } from "./cloud-execution-orchestrator";
 import type {
 	CloudExecutionStore,
 	PersistedTaskExecution,
@@ -226,6 +227,9 @@ function buildRerunExecution(
 	const resolvedCommitSha = overrides.commitSha ?? snapshot.commitSha;
 	const resolvedPromptVersion = overrides.promptVersion ?? snapshot.promptVersion;
 
+	// Deterministic worktree path from taskId + attemptNumber
+	const deterministicWorktreePath = deriveWorktreePath(taskId, newAttemptNumber);
+
 	let remoteMetadata: RemoteExecutionMetadata | undefined;
 	if (snapshot.repoUrl || latestExecution.remoteMetadata) {
 		const prev = latestExecution.remoteMetadata;
@@ -237,7 +241,7 @@ function buildRerunExecution(
 			// reuse_branch carries forward source attempt's feature branch.
 			// Never silently inherited per PRD Section 15.13.
 			featureBranch: branchIntent === "reuse_branch" ? snapshot.featureBranch : undefined,
-			worktreePath: prev?.worktreePath,
+			worktreePath: deterministicWorktreePath,
 			startingCommitSha: resolvedCommitSha,
 			promptVersion: resolvedPromptVersion,
 			promptHash: undefined,
@@ -270,7 +274,10 @@ function buildRerunExecution(
 		promptVersion: resolvedPromptVersion,
 		promptHash: snapshot.promptHash,
 		branchIntent,
-		worktreeIntent: branchIntent === "reuse_branch" ? snapshot.worktreeIntent : undefined,
+		worktreeIntent:
+			branchIntent === "reuse_branch"
+				? (snapshot.worktreeIntent ?? deterministicWorktreePath)
+				: deterministicWorktreePath,
 	};
 
 	return { execution, newAttemptNumber, newExecutionId };

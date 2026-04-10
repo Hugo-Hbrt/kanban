@@ -14,6 +14,8 @@ import type {
 import {
 	CloudExecutionOrchestrator,
 	DEFAULT_ORCHESTRATOR_CONFIG,
+	deriveWorktreePath,
+	validateExecutionIdentityFidelity,
 } from "../../../src/cloud/cloud-execution-orchestrator";
 import type { PersistedTaskEvent, PersistedTaskExecution } from "../../../src/cloud/cloud-execution-persistence";
 import type { GovernanceClient } from "../../../src/cloud/cloud-governance-client";
@@ -1102,5 +1104,430 @@ describe("Orchestrator — provisioning creates instance", () => {
 			expect(result?.success).toBe(true);
 			expect(result?.newState).toBe("policy_check");
 		});
+	});
+});
+
+// ===========================================================================
+// Execution Identity Fidelity — deriveWorktreePath
+// ===========================================================================
+
+describe("deriveWorktreePath", () => {
+	it("produces deterministic path from taskId + attemptNumber", () => {
+		expect(deriveWorktreePath("task-abc", 1)).toBe("task-abc/attempt-1");
+		expect(deriveWorktreePath("task-abc", 2)).toBe("task-abc/attempt-2");
+		expect(deriveWorktreePath("task-abc", 3)).toBe("task-abc/attempt-3");
+	});
+
+	it("is consistent across calls", () => {
+		const a = deriveWorktreePath("task-xyz", 5);
+		const b = deriveWorktreePath("task-xyz", 5);
+		expect(a).toBe(b);
+	});
+
+	it("differs for different attempt numbers", () => {
+		const a = deriveWorktreePath("task-001", 1);
+		const b = deriveWorktreePath("task-001", 2);
+		expect(a).not.toBe(b);
+	});
+
+	it("differs for different task IDs", () => {
+		const a = deriveWorktreePath("task-a", 1);
+		const b = deriveWorktreePath("task-b", 1);
+		expect(a).not.toBe(b);
+	});
+});
+
+// ===========================================================================
+// Execution Identity Fidelity — validateExecutionIdentityFidelity
+// ===========================================================================
+
+function makeExecForFidelity(overrides: Partial<PersistedTaskExecution> = {}): PersistedTaskExecution {
+	return {
+		executionId: randomUUID(),
+		taskId: "task-fidelity-001",
+		attemptNumber: 1,
+		executionMode: "cloud_agent",
+		createdAt: new Date().toISOString(),
+		remoteMetadata: {
+			instanceId: "inst-src",
+			repoUrl: "https://github.com/cline/kanban.git",
+			baseBranch: "main",
+			featureBranch: "task/fidelity-001",
+			worktreePath: "task-fidelity-001/attempt-1",
+		},
+		...overrides,
+	};
+}
+describe("validateExecutionIdentityFidelity", () => {
+	it("returns valid when all canonical fields match for retry", () => {
+		const source = makeExecForFidelity({ attemptNumber: 1 });
+		const newExec = makeExecForFidelity({
+			attemptNumber: 2,
+			branchIntent: "reuse_branch",
+			remoteMetadata: {
+				...(source.remoteMetadata ?? {}),
+				instanceId: "pending-provisioning",
+				worktreePath: "task-fidelity-001/attempt-2",
+			},
+		});
+		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
+		expect(result.valid).toBe(true);
+		expect(result.violations).toHaveLength(0);
+	});
+
+	it("detects repoUrl drift as error", () => {
+		const source = makeExecForFidelity({ attemptNumber: 1 });
+		const newExec = makeExecForFidelity({
+			attemptNumber: 2,
+			remoteMetadata: {
+				...(source.remoteMetadata ?? {}),
+				instanceId: "pending-provisioning",
+				repoUrl: "https://github.com/other/repo.git",
+			},
+		});
+		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
+		expect(result.valid).toBe(false);
+		const v = result.violations.find((v) => v.field === "repoUrl");
+		expect(v).toBeDefined();
+		expect(v?.severity).toBe("error");
+		expect(v?.expected).toBe("https://github.com/cline/kanban.git");
+		expect(v?.actual).toBe("https://github.com/other/repo.git");
+	});
+
+	it("detects baseBranch drift as error", () => {
+		const source = makeExecForFidelity({ attemptNumber: 1 });
+		const newExec = makeExecForFidelity({
+			attemptNumber: 2,
+			remoteMetadata: { ...(source.remoteMetadata ?? {}), instanceId: "p", baseBranch: "develop" },
+		});
+		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
+		expect(result.valid).toBe(false);
+		expect(result.violations.find((v) => v.field === "baseBranch")?.severity).toBe("error");
+	});
+
+	it("detects featureBranch drift on reuse_branch as error", () => {
+		const source = makeExecForFidelity({ attemptNumber: 1 });
+		const newExec = makeExecForFidelity({
+			attemptNumber: 2,
+			branchIntent: "reuse_branch",
+			remoteMetadata: {
+				...(source.remoteMetadata ?? {}),
+				instanceId: "p",
+				featureBranch: "task/different-branch",
+			},
+		});
+		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
+		expect(result.valid).toBe(false);
+		expect(result.violations.find((v) => v.field === "featureBranch")?.severity).toBe("error");
+	});
+
+	it("fresh_branch with undefined featureBranch is valid", () => {
+		const source = makeExecForFidelity({ attemptNumber: 1 });
+		const newExec = makeExecForFidelity({
+			attemptNumber: 2,
+			branchIntent: "fresh_branch",
+			remoteMetadata: {
+				...(source.remoteMetadata ?? {}),
+				instanceId: "p",
+				featureBranch: undefined,
+				worktreePath: "task-fidelity-001/attempt-2",
+			},
+		});
+		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
+		expect(result.valid).toBe(true);
+		expect(result.violations.filter((v) => v.field === "featureBranch")).toHaveLength(0);
+	});
+
+	it("detects attemptNumber not incrementing as error", () => {
+		const source = makeExecForFidelity({ attemptNumber: 2 });
+		const newExec = makeExecForFidelity({ attemptNumber: 1 });
+		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
+		expect(result.valid).toBe(false);
+		expect(result.violations.find((v) => v.field === "attemptNumber")?.severity).toBe("error");
+	});
+
+	it("detects worktreePath not matching deterministic derivation as warning", () => {
+		const source = makeExecForFidelity({ attemptNumber: 1 });
+		const newExec = makeExecForFidelity({
+			attemptNumber: 2,
+			branchIntent: "fresh_branch",
+			remoteMetadata: {
+				...(source.remoteMetadata ?? {}),
+				instanceId: "p",
+				featureBranch: undefined,
+				worktreePath: "/some/random/path",
+			},
+		});
+		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
+		expect(result.valid).toBe(true); // warning, not error
+		const v = result.violations.find((v) => v.field === "worktreePath");
+		expect(v).toBeDefined();
+		expect(v?.severity).toBe("warning");
+		expect(v?.expected).toBe("task-fidelity-001/attempt-2");
+	});
+
+	it("validates correctly for replay flow", () => {
+		const source = makeExecForFidelity({ attemptNumber: 1 });
+		const newExec = makeExecForFidelity({
+			attemptNumber: 2,
+			branchIntent: "fresh_branch",
+			remoteMetadata: {
+				...(source.remoteMetadata ?? {}),
+				instanceId: "p",
+				featureBranch: undefined,
+				worktreePath: "task-fidelity-001/attempt-2",
+			},
+		});
+		const result = validateExecutionIdentityFidelity(newExec, source, "replay");
+		expect(result.valid).toBe(true);
+		expect(result.flowType).toBe("replay");
+	});
+
+	it("validates correctly for rerun_snapshot flow", () => {
+		const source = makeExecForFidelity({ attemptNumber: 1 });
+		const newExec = makeExecForFidelity({
+			attemptNumber: 3,
+			branchIntent: "fresh_branch",
+			remoteMetadata: {
+				...(source.remoteMetadata ?? {}),
+				instanceId: "p",
+				featureBranch: undefined,
+				worktreePath: "task-fidelity-001/attempt-3",
+			},
+		});
+		const result = validateExecutionIdentityFidelity(newExec, source, "rerun_snapshot");
+		expect(result.valid).toBe(true);
+		expect(result.flowType).toBe("rerun_snapshot");
+	});
+
+	it("logs violations when logger is provided", () => {
+		const logged: Array<{ msg: string }> = [];
+		const logger = {
+			info: () => {},
+			warn: () => {},
+			error: (msg: string) => {
+				logged.push({ msg });
+			},
+		};
+		const source = makeExecForFidelity({ attemptNumber: 1 });
+		const newExec = makeExecForFidelity({
+			attemptNumber: 2,
+			remoteMetadata: {
+				...(source.remoteMetadata ?? {}),
+				instanceId: "p",
+				repoUrl: "https://other.example.com",
+			},
+		});
+		validateExecutionIdentityFidelity(newExec, source, "retry", logger);
+		expect(logged.length).toBeGreaterThan(0);
+		expect(logged[0]?.msg).toContain("repoUrl");
+	});
+
+	it("returns taskId and executionId in result", () => {
+		const source = makeExecForFidelity({ attemptNumber: 1 });
+		const newExec = makeExecForFidelity({ attemptNumber: 2 });
+		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
+		expect(result.taskId).toBe("task-fidelity-001");
+		expect(result.executionId).toBe(newExec.executionId);
+	});
+});
+
+// ===========================================================================
+// Canonical Identity Preservation — Retry Flow
+// ===========================================================================
+
+describe("Canonical Identity Preservation — Retry", () => {
+	const CANONICAL_REPO = "https://github.com/cline/kanban.git";
+	const CANONICAL_BASE = "main";
+	const CANONICAL_FEATURE = "task/canon-001";
+	const TASK_ID = "task-canon-001";
+
+	function makeCanonicalExecution(attempt: number): PersistedTaskExecution {
+		return {
+			executionId: `exec-canon-${attempt}`,
+			taskId: TASK_ID,
+			attemptNumber: attempt,
+			executionMode: "cloud_agent",
+			createdAt: new Date().toISOString(),
+			terminalState: attempt === 1 ? "failed" : undefined,
+			remoteMetadata: {
+				instanceId: attempt === 1 ? "inst-1" : "pending-provisioning",
+				repoUrl: CANONICAL_REPO,
+				baseBranch: CANONICAL_BASE,
+				featureBranch: CANONICAL_FEATURE,
+				worktreePath: deriveWorktreePath(TASK_ID, attempt),
+			},
+		};
+	}
+
+	it("retry preserves repoUrl from failed execution", async () => {
+		const store = createMockStore();
+		await seedTaskToState(store, TASK_ID, "provisioning");
+		const source = makeCanonicalExecution(1);
+		await store.createExecution(source);
+
+		// Use the orchestrator to drive provisioning
+		const client = createMockClient();
+		const invoker = createMockRunInvoker();
+		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+		await orch.processTask(TASK_ID);
+
+		// Verify createInstance was called with canonical repoUrl
+		expect(client.createCalls).toHaveLength(1);
+		expect(client.createCalls[0]?.repoUrl).toBe(CANONICAL_REPO);
+	});
+
+	it("retry preserves baseBranch from failed execution", async () => {
+		const store = createMockStore();
+		await seedTaskToState(store, TASK_ID, "provisioning");
+		await store.createExecution(makeCanonicalExecution(1));
+
+		const client = createMockClient();
+		const invoker = createMockRunInvoker();
+		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+		await orch.processTask(TASK_ID);
+
+		expect(client.createCalls[0]?.baseBranch).toBe(CANONICAL_BASE);
+	});
+
+	it("retry preserves featureBranch from failed execution", async () => {
+		const store = createMockStore();
+		await seedTaskToState(store, TASK_ID, "provisioning");
+		await store.createExecution(makeCanonicalExecution(1));
+
+		const client = createMockClient();
+		const invoker = createMockRunInvoker();
+		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+		await orch.processTask(TASK_ID);
+
+		expect(client.createCalls[0]?.featureBranch).toBe(CANONICAL_FEATURE);
+	});
+});
+
+// ===========================================================================
+// Canonical Identity Preservation — Worktree + Attempt Context
+// ===========================================================================
+
+describe("Canonical Identity Preservation — Worktree + Attempt", () => {
+	it("worktree path is deterministic for each attempt", () => {
+		const task = "task-wt-001";
+		expect(deriveWorktreePath(task, 1)).toBe("task-wt-001/attempt-1");
+		expect(deriveWorktreePath(task, 2)).toBe("task-wt-001/attempt-2");
+		expect(deriveWorktreePath(task, 10)).toBe("task-wt-001/attempt-10");
+	});
+
+	it("validateExecutionIdentityFidelity passes for properly chained retries", () => {
+		const source = makeExecForFidelity({
+			taskId: "task-chain",
+			attemptNumber: 1,
+			remoteMetadata: {
+				instanceId: "inst-1",
+				repoUrl: "https://github.com/cline/kanban.git",
+				baseBranch: "main",
+				featureBranch: "task/chain",
+				worktreePath: deriveWorktreePath("task-chain", 1),
+			},
+		});
+		const retry = makeExecForFidelity({
+			taskId: "task-chain",
+			attemptNumber: 2,
+			branchIntent: "reuse_branch",
+			remoteMetadata: {
+				instanceId: "pending-provisioning",
+				repoUrl: "https://github.com/cline/kanban.git",
+				baseBranch: "main",
+				featureBranch: "task/chain",
+				worktreePath: deriveWorktreePath("task-chain", 2),
+			},
+		});
+		const result = validateExecutionIdentityFidelity(retry, source, "retry");
+		expect(result.valid).toBe(true);
+		expect(result.violations).toHaveLength(0);
+	});
+
+	it("validateExecutionIdentityFidelity catches multi-field drift", () => {
+		const source = makeExecForFidelity({
+			taskId: "task-drift",
+			attemptNumber: 1,
+			remoteMetadata: {
+				instanceId: "inst-1",
+				repoUrl: "https://github.com/cline/kanban.git",
+				baseBranch: "main",
+			},
+		});
+		const drifted = makeExecForFidelity({
+			taskId: "task-drift",
+			attemptNumber: 2,
+			remoteMetadata: {
+				instanceId: "p",
+				repoUrl: "https://github.com/other/repo.git",
+				baseBranch: "develop",
+			},
+		});
+		const result = validateExecutionIdentityFidelity(drifted, source, "retry");
+		expect(result.valid).toBe(false);
+		expect(result.violations.length).toBeGreaterThanOrEqual(2);
+		const fields = result.violations.map((v) => v.field);
+		expect(fields).toContain("repoUrl");
+		expect(fields).toContain("baseBranch");
+	});
+});
+
+// ===========================================================================
+// Canonical Identity Preservation — Rerun-from-Snapshot
+// ===========================================================================
+
+describe("Canonical Identity Preservation — Rerun Snapshot", () => {
+	it("rerun preserves repoUrl and baseBranch from snapshot", () => {
+		const source = makeExecForFidelity({
+			attemptNumber: 1,
+			remoteMetadata: {
+				instanceId: "inst-1",
+				repoUrl: "https://github.com/cline/kanban.git",
+				baseBranch: "feature-base",
+				featureBranch: "task/snap-001",
+				worktreePath: deriveWorktreePath("task-fidelity-001", 1),
+			},
+		});
+		const rerun = makeExecForFidelity({
+			attemptNumber: 3,
+			branchIntent: "fresh_branch",
+			remoteMetadata: {
+				instanceId: "pending-provisioning",
+				repoUrl: "https://github.com/cline/kanban.git",
+				baseBranch: "feature-base",
+				featureBranch: undefined,
+				worktreePath: deriveWorktreePath("task-fidelity-001", 3),
+			},
+		});
+		const result = validateExecutionIdentityFidelity(rerun, source, "rerun_snapshot");
+		expect(result.valid).toBe(true);
+	});
+
+	it("rerun fresh_branch clears featureBranch from snapshot", () => {
+		const source = makeExecForFidelity({
+			attemptNumber: 1,
+			remoteMetadata: {
+				instanceId: "i",
+				repoUrl: "https://github.com/cline/kanban.git",
+				baseBranch: "main",
+				featureBranch: "task/original",
+			},
+		});
+		const rerun = makeExecForFidelity({
+			attemptNumber: 2,
+			branchIntent: "fresh_branch",
+			remoteMetadata: {
+				instanceId: "p",
+				repoUrl: "https://github.com/cline/kanban.git",
+				baseBranch: "main",
+				featureBranch: undefined,
+				worktreePath: deriveWorktreePath("task-fidelity-001", 2),
+			},
+		});
+		const result = validateExecutionIdentityFidelity(rerun, source, "rerun_snapshot");
+		expect(result.valid).toBe(true);
+		// No featureBranch violation because fresh_branch allows undefined
+		expect(result.violations.filter((v) => v.field === "featureBranch")).toHaveLength(0);
 	});
 });
