@@ -1136,6 +1136,50 @@ export {
 } from "../cloud/cloud-remote-execution-detail";
 
 // ---------------------------------------------------------------------------
+// Cloud Execution Lifecycle (re-exported for UI consumers)
+// ---------------------------------------------------------------------------
+
+export {
+	type CloudExecutionState,
+	cloudExecutionStateSchema,
+} from "../cloud/cloud-execution-lifecycle";
+
+// ---------------------------------------------------------------------------
+// Cloud Execution Timeline (P3-1 — runtime detail views)
+// ---------------------------------------------------------------------------
+
+export {
+	type ExecutionSummary,
+	type ExecutionTimeline,
+	type ExecutionTimelineEntry,
+	executionSummarySchema,
+	executionTimelineEntrySchema,
+	executionTimelineSchema,
+	type TimelineEntryCategory,
+	timelineEntryCategorySchema,
+} from "../cloud/cloud-execution-timeline";
+
+export const cloudExecutionTimelineRequestSchema = z.object({
+	taskId: z.string().min(1),
+});
+export type CloudExecutionTimelineRequest = z.infer<typeof cloudExecutionTimelineRequestSchema>;
+
+export const cloudExecutionSummaryRequestSchema = z.object({
+	taskId: z.string().min(1),
+});
+export type CloudExecutionSummaryRequest = z.infer<typeof cloudExecutionSummaryRequestSchema>;
+
+// Response shapes are defined as TS types only (schemas are assembled in the router using imported sub-schemas)
+export type CloudExecutionTimelineResponse = {
+	found: boolean;
+	timeline: import("../cloud/cloud-execution-timeline").ExecutionTimeline | null;
+};
+export type CloudExecutionSummaryResponse = {
+	found: boolean;
+	summary: import("../cloud/cloud-execution-timeline").ExecutionSummary | null;
+};
+
+// ---------------------------------------------------------------------------
 
 export const runtimeHookEventSchema = z.enum(["to_review", "to_in_progress", "activity"]);
 export type RuntimeHookEvent = z.infer<typeof runtimeHookEventSchema>;

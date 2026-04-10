@@ -667,5 +667,26 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 				detail,
 			};
 		},
+		getCloudExecutionTimeline: async (scope, input) => {
+			const { queryExecutionTimeline } = await import("../cloud/cloud-execution-timeline");
+			const { CloudExecutionStore } = await import("../cloud/cloud-execution-persistence");
+			const store = new CloudExecutionStore(scope.workspacePath);
+			const timeline = await queryExecutionTimeline(store, input.taskId);
+			const found = timeline.totalEntries > 0;
+			return {
+				found,
+				timeline: found ? timeline : null,
+			};
+		},
+		getCloudExecutionSummary: async (scope, input) => {
+			const { buildExecutionSummary } = await import("../cloud/cloud-execution-timeline");
+			const { CloudExecutionStore } = await import("../cloud/cloud-execution-persistence");
+			const store = new CloudExecutionStore(scope.workspacePath);
+			const summary = await buildExecutionSummary(store, input.taskId);
+			return {
+				found: summary !== null,
+				summary,
+			};
+		},
 	};
 }

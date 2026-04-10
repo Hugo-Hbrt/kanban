@@ -6,6 +6,10 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import { z } from "zod";
 
 import type {
+	CloudExecutionSummaryRequest,
+	CloudExecutionSummaryResponse,
+	CloudExecutionTimelineRequest,
+	CloudExecutionTimelineResponse,
 	RuntimeClineAccountBalanceResponse,
 	RuntimeClineAccountOrganizationsResponse,
 	RuntimeClineAccountProfileResponse,
@@ -92,6 +96,8 @@ import type {
 	TaskRemoteExecutionDetailResponse,
 } from "../core/api-contract";
 import {
+	cloudExecutionSummaryRequestSchema,
+	cloudExecutionTimelineRequestSchema,
 	runtimeClineAccountBalanceResponseSchema,
 	runtimeClineAccountOrganizationsResponseSchema,
 	runtimeClineAccountProfileResponseSchema,
@@ -283,6 +289,14 @@ export interface RuntimeTrpcContext {
 			scope: RuntimeTrpcWorkspaceScope,
 			input: TaskRemoteExecutionDetailRequest,
 		) => Promise<TaskRemoteExecutionDetailResponse>;
+		getCloudExecutionTimeline: (
+			scope: RuntimeTrpcWorkspaceScope,
+			input: CloudExecutionTimelineRequest,
+		) => Promise<CloudExecutionTimelineResponse>;
+		getCloudExecutionSummary: (
+			scope: RuntimeTrpcWorkspaceScope,
+			input: CloudExecutionSummaryRequest,
+		) => Promise<CloudExecutionSummaryResponse>;
 	};
 	workspaceApi: {
 		loadGitSummary: (
@@ -571,6 +585,16 @@ export const runtimeAppRouter = t.router({
 			.output(taskRemoteExecutionDetailResponseSchema)
 			.query(async ({ ctx, input }) => {
 				return await ctx.runtimeApi.getTaskRemoteExecutionDetail(ctx.workspaceScope, input);
+			}),
+		getCloudExecutionTimeline: workspaceProcedure
+			.input(cloudExecutionTimelineRequestSchema)
+			.query(async ({ ctx, input }) => {
+				return await ctx.runtimeApi.getCloudExecutionTimeline(ctx.workspaceScope, input);
+			}),
+		getCloudExecutionSummary: workspaceProcedure
+			.input(cloudExecutionSummaryRequestSchema)
+			.query(async ({ ctx, input }) => {
+				return await ctx.runtimeApi.getCloudExecutionSummary(ctx.workspaceScope, input);
 			}),
 	}),
 	workspace: t.router({
