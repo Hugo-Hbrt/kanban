@@ -1,7 +1,18 @@
 // ---------------------------------------------------------------------------
 // Cloud Execution Persistence — A2
-// @phase MVP
+// @phase MVP (core schemas + store); Phase 2 fields in schema are optional
 // @prd-section 7, 15.7
+//
+// Phase boundary:
+//   MVP: CloudExecutionStore, PersistedTaskEvent, PersistedTaskExecution
+//        (core fields only), executionMode, remoteExecutionMetadata
+//   Phase 2+ (forward-compatible in schema):
+//     - attemptTriggerSchema values: retry, replay, rerun_snapshot
+//     - persistedTriggerMetadataSchema (audit for retry/replay)
+//     - Enriched execution fields: trigger, triggerMetadata, errorDetails,
+//       hostname, cloudState, promptHash, promptVersion, branchIntent,
+//       worktreeIntent, startingCommitSha, durationSeconds, tokenUsage,
+//       teardownDecision, teardownCompletedAt
 // ---------------------------------------------------------------------------
 
 import { readFile } from "node:fs/promises";
@@ -73,14 +84,16 @@ export type RemoteExecutionMetadata = z.infer<typeof remoteExecutionMetadataSche
 
 // ---------------------------------------------------------------------------
 // Attempt Trigger Type
+// @phase Phase2 (P2-2, P3-2) — retry/replay/rerun_snapshot are Phase 2+ triggers.
+//        MVP uses only `initial`. Schema includes all values for forward-compat.
 // ---------------------------------------------------------------------------
 
 /**
  * Describes how an execution attempt was triggered.
- *   - `initial`:          First execution of the task
- *   - `retry`:            Automatic or user-initiated retry of a failed/canceled attempt
- *   - `replay`:           Deterministic re-execution with pinned snapshot context
- *   - `rerun_snapshot`:   Re-execution from a specific prior attempt snapshot (P3-2)
+ *   - `initial`:          First execution of the task (MVP)
+ *   - `retry`:            Automatic or user-initiated retry of a failed/canceled attempt (Phase 2, P2-2)
+ *   - `replay`:           Deterministic re-execution with pinned snapshot context (Phase 2, P2-2)
+ *   - `rerun_snapshot`:   Re-execution from a specific prior attempt snapshot (Phase 3, P3-2)
  */
 export const attemptTriggerSchema = z.enum(["initial", "retry", "replay", "rerun_snapshot"]);
 export type AttemptTrigger = z.infer<typeof attemptTriggerSchema>;
@@ -136,48 +149,54 @@ export const persistedTaskExecutionSchema = z.object({
 	resultSummary: z.string().optional(),
 	remoteMetadata: remoteExecutionMetadataSchema.optional(),
 
-	// --- Phase 2: enriched attempt detail ---
+	// --- Phase 2+ enriched attempt detail ---
+	// @phase Phase2 — These optional fields are NOT used by MVP code paths.
+	// MVP only writes: executionId, taskId, attemptNumber, executionMode,
+	// createdAt, startedAt, completedAt, terminalState, resultSummary,
+	// instanceId, remoteMetadata. All Phase 2 fields are .optional() and
+	// default to undefined. Schema includes them for forward-compatibility;
+	// MVP readers must not depend on their presence.
 
-	/** How this attempt was triggered (initial / retry / replay). */
+	/** @phase Phase2 (P2-2) — How this attempt was triggered (initial / retry / replay). */
 	trigger: attemptTriggerSchema.optional(),
 
-	/** Audit metadata for retry/replay triggers. */
+	/** @phase Phase2 (P2-2) — Audit metadata for retry/replay triggers. */
 	triggerMetadata: persistedTriggerMetadataSchema.optional(),
 
-	/** Structured error details (separate from resultSummary). */
+	/** @phase Phase2 — Structured error details (separate from resultSummary). */
 	errorDetails: z.string().optional(),
 
-	/** Hostname of the cloud instance for this attempt. */
+	/** @phase Phase2 — Hostname of the cloud instance for this attempt. */
 	hostname: z.string().optional(),
 
-	/** Cloud instance state at time of last observation. */
+	/** @phase Phase2 — Cloud instance state at time of last observation. */
 	cloudState: z.string().optional(),
 
-	/** Top-level prompt hash for this attempt. */
+	/** @phase Phase2 — Top-level prompt hash for this attempt. */
 	promptHash: z.string().optional(),
 
-	/** Top-level prompt version for this attempt. */
+	/** @phase Phase2 — Top-level prompt version for this attempt. */
 	promptVersion: z.string().optional(),
 
-	/** Branch intent for this attempt (fresh_branch / reuse_branch). */
+	/** @phase Phase2 (P2-2, P3-2) — Branch intent for this attempt. */
 	branchIntent: z.string().optional(),
 
-	/** Worktree intent / path for this attempt. */
+	/** @phase Phase2 (P2-2, P3-2) — Worktree intent / path for this attempt. */
 	worktreeIntent: z.string().optional(),
 
-	/** Git commit SHA at the start of this attempt. */
+	/** @phase Phase2 (P2-2, P3-2) — Git commit SHA at the start of this attempt. */
 	startingCommitSha: z.string().optional(),
 
-	/** Duration in seconds (startedAt to completedAt). */
+	/** @phase Phase2 (P2-5) — Duration in seconds (startedAt to completedAt). */
 	durationSeconds: z.number().nonnegative().optional(),
 
-	/** Token usage for this attempt. */
+	/** @phase Phase2 (P2-5) — Token usage for this attempt. */
 	tokenUsage: z.number().int().nonnegative().optional(),
 
-	/** Teardown decision for this attempt. */
+	/** @phase Phase2 — Teardown decision for this attempt. */
 	teardownDecision: teardownDecisionSchema.optional(),
 
-	/** When teardown completed for this attempt. */
+	/** @phase Phase2 — When teardown completed for this attempt. */
 	teardownCompletedAt: z.string().optional(),
 });
 export type PersistedTaskExecution = z.infer<typeof persistedTaskExecutionSchema>;

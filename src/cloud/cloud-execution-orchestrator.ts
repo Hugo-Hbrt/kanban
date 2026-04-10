@@ -1,12 +1,49 @@
 // ---------------------------------------------------------------------------
 // Cloud Execution Orchestrator — A3
-// @phase MVP
+// @phase MVP (core lifecycle); Phase 2+ features via extension points
 // @prd-section 6, 15.6
+//
+// Phase boundary:
+//   MVP: task lifecycle (queued → policy_check → provisioning → running →
+//        completing → terminal → teardown → archived), cancel, /run invocation
+//   Phase 2+ (extension points):
+//     - ConcurrencyLimiterExtension (P2-4): optional ctor param, null = no gating
 // ---------------------------------------------------------------------------
 
 import { randomUUID } from "node:crypto";
 
-import type { OrgConcurrencyLimiter } from "./cloud-concurrency-limiter";
+// ---------------------------------------------------------------------------
+// Phase 2+ Extension Point: Concurrency Limiter
+// @phase Phase2 (P2-4) — optional, loaded via extension interface below
+// The orchestrator never hard-depends on cloud-concurrency-limiter.ts.
+// When no limiter is provided, all tasks are admitted immediately.
+// ---------------------------------------------------------------------------
+
+/**
+ * Admission decision returned by a concurrency limiter extension.
+ * Structurally compatible with {@link OrgConcurrencyLimiter.checkAdmission}
+ * from cloud-concurrency-limiter.ts (Phase 2).
+ */
+export interface ConcurrencyAdmissionDecision {
+	readonly admitted: boolean;
+	readonly orgId: string;
+	readonly activeCount: number;
+	readonly limit: number;
+	readonly queuePosition: number;
+	readonly reason: string;
+}
+
+/**
+ * Extension point interface for per-org concurrency limiting (Phase 2+).
+ *
+ * MVP orchestrator accepts `null` — no concurrency gating applied.
+ * Phase 2 injects an {@link OrgConcurrencyLimiter} instance from
+ * `cloud-concurrency-limiter.ts` at construction time.
+ */
+export interface ConcurrencyLimiterExtension {
+	checkAdmission(taskId: string): Promise<ConcurrencyAdmissionDecision>;
+}
+
 import type { CloudExecutionState, CloudExecutionTrigger } from "./cloud-execution-lifecycle";
 import {
 	deriveCurrentState,
@@ -188,7 +225,7 @@ export class CloudExecutionOrchestrator {
 	private readonly runInvoker: CloudRunInvoker;
 	private readonly config: OrchestratorConfig;
 	private readonly logger: OrchestratorLogger;
-	private readonly concurrencyLimiter: OrgConcurrencyLimiter | null;
+	private readonly concurrencyLimiter: ConcurrencyLimiterExtension | null;
 	private readonly activeTasks = new Map<string, TaskContext>();
 	private readonly pendingCancellations = new Set<string>();
 	private running = false;
@@ -200,7 +237,7 @@ export class CloudExecutionOrchestrator {
 		runInvoker: CloudRunInvoker,
 		config: OrchestratorConfig = DEFAULT_ORCHESTRATOR_CONFIG,
 		logger: OrchestratorLogger = noopLogger,
-		concurrencyLimiter?: OrgConcurrencyLimiter | null,
+		concurrencyLimiter?: ConcurrencyLimiterExtension | null,
 	) {
 		this.store = store;
 		this.client = client;

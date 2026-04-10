@@ -1125,7 +1125,18 @@ export const runtimeGitRefsResponseSchema = z.object({
 export type RuntimeGitRefsResponse = z.infer<typeof runtimeGitRefsResponseSchema>;
 
 // ---------------------------------------------------------------------------
-// Task Remote Execution Detail (E2 — cloud execution metadata inspection)
+// Cloud Execution Lifecycle (re-exported for UI consumers)
+// @phase MVP
+// ---------------------------------------------------------------------------
+
+export {
+	type CloudExecutionState,
+	cloudExecutionStateSchema,
+} from "../cloud/cloud-execution-lifecycle";
+
+// ---------------------------------------------------------------------------
+// Task Remote Execution Detail (P3-1 — cloud execution metadata inspection)
+// @phase Phase3
 // ---------------------------------------------------------------------------
 
 export {
@@ -1136,16 +1147,8 @@ export {
 } from "../cloud/cloud-remote-execution-detail";
 
 // ---------------------------------------------------------------------------
-// Cloud Execution Lifecycle (re-exported for UI consumers)
-// ---------------------------------------------------------------------------
-
-export {
-	type CloudExecutionState,
-	cloudExecutionStateSchema,
-} from "../cloud/cloud-execution-lifecycle";
-
-// ---------------------------------------------------------------------------
-// Cloud Execution Timeline (P3-1 — runtime detail views)
+// Cloud Execution Timeline (P2-5 — rich execution history)
+// @phase Phase2
 // ---------------------------------------------------------------------------
 
 export {

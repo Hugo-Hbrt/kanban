@@ -657,6 +657,11 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 			openInBrowser(filePath);
 			return { ok: true };
 		},
+		// -----------------------------------------------------------------------
+		// Phase 2+ API handlers — @phase Phase3 (P3-1) / Phase2 (P2-5)
+		// These use dynamic import() so Phase 2+ modules are not bundled
+		// into the MVP build. Safe to remove for MVP-only PR.
+		// -----------------------------------------------------------------------
 		getTaskRemoteExecutionDetail: async (scope, input) => {
 			const { assembleTaskRemoteExecutionDetail } = await import("../cloud/cloud-remote-execution-detail");
 			const { CloudExecutionStore } = await import("../cloud/cloud-execution-persistence");
