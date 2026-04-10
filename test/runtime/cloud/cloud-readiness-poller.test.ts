@@ -33,12 +33,28 @@ function createFakeTimers(): PollerTimers & { currentTime: number; delays: numbe
 	};
 }
 
+const MOCK_USER_ID = "usr-01ARZ3NDEKTSV4RRFFQ69G5FAV";
+const MOCK_NAMESPACE = "cline-instances";
+const MOCK_HOSTNAME = "ins-test.instances.cline.bot";
+
+function stubClient(): Pick<CloudInstanceClient, "createInstance" | "deleteInstance"> {
+	return {
+		createInstance: () => {
+			throw new Error("not implemented in poller test");
+		},
+		deleteInstance: () => {
+			throw new Error("not implemented in poller test");
+		},
+	};
+}
+
 /** Create a mock client that returns a sequence of states. */
 function createSequenceClient(
 	sequence: Array<{ state: CloudInstanceState; hostname?: string }>,
 ): CloudInstanceClient & { callCount: number } {
 	let idx = 0;
 	const client = {
+		...stubClient(),
 		callCount: 0,
 		getInstance: async (instanceId: string): Promise<CloudInstanceResponse> => {
 			client.callCount += 1;
@@ -46,8 +62,10 @@ function createSequenceClient(
 			idx += 1;
 			return {
 				instance_id: instanceId,
-				state: entry?.state,
-				hostname: entry?.hostname,
+				user_id: MOCK_USER_ID,
+				namespace: MOCK_NAMESPACE,
+				state: entry?.state ?? "provisioning",
+				hostname: entry?.hostname ?? MOCK_HOSTNAME,
 			};
 		},
 	};
@@ -62,6 +80,7 @@ function createErrorThenSuccessClient(
 ): CloudInstanceClient & { callCount: number } {
 	let calls = 0;
 	const client = {
+		...stubClient(),
 		callCount: 0,
 		getInstance: async (instanceId: string): Promise<CloudInstanceResponse> => {
 			client.callCount += 1;
@@ -69,7 +88,13 @@ function createErrorThenSuccessClient(
 			if (calls <= errorCount) {
 				throw new Error(`Transient error ${calls}`);
 			}
-			return { instance_id: instanceId, state: successState, hostname };
+			return {
+				instance_id: instanceId,
+				user_id: MOCK_USER_ID,
+				namespace: MOCK_NAMESPACE,
+				state: successState,
+				hostname: hostname ?? MOCK_HOSTNAME,
+			};
 		},
 	};
 	return client;
@@ -323,12 +348,26 @@ describe("pollForReadiness — transient error recovery", () => {
 	it("resets consecutive errors on success", async () => {
 		let callIdx = 0;
 		const client: CloudInstanceClient = {
+			...stubClient(),
 			getInstance: async (instanceId: string) => {
 				callIdx += 1;
 				if (callIdx <= 2) throw new Error(`Error ${callIdx}`);
-				if (callIdx === 3) return { instance_id: instanceId, state: "provisioning" as const };
+				if (callIdx === 3)
+					return {
+						instance_id: instanceId,
+						user_id: MOCK_USER_ID,
+						namespace: MOCK_NAMESPACE,
+						state: "provisioning" as const,
+						hostname: MOCK_HOSTNAME,
+					};
 				if (callIdx <= 5) throw new Error(`Error ${callIdx}`);
-				return { instance_id: instanceId, state: "ready" as const };
+				return {
+					instance_id: instanceId,
+					user_id: MOCK_USER_ID,
+					namespace: MOCK_NAMESPACE,
+					state: "ready" as const,
+					hostname: MOCK_HOSTNAME,
+				};
 			},
 		};
 		const timers = createFakeTimers();
@@ -367,13 +406,20 @@ describe("pollForReadiness — abort signal", () => {
 		const controller = new AbortController();
 		let callCount = 0;
 		const client: CloudInstanceClient = {
+			...stubClient(),
 			getInstance: async (instanceId: string) => {
 				callCount += 1;
 				if (callCount === 2) {
 					controller.abort();
 					throw new DOMException("Aborted", "AbortError");
 				}
-				return { instance_id: instanceId, state: "provisioning" as const };
+				return {
+					instance_id: instanceId,
+					user_id: MOCK_USER_ID,
+					namespace: MOCK_NAMESPACE,
+					state: "provisioning" as const,
+					hostname: MOCK_HOSTNAME,
+				};
 			},
 		};
 		const timers = createFakeTimers();
@@ -418,7 +464,7 @@ describe("pollForReadiness — metrics", () => {
 		}
 	});
 
-	it("returns undefined hostname when not provided", async () => {
+	it("returns default hostname when not provided in sequence entry", async () => {
 		const client = createSequenceClient([{ state: "ready" }]);
 		const timers = createFakeTimers();
 
@@ -426,7 +472,7 @@ describe("pollForReadiness — metrics", () => {
 
 		expect(result.status).toBe("ready");
 		if (result.status === "ready") {
-			expect(result.hostname).toBeUndefined();
+			expect(result.hostname).toBe(MOCK_HOSTNAME);
 		}
 	});
 });
