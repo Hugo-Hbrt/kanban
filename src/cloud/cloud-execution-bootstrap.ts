@@ -53,7 +53,9 @@ function createInstanceClientAdapter(
 
 	return {
 		async createInstance(request: CreateInstanceRequest, signal?: AbortSignal) {
-			const idempotencyKey = `create-${request.taskId}-${Date.now()}`;
+			const attemptNumber = request.attemptNumber ?? 1;
+			const worktreeIntent = request.worktreeIntent ?? `${request.taskId}/attempt-${attemptNumber}`;
+			const idempotencyKey = `create-${request.taskId}-${attemptNumber}-${Date.now()}`;
 			const result = await httpClient.createInstance(
 				{
 					user_id: config.serviceCredential,
@@ -61,6 +63,7 @@ function createInstanceClientAdapter(
 					api_key: config.serviceCredential,
 					instance_type: "task-runner",
 					pr_base_branch: request.baseBranch,
+					starting_commit_sha: request.startingCommitSha,
 				},
 				{
 					taskId: request.taskId,
@@ -70,8 +73,8 @@ function createInstanceClientAdapter(
 						repo_url: request.repoUrl,
 						base_branch: request.baseBranch,
 						feature_branch_intent: request.featureBranch ?? "",
-						worktree_intent: "",
-						attempt_number: 1,
+						worktree_intent: worktreeIntent,
+						attempt_number: attemptNumber,
 					},
 				},
 			);

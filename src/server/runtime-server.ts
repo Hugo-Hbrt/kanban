@@ -76,6 +76,7 @@ export interface CreateRuntimeServerDependencies {
 	) => DisposeTrackedWorkspaceResult;
 	collectProjectWorktreeTaskIdsForRemoval: (board: RuntimeWorkspaceStateResponse["board"]) => Set<string>;
 	pickDirectoryPathFromSystemDialog: () => string | null;
+	getCloudExecutionRuntime?: () => import("../cloud/cloud-execution-bootstrap").CloudExecutionRuntime | null;
 }
 
 export interface RuntimeServer {
@@ -210,6 +211,7 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 				bumpClineSessionContextVersion: deps.runtimeStateHub.bumpClineSessionContextVersion,
 				prepareForStateReset,
 				getCloudExecutionLogStore: () => cloudExecutionLogStore,
+				getCloudExecutionRuntime: deps.getCloudExecutionRuntime,
 			}),
 			workspaceApi: createWorkspaceApi({
 				ensureTerminalManagerForWorkspace: deps.ensureTerminalManagerForWorkspace,

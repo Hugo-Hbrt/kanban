@@ -94,6 +94,9 @@ export interface CreateInstanceRequest {
 	readonly repoUrl: string;
 	readonly baseBranch: string;
 	readonly featureBranch?: string;
+	readonly attemptNumber?: number;
+	readonly worktreeIntent?: string;
+	readonly startingCommitSha?: string;
 }
 
 /**
@@ -670,6 +673,9 @@ export class CloudExecutionOrchestrator {
 					repoUrl: meta?.repoUrl ?? "",
 					baseBranch: meta?.baseBranch ?? "main",
 					featureBranch: meta?.featureBranch,
+					attemptNumber: latest?.attemptNumber,
+					worktreeIntent: latest?.worktreeIntent ?? meta?.worktreePath,
+					startingCommitSha: meta?.startingCommitSha ?? latest?.startingCommitSha,
 				};
 
 				const inst = await this.client.createInstance(req, ctx.abortController.signal);

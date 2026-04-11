@@ -36,6 +36,7 @@ import {
 	parseTaskSessionStartRequest,
 	parseTaskSessionStopRequest,
 } from "../core/api-validation";
+import { randomUUID } from "node:crypto";
 import { isHomeAgentSessionId } from "../core/home-agent-session";
 import { openInBrowser } from "../server/browser";
 import { buildRuntimeConfigResponse, resolveAgentCommand } from "../terminal/agent-registry";
@@ -62,6 +63,10 @@ export interface CreateRuntimeApiDependencies {
 	/** @phase Phase2 — Log store for cloud execution log streaming. */
 	getCloudExecutionLogStore?: () =>
 		| import("../cloud/cloud-execution-log-store").CloudExecutionLogStoreInterface
+		| null;
+	/** Cloud execution runtime — null when cloud execution is not configured. */
+	getCloudExecutionRuntime?: () =>
+		| import("../cloud/cloud-execution-bootstrap").CloudExecutionRuntime
 		| null;
 }
 
@@ -161,6 +166,53 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 				if (body.resumeFromTrash) {
 					deps.broadcastTaskChatCleared?.(workspaceScope.workspaceId, body.taskId);
 				}
+
+				// Cloud agent dispatch — route to cloud orchestrator instead of local
+				if (body.executionMode === "cloud_agent" && !body.resumeFromTrash) {
+					const cloudRuntime = deps.getCloudExecutionRuntime?.();
+					if (!cloudRuntime) {
+						return {
+							ok: false,
+							summary: null,
+							error: "Cloud execution is not configured. Set KANBAN_CLOUD_PLATFORM_BASE_URL to enable cloud agents.",
+						};
+					}
+					await cloudRuntime.store.appendEvent({
+						eventId: randomUUID(),
+						taskId: body.taskId,
+						trigger: "submit",
+						fromState: "draft",
+						toState: "queued",
+						timestamp: new Date().toISOString(),
+						triggerSource: "user",
+						metadata: {
+							prompt: body.prompt,
+							baseRef: body.baseRef,
+							executionMode: "cloud_agent",
+						},
+					});
+					// Immediately process the newly queued task
+					void cloudRuntime.orchestrator.processTask(body.taskId).catch(() => {});
+					return {
+						ok: true,
+						summary: {
+							taskId: body.taskId,
+							state: "running" as const,
+							mode: null,
+							agentId: null,
+							workspacePath: null,
+							pid: null,
+							startedAt: Date.now(),
+							updatedAt: Date.now(),
+							lastOutputAt: null,
+							reviewReason: null,
+							exitCode: null,
+							lastHookAt: null,
+							latestHookActivity: null,
+						},
+					};
+				}
+
 				const requestedClineTaskMode = body.mode ?? "act";
 				const scopedRuntimeConfig = await deps.loadScopedRuntimeConfig(workspaceScope);
 				const taskCwd = isHomeAgentSessionId(body.taskId)

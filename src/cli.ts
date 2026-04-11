@@ -436,6 +436,19 @@ async function startServer(): Promise<{
 		return disposed;
 	};
 
+	// Cloud execution runtime — bootstrapped from env vars, null if not configured
+	const { bootstrapCloudExecution } = await import("./cloud/cloud-execution-bootstrap.js");
+	const cloudLogger = {
+		info: (msg: string, meta?: Record<string, unknown>) => console.log(`[kanban:cloud] ${msg}`, meta ?? ""),
+		warn: (msg: string, meta?: Record<string, unknown>) => console.warn(`[kanban:cloud] ${msg}`, meta ?? ""),
+		error: (msg: string, meta?: Record<string, unknown>) => console.error(`[kanban:cloud] ${msg}`, meta ?? ""),
+	};
+	const cloudRuntime = bootstrapCloudExecution(process.env, cloudLogger);
+	if (cloudRuntime) {
+		cloudRuntime.orchestrator.start();
+		console.log("[kanban] Cloud execution runtime started");
+	}
+
 	const runtimeServer = await createRuntimeServer({
 		workspaceRegistry,
 		runtimeStateHub: runtimeHub,
@@ -451,20 +464,8 @@ async function startServer(): Promise<{
 		disposeWorkspace: disposeTrackedWorkspace,
 		collectProjectWorktreeTaskIdsForRemoval,
 		pickDirectoryPathFromSystemDialog,
+		getCloudExecutionRuntime: () => cloudRuntime,
 	});
-
-	// Cloud execution runtime — bootstrapped from env vars, null if not configured
-	const { bootstrapCloudExecution } = await import("./cloud/cloud-execution-bootstrap.js");
-	const cloudLogger = {
-		info: (msg: string, meta?: Record<string, unknown>) => console.log(`[kanban:cloud] ${msg}`, meta ?? ""),
-		warn: (msg: string, meta?: Record<string, unknown>) => console.warn(`[kanban:cloud] ${msg}`, meta ?? ""),
-		error: (msg: string, meta?: Record<string, unknown>) => console.error(`[kanban:cloud] ${msg}`, meta ?? ""),
-	};
-	const cloudRuntime = bootstrapCloudExecution(process.env, cloudLogger);
-	if (cloudRuntime) {
-		cloudRuntime.orchestrator.start();
-		console.log("[kanban] Cloud execution runtime started");
-	}
 
 	const close = async () => {
 		cloudRuntime?.orchestrator.stop();

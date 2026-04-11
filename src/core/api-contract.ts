@@ -846,6 +846,7 @@ export const runtimeTaskSessionStartRequestSchema = z.object({
 	mode: runtimeTaskSessionModeSchema.optional(),
 	resumeFromTrash: z.boolean().optional(),
 	baseRef: z.string(),
+	executionMode: runtimeTaskExecutionModeSchema.optional(),
 	cols: z.number().int().positive().optional(),
 	rows: z.number().int().positive().optional(),
 });

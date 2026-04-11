@@ -6,7 +6,7 @@ import { useHotkeys } from "react-hotkeys-hook";
 import { BranchSelectDropdown, type BranchSelectOption } from "@/components/branch-select-dropdown";
 import { TaskPromptComposer } from "@/components/task-prompt-composer";
 import { Button } from "@/components/ui/button";
-import type { TaskAutoReviewMode, TaskImage } from "@/types";
+import type { TaskAutoReviewMode, TaskExecutionMode, TaskImage } from "@/types";
 import { pasteShortcutLabel } from "@/utils/platform";
 import { useDocumentEvent, useMeasure } from "@/utils/react-use";
 
@@ -59,6 +59,8 @@ export function TaskInlineCreateCard({
 	branchRef,
 	branchOptions,
 	onBranchRefChange,
+	executionMode,
+	onExecutionModeChange,
 	enabled = true,
 	mode = "create",
 	idPrefix = "inline-task",
@@ -81,6 +83,8 @@ export function TaskInlineCreateCard({
 	branchRef: string;
 	branchOptions: TaskBranchOption[];
 	onBranchRefChange: (value: string) => void;
+	executionMode?: TaskExecutionMode;
+	onExecutionModeChange?: (value: TaskExecutionMode) => void;
 	enabled?: boolean;
 	mode?: TaskInlineCardMode;
 	idPrefix?: string;
