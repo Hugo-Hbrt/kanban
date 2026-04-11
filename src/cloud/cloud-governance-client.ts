@@ -5,43 +5,62 @@
 // ---------------------------------------------------------------------------
 //
 // Makes real HTTP calls to core-platform governance endpoints:
-//   - POST /api/v1/execution/authorize — policy check authorization
-//   - POST /api/v1/usage/events        — usage event reporting
-//   - POST /api/v1/audit/events        — audit trail events
+//   - POST /api/v1/execution/authorize   — policy check authorization (D1)
+//   - POST /api/v1/usage/reservations    — budget reservation (D2)
+//   - POST /api/v1/usage/events          — usage event reporting (D2)
+//   - POST /api/v1/audit/events          — audit trail events (D3)
+//
+// Schemas aligned with core-platform/apps/backend/core-api/internal/domain/governance/types.go
 // ---------------------------------------------------------------------------
 
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
-// Authorization Request / Response Schemas
+// Shared Types (matches core-platform ExecutionContext)
 // ---------------------------------------------------------------------------
 
+export const executionContextSchema = z.object({
+	repoUrl: z.string().optional().default(""),
+	baseBranch: z.string().optional().default(""),
+	featureBranchIntent: z.string().optional().default(""),
+	worktreeIntent: z.string().optional().default(""),
+});
+export type ExecutionContext = z.infer<typeof executionContextSchema>;
+
+// ---------------------------------------------------------------------------
+// D1 — Authorization Request / Response Schemas
+// Matches: core-platform AuthorizeExecutionRequest
+// ---------------------------------------------------------------------------
+
+export const taskSpecSchema = z.object({
+	type: z.string().min(1),
+	image: z.string().min(1),
+	tools: z.array(z.string()).optional(),
+});
+export type TaskSpec = z.infer<typeof taskSpecSchema>;
+
+export const requestedLimitsSchema = z.object({
+	maxComputeSeconds: z.number().int().positive(),
+	maxTokenBudget: z.number().int().positive(),
+});
+export type RequestedLimits = z.infer<typeof requestedLimitsSchema>;
+
 export const authorizeRequestSchema = z.object({
-	taskId: z.string().min(1),
+	orgId: z.string().min(1),
+	userId: z.string().min(1),
 	projectId: z.string().min(1),
-	taskSpec: z.object({
-		prompt: z.string(),
-		baseRef: z.string().optional(),
-		executionMode: z.string().optional(),
-	}),
-	requestedLimits: z
-		.object({
-			maxDurationSeconds: z.number().optional(),
-			maxTokens: z.number().optional(),
-		})
-		.optional(),
-	orgId: z.string().optional(),
-	userId: z.string().optional(),
-	executionMode: z.string().optional(),
-	metadata: z.record(z.string(), z.unknown()).optional(),
+	taskId: z.string().min(1),
+	executionMode: z.string().min(1),
+	taskSpec: taskSpecSchema,
+	requestedLimits: requestedLimitsSchema,
+	executionContext: executionContextSchema.optional(),
 });
 export type AuthorizeRequest = z.infer<typeof authorizeRequestSchema>;
 
 export const authorizeResponseSchema = z.object({
 	allowed: z.boolean(),
-	reason: z.string().optional(),
 	policySnapshotId: z.string().optional(),
-	expiresAt: z.string().optional(),
+	denialReason: z.string().optional(),
 });
 
 /** Normalized caller-facing response so existing consumers don't break. */
@@ -49,54 +68,107 @@ export type AuthorizeResponse = {
 	decision: "authorized" | "denied";
 	reason?: string;
 	policySnapshotId?: string;
-	expiresAt?: string;
 };
 
 // ---------------------------------------------------------------------------
-// Usage Event Request / Response Schemas
+// D2 — Budget Reservation Request / Response Schemas
+// Matches: core-platform ReserveBudgetRequest / ReserveBudgetResult
+// ---------------------------------------------------------------------------
+
+export const reserveBudgetRequestSchema = z.object({
+	taskId: z.string().min(1),
+	orgId: z.string().min(1),
+	maxComputeSeconds: z.number().int().positive(),
+	maxTokenBudget: z.number().int().positive(),
+	maxCostUsd: z.number().positive(),
+	executionMode: z.string().optional(),
+	executionContext: executionContextSchema.optional(),
+});
+export type ReserveBudgetRequest = z.infer<typeof reserveBudgetRequestSchema>;
+
+export const reserveBudgetResponseSchema = z.object({
+	reservationId: z.string(),
+	expiresAt: z.string(),
+});
+export type ReserveBudgetResponse = z.infer<typeof reserveBudgetResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// D2 — Usage Event Request / Response Schemas
+// Matches: core-platform UsageEventRequest / UsageEventResult
 // ---------------------------------------------------------------------------
 
 export const usageEventRequestSchema = z.object({
 	taskId: z.string().min(1),
-	executionId: z.string().optional(),
-	orgId: z.string().optional(),
-	userId: z.string().optional(),
-	terminalState: z.string().min(1),
+	orgId: z.string().min(1),
+	userId: z.string().min(1),
 	executionMode: z.string().min(1),
-	durationSeconds: z.number().nonnegative().optional(),
+	cpuSeconds: z.number().nonnegative().default(0),
+	memoryGbSeconds: z.number().nonnegative().default(0),
 	tokensIn: z.number().int().nonnegative().optional(),
 	tokensOut: z.number().int().nonnegative().optional(),
-	metadata: z.record(z.string(), z.unknown()).optional(),
+	storageGbHours: z.number().nonnegative().default(0),
+	costUsd: z.number().nonnegative().default(0),
+	reservationId: z.string().optional(),
+	idempotencyKey: z.string().optional(),
+	executionContext: executionContextSchema.optional(),
 });
 export type UsageEventRequest = z.infer<typeof usageEventRequestSchema>;
 
 export const usageEventResponseSchema = z.object({
 	accepted: z.boolean(),
 	eventId: z.string().optional(),
+	duplicate: z.boolean().optional(),
+	budgetWarning: z.string().optional(),
 });
 export type UsageEventResponse = z.infer<typeof usageEventResponseSchema>;
 
 // ---------------------------------------------------------------------------
-// Audit Event Request / Response Schemas
+// D3 — Audit Event Request / Response Schemas
+// Matches: core-platform AuditEventRequest / AuditEventResult
 // ---------------------------------------------------------------------------
 
+export const auditActorSchema = z.object({
+	type: z.string().min(1),
+	id: z.string().min(1),
+});
+export type AuditActor = z.infer<typeof auditActorSchema>;
+
+export const auditResourceSchema = z.object({
+	type: z.string().min(1),
+	id: z.string().min(1),
+});
+export type AuditResource = z.infer<typeof auditResourceSchema>;
+
+export const auditEventMetadataSchema = z.object({
+	sandboxId: z.string().optional(),
+	durationSeconds: z.number().optional(),
+	executionMode: z.string().optional(),
+	repoUrl: z.string().optional(),
+	baseBranch: z.string().optional(),
+	featureBranchIntent: z.string().optional(),
+	worktreeIntent: z.string().optional(),
+	policySnapshotId: z.string().optional(),
+});
+export type AuditEventMetadata = z.infer<typeof auditEventMetadataSchema>;
+
 export const auditEventRequestSchema = z.object({
-	taskId: z.string().min(1),
-	eventType: z.string().min(1),
-	fromState: z.string().min(1),
-	toState: z.string().min(1),
-	trigger: z.string().min(1),
-	triggerSource: z.string().min(1),
-	timestamp: z.string().min(1),
+	actor: auditActorSchema,
+	action: z.string().min(1),
+	resource: auditResourceSchema,
+	result: z.string().min(1),
+	metadata: auditEventMetadataSchema.optional(),
 	orgId: z.string().optional(),
 	userId: z.string().optional(),
-	metadata: z.record(z.string(), z.unknown()).optional(),
+	projectId: z.string().optional(),
+	taskId: z.string().optional(),
+	idempotencyKey: z.string().optional(),
 });
 export type AuditEventRequest = z.infer<typeof auditEventRequestSchema>;
 
 export const auditEventResponseSchema = z.object({
 	accepted: z.boolean(),
 	eventId: z.string().optional(),
+	duplicate: z.boolean().optional(),
 });
 export type AuditEventResponse = z.infer<typeof auditEventResponseSchema>;
 
@@ -131,6 +203,7 @@ export interface GovernanceRetryConfig {
 
 export const DEFAULT_GOVERNANCE_RETRY_CONFIGS = {
 	authorize: { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5_000, timeoutMs: 10_000 },
+	reservation: { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5_000, timeoutMs: 10_000 },
 	usage: { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5_000, timeoutMs: 10_000 },
 	audit: { maxRetries: 1, baseDelayMs: 300, maxDelayMs: 3_000, timeoutMs: 5_000 },
 } as const satisfies Record<string, GovernanceRetryConfig>;
@@ -169,6 +242,7 @@ const noopLogger: GovernanceLogger = { info: () => {}, warn: () => {}, error: ()
 
 export interface GovernanceClient {
 	checkAuthorization(request: AuthorizeRequest, signal?: AbortSignal): Promise<AuthorizeResponse>;
+	reserveBudget(request: ReserveBudgetRequest, signal?: AbortSignal): Promise<ReserveBudgetResponse>;
 	reportUsage(request: UsageEventRequest, signal?: AbortSignal): Promise<UsageEventResponse>;
 	reportAudit(request: AuditEventRequest, signal?: AbortSignal): Promise<AuditEventResponse>;
 }
@@ -206,6 +280,7 @@ export class GovernanceHttpClient implements GovernanceClient {
 		this.logger = logger;
 		this.retryConfigs = {
 			authorize: { ...DEFAULT_GOVERNANCE_RETRY_CONFIGS.authorize, ...config.retryConfigs?.authorize },
+			reservation: { ...DEFAULT_GOVERNANCE_RETRY_CONFIGS.reservation, ...config.retryConfigs?.reservation },
 			usage: { ...DEFAULT_GOVERNANCE_RETRY_CONFIGS.usage, ...config.retryConfigs?.usage },
 			audit: { ...DEFAULT_GOVERNANCE_RETRY_CONFIGS.audit, ...config.retryConfigs?.audit },
 		};
@@ -229,9 +304,8 @@ export class GovernanceHttpClient implements GovernanceClient {
 			const parsed = authorizeResponseSchema.parse(body);
 			return {
 				decision: parsed.allowed ? "authorized" : "denied",
-				reason: parsed.reason,
+				reason: parsed.denialReason,
 				policySnapshotId: parsed.policySnapshotId,
-				expiresAt: parsed.expiresAt,
 			};
 		} catch (e) {
 			this.logger.error("Governance authorization check failed", {
@@ -250,6 +324,23 @@ export class GovernanceHttpClient implements GovernanceClient {
 				reason: `Governance unreachable: ${e instanceof Error ? e.message : String(e)}`,
 			};
 		}
+	}
+
+	async reserveBudget(request: ReserveBudgetRequest, signal?: AbortSignal): Promise<ReserveBudgetResponse> {
+		const validated = reserveBudgetRequestSchema.parse(request);
+		const response = await this.executeWithRetry(
+			async (sig) =>
+				this.fetchFn(`${this.baseUrl}/api/v1/usage/reservations`, {
+					method: "POST",
+					headers: this.buildHeaders(),
+					body: JSON.stringify(validated),
+					signal: sig,
+				}),
+			this.retryConfigs.reservation,
+			signal,
+		);
+		const body = await response.json();
+		return reserveBudgetResponseSchema.parse(body);
 	}
 
 	async reportUsage(request: UsageEventRequest, signal?: AbortSignal): Promise<UsageEventResponse> {

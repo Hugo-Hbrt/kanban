@@ -8,6 +8,7 @@ import {
 	type GovernanceLogger,
 	isGovernanceRetryableStatus,
 	parseGovernanceConfig,
+	reserveBudgetRequestSchema,
 	usageEventRequestSchema,
 } from "../../../src/cloud/cloud-governance-client";
 
@@ -38,6 +39,7 @@ function createTestClient(fetchFn: typeof globalThis.fetch, opts?: { failOpen?: 
 			delay: async () => {},
 			retryConfigs: {
 				authorize: { maxRetries: 1, baseDelayMs: 10, maxDelayMs: 50, timeoutMs: 5000 },
+				reservation: { maxRetries: 1, baseDelayMs: 10, maxDelayMs: 50, timeoutMs: 5000 },
 				usage: { maxRetries: 1, baseDelayMs: 10, maxDelayMs: 50, timeoutMs: 5000 },
 				audit: { maxRetries: 0, baseDelayMs: 10, maxDelayMs: 50, timeoutMs: 5000 },
 			},
@@ -69,65 +71,139 @@ function createMockLogger(): GovernanceLogger & {
 }
 
 // ---------------------------------------------------------------------------
-// Schema validation tests
+// Schema validation tests — authorizeRequestSchema
 // ---------------------------------------------------------------------------
 
 describe("authorizeRequestSchema", () => {
-	it("accepts a valid request", () => {
+	it("accepts a valid request with all required fields", () => {
 		const result = authorizeRequestSchema.safeParse({
+			orgId: "org-1",
+			userId: "user-1",
 			taskId: "task-1",
 			projectId: "proj-1",
-			taskSpec: { prompt: "Fix the bug" },
+			executionMode: "cloud_agent",
+			taskSpec: { type: "cline-task", image: "cline-runner:latest" },
+			requestedLimits: { maxComputeSeconds: 1800, maxTokenBudget: 100_000 },
 		});
 		expect(result.success).toBe(true);
 	});
 
-	it("accepts a request with all optional taskSpec and requestedLimits fields", () => {
+	it("accepts a request with optional executionContext and tools", () => {
 		const result = authorizeRequestSchema.safeParse({
+			orgId: "org-1",
+			userId: "user-1",
 			taskId: "task-1",
 			projectId: "proj-1",
-			taskSpec: { prompt: "Fix the bug", baseRef: "main", executionMode: "cloud_agent" },
-			requestedLimits: { maxDurationSeconds: 300, maxTokens: 5000 },
+			executionMode: "cloud_agent",
+			taskSpec: { type: "cline-task", image: "cline-runner:latest", tools: ["git", "npm"] },
+			requestedLimits: { maxComputeSeconds: 300, maxTokenBudget: 5000 },
+			executionContext: { repoUrl: "https://github.com/org/repo", baseBranch: "main" },
 		});
 		expect(result.success).toBe(true);
 	});
 
 	it("rejects empty taskId", () => {
 		const result = authorizeRequestSchema.safeParse({
+			orgId: "org-1",
+			userId: "user-1",
 			taskId: "",
 			projectId: "proj-1",
-			taskSpec: { prompt: "Fix the bug" },
+			executionMode: "cloud_agent",
+			taskSpec: { type: "cline-task", image: "runner:latest" },
+			requestedLimits: { maxComputeSeconds: 100, maxTokenBudget: 1000 },
 		});
 		expect(result.success).toBe(false);
 	});
 
-	it("rejects missing projectId", () => {
+	it("rejects missing orgId", () => {
 		const result = authorizeRequestSchema.safeParse({
-			taskId: "task-1",
-			taskSpec: { prompt: "Fix the bug" },
-		});
-		expect(result.success).toBe(false);
-	});
-
-	it("rejects missing taskSpec", () => {
-		const result = authorizeRequestSchema.safeParse({
+			userId: "user-1",
 			taskId: "task-1",
 			projectId: "proj-1",
+			executionMode: "cloud_agent",
+			taskSpec: { type: "cline-task", image: "runner:latest" },
+			requestedLimits: { maxComputeSeconds: 100, maxTokenBudget: 1000 },
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects missing userId", () => {
+		const result = authorizeRequestSchema.safeParse({
+			orgId: "org-1",
+			taskId: "task-1",
+			projectId: "proj-1",
+			executionMode: "cloud_agent",
+			taskSpec: { type: "cline-task", image: "runner:latest" },
+			requestedLimits: { maxComputeSeconds: 100, maxTokenBudget: 1000 },
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects missing executionMode", () => {
+		const result = authorizeRequestSchema.safeParse({
+			orgId: "org-1",
+			userId: "user-1",
+			taskId: "task-1",
+			projectId: "proj-1",
+			taskSpec: { type: "cline-task", image: "runner:latest" },
+			requestedLimits: { maxComputeSeconds: 100, maxTokenBudget: 1000 },
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects taskSpec with missing type", () => {
+		const result = authorizeRequestSchema.safeParse({
+			orgId: "org-1",
+			userId: "user-1",
+			taskId: "task-1",
+			projectId: "proj-1",
+			executionMode: "cloud_agent",
+			taskSpec: { image: "runner:latest" },
+			requestedLimits: { maxComputeSeconds: 100, maxTokenBudget: 1000 },
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects taskSpec with missing image", () => {
+		const result = authorizeRequestSchema.safeParse({
+			orgId: "org-1",
+			userId: "user-1",
+			taskId: "task-1",
+			projectId: "proj-1",
+			executionMode: "cloud_agent",
+			taskSpec: { type: "cline-task" },
+			requestedLimits: { maxComputeSeconds: 100, maxTokenBudget: 1000 },
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects missing requestedLimits", () => {
+		const result = authorizeRequestSchema.safeParse({
+			orgId: "org-1",
+			userId: "user-1",
+			taskId: "task-1",
+			projectId: "proj-1",
+			executionMode: "cloud_agent",
+			taskSpec: { type: "cline-task", image: "runner:latest" },
 		});
 		expect(result.success).toBe(false);
 	});
 });
 
+// ---------------------------------------------------------------------------
+// Schema validation tests — authorizeResponseSchema
+// ---------------------------------------------------------------------------
+
 describe("authorizeResponseSchema", () => {
-	it("accepts allowed: true", () => {
-		const result = authorizeResponseSchema.safeParse({ allowed: true });
+	it("accepts allowed: true with policySnapshotId", () => {
+		const result = authorizeResponseSchema.safeParse({ allowed: true, policySnapshotId: "snap-1" });
 		expect(result.success).toBe(true);
 	});
 
-	it("accepts allowed: false with reason and policySnapshotId", () => {
+	it("accepts allowed: false with denialReason", () => {
 		const result = authorizeResponseSchema.safeParse({
 			allowed: false,
-			reason: "over quota",
+			denialReason: "over quota",
 			policySnapshotId: "snap-1",
 		});
 		expect(result.success).toBe(true);
@@ -139,55 +215,192 @@ describe("authorizeResponseSchema", () => {
 	});
 
 	it("rejects missing allowed field", () => {
-		const result = authorizeResponseSchema.safeParse({ reason: "no allowed" });
+		const result = authorizeResponseSchema.safeParse({ denialReason: "no allowed" });
 		expect(result.success).toBe(false);
 	});
 });
 
+// ---------------------------------------------------------------------------
+// Schema validation tests — reserveBudgetRequestSchema
+// ---------------------------------------------------------------------------
+
+describe("reserveBudgetRequestSchema", () => {
+	it("accepts a valid reservation request", () => {
+		const result = reserveBudgetRequestSchema.safeParse({
+			taskId: "task-1",
+			orgId: "org-1",
+			maxComputeSeconds: 1800,
+			maxTokenBudget: 100_000,
+			maxCostUsd: 5.0,
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("accepts optional executionMode and executionContext", () => {
+		const result = reserveBudgetRequestSchema.safeParse({
+			taskId: "task-1",
+			orgId: "org-1",
+			maxComputeSeconds: 900,
+			maxTokenBudget: 50_000,
+			maxCostUsd: 2.5,
+			executionMode: "cloud_agent",
+			executionContext: { repoUrl: "https://github.com/org/repo" },
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("rejects missing orgId", () => {
+		const result = reserveBudgetRequestSchema.safeParse({
+			taskId: "task-1",
+			maxComputeSeconds: 100,
+			maxTokenBudget: 1000,
+			maxCostUsd: 1.0,
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects zero maxCostUsd", () => {
+		const result = reserveBudgetRequestSchema.safeParse({
+			taskId: "task-1",
+			orgId: "org-1",
+			maxComputeSeconds: 100,
+			maxTokenBudget: 1000,
+			maxCostUsd: 0,
+		});
+		expect(result.success).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Schema validation tests — usageEventRequestSchema
+// ---------------------------------------------------------------------------
+
 describe("usageEventRequestSchema", () => {
-	it("accepts a valid usage event with executionMode", () => {
+	it("accepts a valid usage event with required fields", () => {
 		const result = usageEventRequestSchema.safeParse({
 			taskId: "task-1",
-			terminalState: "completed",
+			orgId: "org-1",
+			userId: "user-1",
 			executionMode: "cloud_agent",
 		});
 		expect(result.success).toBe(true);
 	});
 
-	it("accepts optional tokensIn and tokensOut", () => {
+	it("accepts optional cpuSeconds, tokensIn, tokensOut, and resource fields", () => {
 		const result = usageEventRequestSchema.safeParse({
 			taskId: "task-1",
-			terminalState: "completed",
+			orgId: "org-1",
+			userId: "user-1",
 			executionMode: "local_agent",
+			cpuSeconds: 120.5,
+			memoryGbSeconds: 45.2,
 			tokensIn: 500,
 			tokensOut: 1200,
+			storageGbHours: 0.1,
+			costUsd: 0.05,
+			reservationId: "res-1",
+			idempotencyKey: "idem-key-1",
 		});
 		expect(result.success).toBe(true);
 	});
 
-	it("rejects missing terminalState", () => {
-		const result = usageEventRequestSchema.safeParse({ taskId: "task-1", executionMode: "cloud_agent" });
+	it("rejects missing orgId", () => {
+		const result = usageEventRequestSchema.safeParse({
+			taskId: "task-1",
+			userId: "user-1",
+			executionMode: "cloud_agent",
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects missing userId", () => {
+		const result = usageEventRequestSchema.safeParse({
+			taskId: "task-1",
+			orgId: "org-1",
+			executionMode: "cloud_agent",
+		});
 		expect(result.success).toBe(false);
 	});
 
 	it("rejects missing executionMode", () => {
-		const result = usageEventRequestSchema.safeParse({ taskId: "task-1", terminalState: "completed" });
+		const result = usageEventRequestSchema.safeParse({
+			taskId: "task-1",
+			orgId: "org-1",
+			userId: "user-1",
+		});
 		expect(result.success).toBe(false);
 	});
 });
 
+// ---------------------------------------------------------------------------
+// Schema validation tests — auditEventRequestSchema
+// ---------------------------------------------------------------------------
+
 describe("auditEventRequestSchema", () => {
-	it("accepts a valid audit event", () => {
+	it("accepts a valid audit event with required fields", () => {
 		const result = auditEventRequestSchema.safeParse({
-			taskId: "task-1",
-			eventType: "lifecycle_transition",
-			fromState: "queued",
-			toState: "policy_check",
-			trigger: "dequeue",
-			triggerSource: "system",
-			timestamp: new Date().toISOString(),
+			actor: { type: "system", id: "orchestrator" },
+			action: "task.dequeue",
+			resource: { type: "task", id: "task-1" },
+			result: "success",
 		});
 		expect(result.success).toBe(true);
+	});
+
+	it("accepts optional metadata, orgId, userId, projectId, taskId, idempotencyKey", () => {
+		const result = auditEventRequestSchema.safeParse({
+			actor: { type: "user", id: "user-1" },
+			action: "task.user_cancel",
+			resource: { type: "task", id: "task-1" },
+			result: "failure",
+			metadata: {
+				executionMode: "cloud_agent",
+				repoUrl: "https://github.com/org/repo",
+				policySnapshotId: "snap-1",
+			},
+			orgId: "org-1",
+			userId: "user-1",
+			projectId: "proj-1",
+			taskId: "task-1",
+			idempotencyKey: "idem-key-1",
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it("rejects missing actor", () => {
+		const result = auditEventRequestSchema.safeParse({
+			action: "task.dequeue",
+			resource: { type: "task", id: "task-1" },
+			result: "success",
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects missing action", () => {
+		const result = auditEventRequestSchema.safeParse({
+			actor: { type: "system", id: "orchestrator" },
+			resource: { type: "task", id: "task-1" },
+			result: "success",
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects missing resource", () => {
+		const result = auditEventRequestSchema.safeParse({
+			actor: { type: "system", id: "orchestrator" },
+			action: "task.dequeue",
+			result: "success",
+		});
+		expect(result.success).toBe(false);
+	});
+
+	it("rejects missing result", () => {
+		const result = auditEventRequestSchema.safeParse({
+			actor: { type: "system", id: "orchestrator" },
+			action: "task.dequeue",
+			resource: { type: "task", id: "task-1" },
+		});
+		expect(result.success).toBe(false);
 	});
 });
 
@@ -210,9 +423,13 @@ describe("isGovernanceRetryableStatus", () => {
 // ---------------------------------------------------------------------------
 
 const VALID_AUTH_REQUEST = {
+	orgId: "org-1",
+	userId: "user-1",
 	taskId: "task-1",
 	projectId: "proj-1",
-	taskSpec: { prompt: "Fix the bug" },
+	executionMode: "cloud_agent",
+	taskSpec: { type: "cline-task", image: "cline-runner:latest" },
+	requestedLimits: { maxComputeSeconds: 1800, maxTokenBudget: 100_000 },
 };
 
 describe("GovernanceHttpClient — checkAuthorization", () => {
@@ -232,10 +449,28 @@ describe("GovernanceHttpClient — checkAuthorization", () => {
 		expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${TEST_AUTH_TOKEN}`);
 	});
 
-	it("returns denied on denied response", async () => {
+	it("sends the full request body matching core-platform contract", async () => {
 		const fetchMock = vi
 			.fn<typeof globalThis.fetch>()
-			.mockResolvedValue(mockResponse({ allowed: false, reason: "over quota" }));
+			.mockResolvedValue(mockResponse({ allowed: true }));
+		const client = createTestClient(fetchMock);
+		await client.checkAuthorization(VALID_AUTH_REQUEST);
+
+		const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect(body.orgId).toBe("org-1");
+		expect(body.userId).toBe("user-1");
+		expect(body.executionMode).toBe("cloud_agent");
+		expect(body.taskSpec.type).toBe("cline-task");
+		expect(body.taskSpec.image).toBe("cline-runner:latest");
+		expect(body.requestedLimits.maxComputeSeconds).toBe(1800);
+		expect(body.requestedLimits.maxTokenBudget).toBe(100_000);
+	});
+
+	it("returns denied with denialReason from response", async () => {
+		const fetchMock = vi
+			.fn<typeof globalThis.fetch>()
+			.mockResolvedValue(mockResponse({ allowed: false, denialReason: "over quota" }));
 		const client = createTestClient(fetchMock);
 		const result = await client.checkAuthorization(VALID_AUTH_REQUEST);
 		expect(result.decision).toBe("denied");
@@ -276,9 +511,47 @@ describe("GovernanceHttpClient — checkAuthorization", () => {
 		const fetchMock = vi.fn<typeof globalThis.fetch>().mockResolvedValue(mockResponse({}, 403));
 		const client = createTestClient(fetchMock, { failOpen: true });
 		const result = await client.checkAuthorization(VALID_AUTH_REQUEST);
-		// fail-open catches the GovernanceClientError and returns authorized
 		expect(result.decision).toBe("authorized");
 		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// GovernanceHttpClient — reserveBudget
+// ---------------------------------------------------------------------------
+
+describe("GovernanceHttpClient — reserveBudget", () => {
+	it("reserves budget successfully", async () => {
+		const fetchMock = vi
+			.fn<typeof globalThis.fetch>()
+			.mockResolvedValue(mockResponse({ reservationId: "res-abc", expiresAt: "2026-04-11T00:00:00Z" }));
+		const client = createTestClient(fetchMock);
+		const result = await client.reserveBudget({
+			taskId: "task-1",
+			orgId: "org-1",
+			maxComputeSeconds: 1800,
+			maxTokenBudget: 100_000,
+			maxCostUsd: 5.0,
+		});
+		expect(result.reservationId).toBe("res-abc");
+		expect(result.expiresAt).toBe("2026-04-11T00:00:00Z");
+
+		const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(url).toBe(`${TEST_BASE_URL}/api/v1/usage/reservations`);
+	});
+
+	it("throws on server error (no graceful degradation for reservations)", async () => {
+		const fetchMock = vi.fn<typeof globalThis.fetch>().mockResolvedValue(mockResponse({}, 500));
+		const client = createTestClient(fetchMock);
+		await expect(
+			client.reserveBudget({
+				taskId: "task-1",
+				orgId: "org-1",
+				maxComputeSeconds: 100,
+				maxTokenBudget: 1000,
+				maxCostUsd: 1.0,
+			}),
+		).rejects.toThrow();
 	});
 });
 
@@ -286,17 +559,21 @@ describe("GovernanceHttpClient — checkAuthorization", () => {
 // GovernanceHttpClient — reportUsage
 // ---------------------------------------------------------------------------
 
+const VALID_USAGE_REQUEST = {
+	taskId: "task-1",
+	orgId: "org-1",
+	userId: "user-1",
+	executionMode: "cloud_agent",
+	cpuSeconds: 120.5,
+};
+
 describe("GovernanceHttpClient — reportUsage", () => {
 	it("reports usage event successfully", async () => {
 		const fetchMock = vi
 			.fn<typeof globalThis.fetch>()
 			.mockResolvedValue(mockResponse({ accepted: true, eventId: "evt-1" }));
 		const client = createTestClient(fetchMock);
-		const result = await client.reportUsage({
-			taskId: "task-1",
-			terminalState: "completed",
-			executionMode: "cloud_agent",
-		});
+		const result = await client.reportUsage(VALID_USAGE_REQUEST);
 		expect(result.accepted).toBe(true);
 		expect(result.eventId).toBe("evt-1");
 
@@ -304,14 +581,36 @@ describe("GovernanceHttpClient — reportUsage", () => {
 		expect(url).toBe(`${TEST_BASE_URL}/api/v1/usage/events`);
 	});
 
+	it("sends the full request body matching core-platform contract", async () => {
+		const fetchMock = vi
+			.fn<typeof globalThis.fetch>()
+			.mockResolvedValue(mockResponse({ accepted: true }));
+		const client = createTestClient(fetchMock);
+		await client.reportUsage({
+			...VALID_USAGE_REQUEST,
+			memoryGbSeconds: 10,
+			storageGbHours: 0.5,
+			costUsd: 0.25,
+			reservationId: "res-1",
+			idempotencyKey: "idem-1",
+		});
+
+		const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect(body.orgId).toBe("org-1");
+		expect(body.userId).toBe("user-1");
+		expect(body.cpuSeconds).toBe(120.5);
+		expect(body.memoryGbSeconds).toBe(10);
+		expect(body.storageGbHours).toBe(0.5);
+		expect(body.costUsd).toBe(0.25);
+		expect(body.reservationId).toBe("res-1");
+		expect(body.idempotencyKey).toBe("idem-1");
+	});
+
 	it("returns accepted:false on network error (graceful degradation)", async () => {
 		const fetchMock = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error("network down"));
 		const client = createTestClient(fetchMock);
-		const result = await client.reportUsage({
-			taskId: "task-1",
-			terminalState: "failed",
-			executionMode: "local_agent",
-		});
+		const result = await client.reportUsage(VALID_USAGE_REQUEST);
 		expect(result.accepted).toBe(false);
 	});
 });
@@ -320,39 +619,56 @@ describe("GovernanceHttpClient — reportUsage", () => {
 // GovernanceHttpClient — reportAudit
 // ---------------------------------------------------------------------------
 
+const VALID_AUDIT_REQUEST = {
+	actor: { type: "system", id: "orchestrator" },
+	action: "task.dequeue",
+	resource: { type: "task", id: "task-1" },
+	result: "success",
+	taskId: "task-1",
+};
+
 describe("GovernanceHttpClient — reportAudit", () => {
 	it("reports audit event successfully", async () => {
 		const fetchMock = vi
 			.fn<typeof globalThis.fetch>()
 			.mockResolvedValue(mockResponse({ accepted: true, eventId: "aud-1" }));
 		const client = createTestClient(fetchMock);
-		const result = await client.reportAudit({
-			taskId: "task-1",
-			eventType: "lifecycle_transition",
-			fromState: "queued",
-			toState: "policy_check",
-			trigger: "dequeue",
-			triggerSource: "system",
-			timestamp: new Date().toISOString(),
-		});
+		const result = await client.reportAudit(VALID_AUDIT_REQUEST);
 		expect(result.accepted).toBe(true);
 
 		const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
 		expect(url).toBe(`${TEST_BASE_URL}/api/v1/audit/events`);
 	});
 
+	it("sends the full request body matching core-platform contract", async () => {
+		const fetchMock = vi
+			.fn<typeof globalThis.fetch>()
+			.mockResolvedValue(mockResponse({ accepted: true }));
+		const client = createTestClient(fetchMock);
+		await client.reportAudit({
+			...VALID_AUDIT_REQUEST,
+			orgId: "org-1",
+			userId: "user-1",
+			projectId: "proj-1",
+			metadata: { executionMode: "cloud_agent", policySnapshotId: "snap-1" },
+			idempotencyKey: "idem-aud-1",
+		});
+
+		const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect(body.actor).toEqual({ type: "system", id: "orchestrator" });
+		expect(body.action).toBe("task.dequeue");
+		expect(body.resource).toEqual({ type: "task", id: "task-1" });
+		expect(body.result).toBe("success");
+		expect(body.orgId).toBe("org-1");
+		expect(body.metadata.executionMode).toBe("cloud_agent");
+		expect(body.idempotencyKey).toBe("idem-aud-1");
+	});
+
 	it("returns accepted:false on network error (graceful degradation)", async () => {
 		const fetchMock = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error("timeout"));
 		const client = createTestClient(fetchMock);
-		const result = await client.reportAudit({
-			taskId: "task-1",
-			eventType: "lifecycle_transition",
-			fromState: "running",
-			toState: "failed",
-			trigger: "execution_error",
-			triggerSource: "system",
-			timestamp: new Date().toISOString(),
-		});
+		const result = await client.reportAudit(VALID_AUDIT_REQUEST);
 		expect(result.accepted).toBe(false);
 	});
 });

@@ -163,7 +163,10 @@ export interface OrchestratorConfig {
 	readonly teardownConfig: TeardownConfig;
 	readonly projectId?: string;
 	readonly orgId?: string;
-	readonly requestedLimits?: Record<string, unknown>;
+	readonly userId?: string;
+	readonly defaultTaskSpec?: { type: string; image: string; tools?: string[] };
+	readonly requestedLimits?: { maxComputeSeconds: number; maxTokenBudget: number };
+	readonly defaultMaxCostUsd?: number;
 }
 
 export const DEFAULT_ORCHESTRATOR_CONFIG: Readonly<OrchestratorConfig> = {
@@ -575,17 +578,21 @@ export class CloudExecutionOrchestrator {
 			const execs = await this.store.readExecutionsForTask(taskId);
 			const latest = execs[execs.length - 1];
 			const meta = latest?.remoteMetadata;
+			const executionMode = latest?.executionMode ?? "cloud_agent";
 			const decision = await this.governanceClient.checkAuthorization({
 				taskId,
+				orgId: this.config.orgId ?? "",
+				userId: this.config.userId ?? "",
 				projectId: this.config.projectId ?? "default",
-				taskSpec: {
-					prompt: latest?.resultSummary ?? "",
-					baseRef: meta?.baseBranch,
-					executionMode: latest?.executionMode,
+				executionMode,
+				taskSpec: this.config.defaultTaskSpec ?? { type: "cline-task", image: "cline-runner:latest" },
+				requestedLimits: this.config.requestedLimits ?? { maxComputeSeconds: 1800, maxTokenBudget: 100_000 },
+				executionContext: {
+					repoUrl: meta?.repoUrl ?? "",
+					baseBranch: meta?.baseBranch ?? "",
+					featureBranchIntent: meta?.featureBranch ?? "",
+					worktreeIntent: meta?.worktreePath ?? "",
 				},
-				requestedLimits: this.config.requestedLimits,
-				orgId: this.config.orgId,
-				executionMode: latest?.executionMode,
 			});
 
 			if (decision.decision === "authorized") {
@@ -787,13 +794,20 @@ export class CloudExecutionOrchestrator {
 			try {
 				const execs = await this.store.readExecutionsForTask(taskId);
 				const latest = execs[execs.length - 1];
+				const meta = latest?.remoteMetadata;
 				await this.governanceClient.reportUsage({
 					taskId,
-					executionId: latest?.executionId,
-					terminalState: state,
+					orgId: this.config.orgId ?? "",
+					userId: this.config.userId ?? "",
 					executionMode: latest?.executionMode ?? "cloud_agent",
-					durationSeconds: latest?.durationSeconds ?? undefined,
-					tokensIn: latest?.remoteMetadata?.tokenUsage,
+					cpuSeconds: latest?.durationSeconds ?? 0,
+					tokensIn: meta?.tokenUsage,
+					executionContext: {
+						repoUrl: meta?.repoUrl ?? "",
+						baseBranch: meta?.baseBranch ?? "",
+						featureBranchIntent: meta?.featureBranch ?? "",
+						worktreeIntent: meta?.worktreePath ?? "",
+					},
 				});
 				this.logger.info("Usage event reported", { taskId, state });
 			} catch (e) {
@@ -1044,14 +1058,21 @@ export class CloudExecutionOrchestrator {
 		if (this.governanceClient) {
 			this.governanceClient
 				.reportAudit({
+					actor: { type: triggerSource === "user" ? "user" : "system", id: this.config.userId ?? "system" },
+					action: `task.${trigger}`,
+					resource: { type: "task", id: taskId },
+					result: result.to === "failed" || result.to === "canceled" ? "failure" : "success",
 					taskId,
-					eventType: "lifecycle_transition",
-					fromState: result.from,
-					toState: result.to,
-					trigger,
-					triggerSource,
-					timestamp: event.timestamp,
-					metadata,
+					orgId: this.config.orgId,
+					userId: this.config.userId,
+					projectId: this.config.projectId,
+					metadata: {
+						executionMode: metadata?.executionMode as string | undefined,
+						repoUrl: metadata?.repoUrl as string | undefined,
+						baseBranch: metadata?.baseBranch as string | undefined,
+						featureBranchIntent: metadata?.featureBranch as string | undefined,
+						policySnapshotId: metadata?.policySnapshotId as string | undefined,
+					},
 				})
 				.catch((e) => {
 					this.logger.warn("Audit event reporting failed (best-effort)", {

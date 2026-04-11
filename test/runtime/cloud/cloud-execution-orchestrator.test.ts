@@ -18,7 +18,7 @@ import {
 	validateExecutionIdentityFidelity,
 } from "../../../src/cloud/cloud-execution-orchestrator";
 import type { PersistedTaskEvent, PersistedTaskExecution } from "../../../src/cloud/cloud-execution-persistence";
-import type { AuthorizeRequest, GovernanceClient, UsageEventRequest } from "../../../src/cloud/cloud-governance-client";
+import type { AuditEventRequest, AuthorizeRequest, GovernanceClient, UsageEventRequest } from "../../../src/cloud/cloud-governance-client";
 import type { CloudInstanceResponse, CloudInstanceState } from "../../../src/cloud/cloud-instance-client";
 
 // ---------------------------------------------------------------------------
@@ -228,6 +228,9 @@ const FAST_CONFIG: OrchestratorConfig = {
 const autoAuthorizeGovernance: GovernanceClient = {
 	async checkAuthorization() {
 		return { decision: "authorized" as const };
+	},
+	async reserveBudget() {
+		return { reservationId: "res-mock", expiresAt: new Date().toISOString() };
 	},
 	async reportUsage() {
 		return { accepted: true };
@@ -965,7 +968,7 @@ describe("Orchestrator — provisioning creates instance", () => {
 	interface MockGovernanceClient extends GovernanceClient {
 		authorizeCalls: AuthorizeRequest[];
 		usageCalls: UsageEventRequest[];
-		auditCalls: Array<{ taskId: string; fromState: string; toState: string }>;
+		auditCalls: AuditEventRequest[];
 	}
 
 	function createMockGovernanceClient(opts?: {
@@ -983,12 +986,15 @@ describe("Orchestrator — provisioning creates instance", () => {
 					reason: opts?.reason,
 				};
 			},
+			async reserveBudget() {
+				return { reservationId: "res-mock", expiresAt: new Date().toISOString() };
+			},
 			async reportUsage(request) {
 				mock.usageCalls.push(request);
 				return { accepted: true };
 			},
 			async reportAudit(request) {
-				mock.auditCalls.push({ taskId: request.taskId, fromState: request.fromState, toState: request.toState });
+				mock.auditCalls.push(request);
 				return { accepted: true };
 			},
 		};
@@ -1058,6 +1064,9 @@ describe("Orchestrator — provisioning creates instance", () => {
 				async checkAuthorization() {
 					throw new Error("governance service unavailable");
 				},
+				async reserveBudget() {
+					return { reservationId: "res-mock", expiresAt: new Date().toISOString() };
+				},
 				async reportUsage() {
 					return { accepted: true };
 				},
@@ -1093,7 +1102,9 @@ describe("Orchestrator — provisioning creates instance", () => {
 				...FAST_CONFIG,
 				projectId: "proj-42",
 				orgId: "org-99",
-				requestedLimits: { maxTokens: 10_000 },
+				userId: "user-77",
+				defaultTaskSpec: { type: "cline-task", image: "cline-runner:latest" },
+				requestedLimits: { maxComputeSeconds: 1800, maxTokenBudget: 100_000 },
 			};
 			const orch = new CloudExecutionOrchestrator(
 				store,
@@ -1107,14 +1118,12 @@ describe("Orchestrator — provisioning creates instance", () => {
 
 			await seedTaskToState(store, "task-1", "policy_check");
 
-			// Create execution with metadata so handler can read it
 			await store.createExecution({
 				executionId: "exec-pol-1",
 				taskId: "task-1",
 				attemptNumber: 1,
 				executionMode: "cloud_agent",
 				createdAt: new Date().toISOString(),
-				resultSummary: "Implement feature X",
 				remoteMetadata: {
 					instanceId: "pending",
 					repoUrl: "https://github.com/test/repo",
@@ -1128,15 +1137,13 @@ describe("Orchestrator — provisioning creates instance", () => {
 			const call = governance.authorizeCalls[0];
 			expect(call?.taskId).toBe("task-1");
 			expect(call?.orgId).toBe("org-99");
+			expect(call?.userId).toBe("user-77");
 			expect(call?.executionMode).toBe("cloud_agent");
 			expect(call?.projectId).toBe("proj-42");
-			expect(call?.requestedLimits).toEqual({ maxTokens: 10_000 });
-
-			const taskSpec = call?.taskSpec;
-			expect(taskSpec).toBeDefined();
-			expect(taskSpec?.prompt).toBe("Implement feature X");
-			expect(taskSpec?.baseRef).toBe("main");
-			expect(taskSpec?.executionMode).toBe("cloud_agent");
+			expect(call?.requestedLimits).toEqual({ maxComputeSeconds: 1800, maxTokenBudget: 100_000 });
+			expect(call?.taskSpec).toEqual({ type: "cline-task", image: "cline-runner:latest" });
+			expect(call?.executionContext?.repoUrl).toBe("https://github.com/test/repo");
+			expect(call?.executionContext?.baseBranch).toBe("main");
 		});
 
 		it("defaults projectId to 'default' when not configured", async () => {
@@ -1184,7 +1191,7 @@ describe("Orchestrator — provisioning creates instance", () => {
 
 			expect(governance.usageCalls).toHaveLength(1);
 			expect(governance.usageCalls[0]?.taskId).toBe("task-1");
-			expect(governance.usageCalls[0]?.terminalState).toBe("failed");
+			expect(governance.usageCalls[0]?.executionMode).toBe("cloud_agent");
 		});
 
 		it("passes full usage payload including executionMode and token metadata", async () => {
@@ -1225,11 +1232,11 @@ describe("Orchestrator — provisioning creates instance", () => {
 			expect(governance.usageCalls).toHaveLength(1);
 			const call = governance.usageCalls[0];
 			expect(call?.taskId).toBe("task-1");
-			expect(call?.executionId).toBe("exec-usage-1");
-			expect(call?.terminalState).toBe("failed");
-			expect(call?.durationSeconds).toBe(42);
+			expect(call?.cpuSeconds).toBe(42);
 			expect(call?.executionMode).toBe("cloud_agent");
 			expect(call?.tokensIn).toBe(7500);
+			expect(call?.executionContext?.repoUrl).toBe("https://github.com/test/repo");
+			expect(call?.executionContext?.baseBranch).toBe("main");
 		});
 
 		it("does not report usage when no governance client is configured", async () => {
@@ -1276,9 +1283,12 @@ describe("Orchestrator — provisioning creates instance", () => {
 			await new Promise((r) => setTimeout(r, 10));
 
 			expect(governance.auditCalls.length).toBeGreaterThanOrEqual(1);
-			const auditCall = governance.auditCalls.find((c) => c.fromState === "queued" && c.toState === "policy_check");
+			const auditCall = governance.auditCalls.find((c) => c.action === "task.dequeue");
 			expect(auditCall).toBeTruthy();
 			expect(auditCall?.taskId).toBe("task-1");
+			expect(auditCall?.resource).toEqual({ type: "task", id: "task-1" });
+			expect(auditCall?.actor).toBeDefined();
+			expect(auditCall?.result).toBeDefined();
 		});
 
 		it("audit failures do not block transitions", async () => {
