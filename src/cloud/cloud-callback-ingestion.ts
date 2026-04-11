@@ -119,7 +119,7 @@ export type CallbackPayload = z.output<typeof callbackPayloadSchema>;
  * Expected callback headers for signature verification and replay protection.
  * PRD Section 15.3 recommended future headers:
  *   - X-Cline-Timestamp, X-Cline-Signature, X-Cline-Event-Id
- * For MVP, signature verification is stubbed (C1 not yet complete).
+ * Cloud-platform signs callbacks with HMAC-SHA256 (C1 complete).
  */
 export interface CallbackHeaders {
 	readonly timestamp: string | null;
@@ -187,7 +187,7 @@ export function mapCallbackStatusToTerminalState(status: CallbackTerminalStatus)
 }
 
 // ---------------------------------------------------------------------------
-// Signature Verification (MVP stub for C1)
+// Signature Verification (C1 complete — cloud-platform sends HMAC-SHA256)
 // ---------------------------------------------------------------------------
 
 /**
@@ -208,9 +208,9 @@ export function buildCanonicalSigningInput(timestamp: string | null, eventId: st
  * Verify the callback signature using HMAC-SHA256 over the canonical
  * signing input (`timestamp.eventId.body`).
  *
- * For MVP (before C1 lands), returns `{ valid: true }` when no signing
- * secret is configured. Once C1 is implemented, the signing secret should
- * always be present and unsigned callbacks should be rejected.
+ * Returns `{ valid: true }` when no signing secret is configured (backward
+ * compatible). When a signing secret **is** configured, verifies the
+ * HMAC-SHA256 signature from cloud-platform (C1).
  *
  * When a signing secret **is** configured the timestamp header is
  * security-critical because it is part of the signed payload. A missing
@@ -361,7 +361,7 @@ export async function ingestTerminalCallback(
 		return { accepted: false, duplicate: false, reason: "Invalid JSON in callback body.", httpStatus: 400 };
 	}
 
-	// 2. Verify signature (MVP stub — accept if no secret configured).
+	// 2. Verify callback signature (C1 — HMAC-SHA256 from cloud-platform).
 	const sigResult = verifyCallbackSignature(
 		rawBody,
 		headers.signature,
