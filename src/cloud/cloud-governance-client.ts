@@ -217,6 +217,8 @@ export interface GovernanceClientConfig {
 	readonly authToken: string;
 	/** When true, unreachable governance returns 'authorized'. @default true */
 	readonly failOpen: boolean;
+	/** Service name sent in X-Service-Name header. @default "kanban" */
+	readonly serviceName?: string;
 	readonly retryConfigs?: Partial<
 		Record<keyof typeof DEFAULT_GOVERNANCE_RETRY_CONFIGS, Partial<GovernanceRetryConfig>>
 	>;
@@ -266,6 +268,7 @@ export class GovernanceHttpClient implements GovernanceClient {
 	private readonly baseUrl: string;
 	private readonly authToken: string;
 	private readonly failOpen: boolean;
+	private readonly serviceName: string;
 	private readonly retryConfigs: Record<keyof typeof DEFAULT_GOVERNANCE_RETRY_CONFIGS, GovernanceRetryConfig>;
 	private readonly fetchFn: typeof globalThis.fetch;
 	private readonly delayFn: (ms: number) => Promise<void>;
@@ -275,6 +278,7 @@ export class GovernanceHttpClient implements GovernanceClient {
 		this.baseUrl = config.baseUrl.replace(/\/+$/, "");
 		this.authToken = config.authToken;
 		this.failOpen = config.failOpen;
+		this.serviceName = config.serviceName ?? "kanban";
 		this.fetchFn = config.fetch ?? globalThis.fetch;
 		this.delayFn = config.delay ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
 		this.logger = logger;
@@ -301,7 +305,8 @@ export class GovernanceHttpClient implements GovernanceClient {
 				signal,
 			);
 			const body = await response.json();
-			const parsed = authorizeResponseSchema.parse(body);
+			const data = this.unwrapResponse(body);
+			const parsed = authorizeResponseSchema.parse(data);
 			return {
 				decision: parsed.allowed ? "authorized" : "denied",
 				reason: parsed.denialReason,
@@ -340,7 +345,7 @@ export class GovernanceHttpClient implements GovernanceClient {
 			signal,
 		);
 		const body = await response.json();
-		return reserveBudgetResponseSchema.parse(body);
+		return reserveBudgetResponseSchema.parse(this.unwrapResponse(body));
 	}
 
 	async reportUsage(request: UsageEventRequest, signal?: AbortSignal): Promise<UsageEventResponse> {
@@ -358,7 +363,7 @@ export class GovernanceHttpClient implements GovernanceClient {
 				signal,
 			);
 			const body = await response.json();
-			return usageEventResponseSchema.parse(body);
+			return usageEventResponseSchema.parse(this.unwrapResponse(body));
 		} catch (e) {
 			this.logger.error("Governance usage event report failed", {
 				taskId: request.taskId,
@@ -383,7 +388,7 @@ export class GovernanceHttpClient implements GovernanceClient {
 				signal,
 			);
 			const body = await response.json();
-			return auditEventResponseSchema.parse(body);
+			return auditEventResponseSchema.parse(this.unwrapResponse(body));
 		} catch (e) {
 			this.logger.error("Governance audit event report failed", {
 				taskId: request.taskId,
@@ -397,7 +402,33 @@ export class GovernanceHttpClient implements GovernanceClient {
 		return {
 			"Content-Type": "application/json",
 			Authorization: `Bearer ${this.authToken}`,
+			"X-Service-Name": this.serviceName,
 		};
+	}
+
+	/**
+	 * Unwrap core-platform response envelope `{ data, success, error }`.
+	 * Returns `body.data` when the wrapper is present, or `body` as-is
+	 * for backward compatibility with unwrapped responses.
+	 */
+	private unwrapResponse(body: unknown): unknown {
+		if (
+			body !== null &&
+			typeof body === "object" &&
+			"data" in body &&
+			"success" in body
+		) {
+			const envelope = body as { data: unknown; success: boolean; error?: string };
+			if (!envelope.success && envelope.error) {
+				throw new GovernanceClientError({
+					message: `Governance API returned error: ${envelope.error}`,
+					statusCode: 422,
+					retryable: false,
+				});
+			}
+			return envelope.data;
+		}
+		return body;
 	}
 
 	private async executeWithRetry(

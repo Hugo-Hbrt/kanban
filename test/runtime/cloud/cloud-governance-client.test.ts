@@ -29,6 +29,11 @@ function mockResponse(body: unknown, status = 200, ok?: boolean): Response {
 	} as Response;
 }
 
+/** Wrap data in core-platform's standard `{ data, success }` envelope. */
+function wrapped(data: unknown): { data: unknown; success: boolean } {
+	return { data, success: true };
+}
+
 function createTestClient(fetchFn: typeof globalThis.fetch, opts?: { failOpen?: boolean; logger?: GovernanceLogger }) {
 	return new GovernanceHttpClient(
 		{
@@ -433,10 +438,10 @@ const VALID_AUTH_REQUEST = {
 };
 
 describe("GovernanceHttpClient — checkAuthorization", () => {
-	it("returns authorized on successful response", async () => {
+	it("returns authorized on successful wrapped response", async () => {
 		const fetchMock = vi
 			.fn<typeof globalThis.fetch>()
-			.mockResolvedValue(mockResponse({ allowed: true, policySnapshotId: "snap-1" }));
+			.mockResolvedValue(mockResponse(wrapped({ allowed: true, policySnapshotId: "snap-1" })));
 		const client = createTestClient(fetchMock);
 		const result = await client.checkAuthorization(VALID_AUTH_REQUEST);
 		expect(result.decision).toBe("authorized");
@@ -447,6 +452,16 @@ describe("GovernanceHttpClient — checkAuthorization", () => {
 		expect(url).toBe(`${TEST_BASE_URL}/api/v1/execution/authorize`);
 		expect(init.method).toBe("POST");
 		expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${TEST_AUTH_TOKEN}`);
+		expect((init.headers as Record<string, string>)["X-Service-Name"]).toBe("kanban");
+	});
+
+	it("also handles unwrapped responses for backward compatibility", async () => {
+		const fetchMock = vi
+			.fn<typeof globalThis.fetch>()
+			.mockResolvedValue(mockResponse({ allowed: true }));
+		const client = createTestClient(fetchMock);
+		const result = await client.checkAuthorization(VALID_AUTH_REQUEST);
+		expect(result.decision).toBe("authorized");
 	});
 
 	it("sends the full request body matching core-platform contract", async () => {
@@ -467,10 +482,10 @@ describe("GovernanceHttpClient — checkAuthorization", () => {
 		expect(body.requestedLimits.maxTokenBudget).toBe(100_000);
 	});
 
-	it("returns denied with denialReason from response", async () => {
+	it("returns denied with denialReason from wrapped response", async () => {
 		const fetchMock = vi
 			.fn<typeof globalThis.fetch>()
-			.mockResolvedValue(mockResponse({ allowed: false, denialReason: "over quota" }));
+			.mockResolvedValue(mockResponse(wrapped({ allowed: false, denialReason: "over quota" })));
 		const client = createTestClient(fetchMock);
 		const result = await client.checkAuthorization(VALID_AUTH_REQUEST);
 		expect(result.decision).toBe("denied");
@@ -500,7 +515,7 @@ describe("GovernanceHttpClient — checkAuthorization", () => {
 		const fetchMock = vi
 			.fn<typeof globalThis.fetch>()
 			.mockResolvedValueOnce(mockResponse({}, 500))
-			.mockResolvedValueOnce(mockResponse({ allowed: true }));
+			.mockResolvedValueOnce(mockResponse(wrapped({ allowed: true })));
 		const client = createTestClient(fetchMock);
 		const result = await client.checkAuthorization(VALID_AUTH_REQUEST);
 		expect(result.decision).toBe("authorized");
@@ -521,10 +536,10 @@ describe("GovernanceHttpClient — checkAuthorization", () => {
 // ---------------------------------------------------------------------------
 
 describe("GovernanceHttpClient — reserveBudget", () => {
-	it("reserves budget successfully", async () => {
+	it("reserves budget successfully from wrapped response", async () => {
 		const fetchMock = vi
 			.fn<typeof globalThis.fetch>()
-			.mockResolvedValue(mockResponse({ reservationId: "res-abc", expiresAt: "2026-04-11T00:00:00Z" }));
+			.mockResolvedValue(mockResponse(wrapped({ reservationId: "res-abc", expiresAt: "2026-04-11T00:00:00Z" })));
 		const client = createTestClient(fetchMock);
 		const result = await client.reserveBudget({
 			taskId: "task-1",
@@ -568,10 +583,10 @@ const VALID_USAGE_REQUEST = {
 };
 
 describe("GovernanceHttpClient — reportUsage", () => {
-	it("reports usage event successfully", async () => {
+	it("reports usage event successfully from wrapped response", async () => {
 		const fetchMock = vi
 			.fn<typeof globalThis.fetch>()
-			.mockResolvedValue(mockResponse({ accepted: true, eventId: "evt-1" }));
+			.mockResolvedValue(mockResponse(wrapped({ accepted: true, eventId: "evt-1" })));
 		const client = createTestClient(fetchMock);
 		const result = await client.reportUsage(VALID_USAGE_REQUEST);
 		expect(result.accepted).toBe(true);
@@ -584,7 +599,7 @@ describe("GovernanceHttpClient — reportUsage", () => {
 	it("sends the full request body matching core-platform contract", async () => {
 		const fetchMock = vi
 			.fn<typeof globalThis.fetch>()
-			.mockResolvedValue(mockResponse({ accepted: true }));
+			.mockResolvedValue(mockResponse(wrapped({ accepted: true })));
 		const client = createTestClient(fetchMock);
 		await client.reportUsage({
 			...VALID_USAGE_REQUEST,
@@ -628,10 +643,10 @@ const VALID_AUDIT_REQUEST = {
 };
 
 describe("GovernanceHttpClient — reportAudit", () => {
-	it("reports audit event successfully", async () => {
+	it("reports audit event successfully from wrapped response", async () => {
 		const fetchMock = vi
 			.fn<typeof globalThis.fetch>()
-			.mockResolvedValue(mockResponse({ accepted: true, eventId: "aud-1" }));
+			.mockResolvedValue(mockResponse(wrapped({ accepted: true, eventId: "aud-1" })));
 		const client = createTestClient(fetchMock);
 		const result = await client.reportAudit(VALID_AUDIT_REQUEST);
 		expect(result.accepted).toBe(true);
@@ -643,7 +658,7 @@ describe("GovernanceHttpClient — reportAudit", () => {
 	it("sends the full request body matching core-platform contract", async () => {
 		const fetchMock = vi
 			.fn<typeof globalThis.fetch>()
-			.mockResolvedValue(mockResponse({ accepted: true }));
+			.mockResolvedValue(mockResponse(wrapped({ accepted: true })));
 		const client = createTestClient(fetchMock);
 		await client.reportAudit({
 			...VALID_AUDIT_REQUEST,

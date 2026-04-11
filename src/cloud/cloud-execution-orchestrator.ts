@@ -597,10 +597,33 @@ export class CloudExecutionOrchestrator {
 
 			if (decision.decision === "authorized") {
 				this.logger.info("Policy check authorized", { taskId, reason: decision.reason });
+
+				// Reserve budget before provisioning (PRD §9.3 D2)
+				let reservationId: string | undefined;
+				try {
+					const limits = this.config.requestedLimits ?? { maxComputeSeconds: 1800, maxTokenBudget: 100_000 };
+					const reservation = await this.governanceClient.reserveBudget({
+						taskId,
+						orgId: this.config.orgId ?? "",
+						maxComputeSeconds: limits.maxComputeSeconds,
+						maxTokenBudget: limits.maxTokenBudget,
+						maxCostUsd: this.config.defaultMaxCostUsd ?? 10.0,
+						executionMode,
+					});
+					reservationId = reservation.reservationId;
+					this.logger.info("Budget reserved", { taskId, reservationId, expiresAt: reservation.expiresAt });
+				} catch (e) {
+					this.logger.warn("Budget reservation failed, proceeding without reservation", {
+						taskId,
+						error: e instanceof Error ? e.message : String(e),
+					});
+				}
+
 				return this.applyTransition(taskId, "policy_check", "authorized", "system", {
 					governanceDecision: "authorized",
 					policySnapshotId: decision.policySnapshotId,
 					reason: decision.reason,
+					reservationId,
 				});
 			}
 
