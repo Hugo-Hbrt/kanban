@@ -560,12 +560,15 @@ export class CloudExecutionOrchestrator {
 		});
 	}
 
-	// -- policy_check -> provisioning (real governance or fallback) -----------
+	// -- policy_check -> provisioning (governance required) -------------------
 
 	private async handlePolicyCheck(taskId: string): Promise<TaskStepResult> {
 		if (!this.governanceClient) {
-			// No governance client configured — auto-authorize (backward-compatible).
-			return this.applyTransition(taskId, "policy_check", "authorized", "system");
+			this.logger.error("Governance client is required for cloud execution but not configured", { taskId });
+			return this.applyTransition(taskId, "policy_check", "denied", "system", {
+				governanceDecision: "denied",
+				reason: "governance client not configured — cloud execution requires governance",
+			});
 		}
 
 		try {

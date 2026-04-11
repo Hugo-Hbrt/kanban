@@ -221,6 +221,22 @@ const FAST_CONFIG: OrchestratorConfig = {
 	},
 };
 
+// ---------------------------------------------------------------------------
+// Shared governance mock (auto-authorize for tests not focused on governance)
+// ---------------------------------------------------------------------------
+
+const autoAuthorizeGovernance: GovernanceClient = {
+	async checkAuthorization() {
+		return { decision: "authorized" as const };
+	},
+	async reportUsage() {
+		return { accepted: true };
+	},
+	async reportAudit() {
+		return { accepted: true };
+	},
+};
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -258,11 +274,19 @@ describe("Orchestrator — happy path: queued to running", () => {
 		expect(result?.trigger).toBe("dequeue");
 	});
 
-	it("advances policy_check to provisioning via authorized (MVP stub)", async () => {
+	it("advances policy_check to provisioning via authorized", async () => {
 		const store = createMockStore();
 		const client = createMockClient();
 		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+		const orch = new CloudExecutionOrchestrator(
+			store,
+			client,
+			invoker,
+			FAST_CONFIG,
+			undefined,
+			null,
+			autoAuthorizeGovernance,
+		);
 
 		await seedTaskToState(store, "task-1", "policy_check");
 
@@ -303,7 +327,15 @@ describe("Orchestrator — full lifecycle via processTick", () => {
 		const store = createMockStore();
 		const client = createMockClient();
 		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+		const orch = new CloudExecutionOrchestrator(
+			store,
+			client,
+			invoker,
+			FAST_CONFIG,
+			undefined,
+			null,
+			autoAuthorizeGovernance,
+		);
 
 		await seedTaskToState(store, "task-1", "queued");
 
@@ -331,7 +363,15 @@ describe("Orchestrator — full lifecycle via processTick", () => {
 		const store = createMockStore();
 		const client = createMockClient();
 		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+		const orch = new CloudExecutionOrchestrator(
+			store,
+			client,
+			invoker,
+			FAST_CONFIG,
+			undefined,
+			null,
+			autoAuthorizeGovernance,
+		);
 
 		await seedTaskToState(store, "task-a", "queued");
 		await seedTaskToState(store, "task-b", "policy_check");
@@ -717,8 +757,16 @@ describe("Orchestrator — idempotency and restart safety", () => {
 		await orch1.processTask("task-1"); // queued -> policy_check
 		orch1.stop();
 
-		// Simulated restart: new orchestrator instance
-		const orch2 = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+		// Simulated restart: new orchestrator instance (with governance)
+		const orch2 = new CloudExecutionOrchestrator(
+			store,
+			client,
+			invoker,
+			FAST_CONFIG,
+			undefined,
+			null,
+			autoAuthorizeGovernance,
+		);
 		const result = await orch2.processTask("task-1");
 
 		// Should pick up from policy_check
@@ -987,11 +1035,10 @@ describe("Orchestrator — provisioning creates instance", () => {
 			expect(governance.authorizeCalls).toHaveLength(1);
 		});
 
-		it("auto-authorizes when no governance client is configured", async () => {
+		it("denies policy_check when no governance client is configured", async () => {
 			const store = createMockStore();
 			const client = createMockClient();
 			const invoker = createMockRunInvoker();
-			// No governance client — backward compatible behavior
 			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
 
 			await seedTaskToState(store, "task-1", "policy_check");
@@ -999,8 +1046,8 @@ describe("Orchestrator — provisioning creates instance", () => {
 
 			expect(result).not.toBeNull();
 			expect(result?.previousState).toBe("policy_check");
-			expect(result?.newState).toBe("provisioning");
-			expect(result?.trigger).toBe("authorized");
+			expect(result?.newState).toBe("failed");
+			expect(result?.trigger).toBe("denied");
 		});
 
 		it("passes full request context including projectId and orgId to checkAuthorization", async () => {
