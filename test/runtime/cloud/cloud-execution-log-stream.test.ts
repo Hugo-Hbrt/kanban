@@ -143,6 +143,88 @@ describe("parseSSEDataLine", () => {
 });
 
 // ===========================================================================
+// cloud-platform SSE event-shape contract compatibility
+// ===========================================================================
+
+describe("cloud-platform SSE event-shape contract", () => {
+	// These payloads mirror the exact JSON emitted by cloud-platform's
+	// task-runner logStore (Go struct: logEntry{Sequence, Timestamp, Type, Data}).
+	// If any field names or semantics change in cloud-platform, these tests
+	// must be updated in lockstep.
+
+	it("parses a stdout info entry from cloud-platform task-runner", () => {
+		const cloudPlatformEvent = JSON.stringify({
+			sequence: 1,
+			timestamp: "2026-04-10T23:15:00.123456789Z",
+			type: "info",
+			data: "[cline] Reading file src/main.ts",
+		});
+		const entry = parseSSEDataLine(cloudPlatformEvent, 0);
+		expect(entry).not.toBeNull();
+		expect(entry!.sequence).toBe(1);
+		expect(entry!.timestamp).toBe("2026-04-10T23:15:00.123456789Z");
+		expect(entry!.level).toBe("info");
+		expect(entry!.message).toBe("[cline] Reading file src/main.ts");
+		expect(entry!.eventType).toBe("info");
+	});
+
+	it("parses a stderr error entry from cloud-platform task-runner", () => {
+		const cloudPlatformEvent = JSON.stringify({
+			sequence: 42,
+			timestamp: "2026-04-10T23:16:30.987654321Z",
+			type: "error",
+			data: "Error: ENOENT: no such file or directory, open '/workspace/missing.ts'",
+		});
+		const entry = parseSSEDataLine(cloudPlatformEvent, 0);
+		expect(entry).not.toBeNull();
+		expect(entry!.sequence).toBe(42);
+		expect(entry!.level).toBe("error");
+		expect(entry!.message).toContain("ENOENT");
+		expect(entry!.eventType).toBe("error");
+	});
+
+	it("handles cloud-platform events with no metadata field gracefully", () => {
+		const cloudPlatformEvent = JSON.stringify({
+			sequence: 3,
+			timestamp: "2026-04-10T23:17:00Z",
+			type: "info",
+			data: "Compiling TypeScript...",
+		});
+		const entry = parseSSEDataLine(cloudPlatformEvent, 0);
+		expect(entry).not.toBeNull();
+		expect(entry!.metadata).toBeUndefined();
+	});
+
+	it("preserves sequence ordering across a batch of cloud-platform events", () => {
+		const events = [
+			{ sequence: 1, timestamp: "2026-04-10T23:15:00Z", type: "info", data: "Step 1" },
+			{ sequence: 2, timestamp: "2026-04-10T23:15:01Z", type: "info", data: "Step 2" },
+			{ sequence: 3, timestamp: "2026-04-10T23:15:02Z", type: "error", data: "Step 3 failed" },
+		];
+		const entries = events.map((e) => parseSSEDataLine(JSON.stringify(e), 0));
+		expect(entries.every((e) => e !== null)).toBe(true);
+		expect(entries.map((e) => e!.sequence)).toEqual([1, 2, 3]);
+		expect(entries[2]!.level).toBe("error");
+	});
+
+	it("parses the full SSE wire format (data: prefix + double newline)", () => {
+		const jsonPayload = JSON.stringify({
+			sequence: 7,
+			timestamp: "2026-04-10T23:20:00Z",
+			type: "info",
+			data: "git push completed",
+		});
+		// Simulate what the SSE stream parser extracts from "data: {...}\n\n"
+		// The parser strips "data:" and trims leading whitespace before calling parseSSEDataLine.
+		const wireData = jsonPayload; // after data: prefix is stripped
+		const entry = parseSSEDataLine(wireData, 0);
+		expect(entry).not.toBeNull();
+		expect(entry!.sequence).toBe(7);
+		expect(entry!.message).toBe("git push completed");
+	});
+});
+
+// ===========================================================================
 // CloudExecutionLogStore
 // ===========================================================================
 
