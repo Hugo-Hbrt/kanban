@@ -128,15 +128,24 @@ class HttpRunInvoker implements CloudRunInvoker {
 	private readonly callbackSecret: string;
 	private readonly fetchFn: typeof globalThis.fetch;
 
-	constructor(callbackUrl: string, callbackSecret: string, fetchFn?: typeof globalThis.fetch) {
+	private readonly store: CloudExecutionStore;
+
+	constructor(callbackUrl: string, callbackSecret: string, store: CloudExecutionStore, fetchFn?: typeof globalThis.fetch) {
 		this.callbackUrl = callbackUrl;
 		this.callbackSecret = callbackSecret;
+		this.store = store;
 		this.fetchFn = fetchFn ?? globalThis.fetch;
 	}
 
 	async composePrompt(taskId: string): Promise<string> {
-		// In production, this reads the task's prompt from persistence.
-		// For now, return a placeholder that the orchestrator can override.
+		const executions = await this.store.readExecutionsForTask(taskId);
+		const latest = executions[executions.length - 1];
+		if (latest?.resultSummary) return latest.resultSummary;
+		const events = await this.store.readEventsForTask(taskId);
+		for (let i = events.length - 1; i >= 0; i--) {
+			const prompt = events[i]?.metadata?.prompt as string | undefined;
+			if (prompt) return prompt;
+		}
 		return `Execute task ${taskId}`;
 	}
 
@@ -148,6 +157,10 @@ class HttpRunInvoker implements CloudRunInvoker {
 			task_id: request.taskId,
 			attempt_number: request.attemptNumber ?? 1,
 			branch_name: request.branchName,
+			base_branch: request.baseBranch,
+			starting_commit_sha: request.startingCommitSha,
+			worktree_intent: request.startingCommitSha ? `${request.taskId}/attempt-${request.attemptNumber ?? 1}` : undefined,
+			reservation_id: request.reservationId,
 		};
 
 		const response = await this.fetchFn(url, {
@@ -211,6 +224,7 @@ export function bootstrapCloudExecution(
 	const runInvoker: CloudRunInvoker = overrides?.runInvoker ?? new HttpRunInvoker(
 		callbackUrl,
 		callbackSecret,
+		store,
 		overrides?.fetchFn,
 	);
 

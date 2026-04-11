@@ -24,7 +24,7 @@ import { TaskPromptComposer } from "@/components/task-prompt-composer";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogFooter, DialogHeader } from "@/components/ui/dialog";
 import { LocalStorageKey } from "@/storage/local-storage-store";
-import type { TaskAutoReviewMode, TaskImage } from "@/types";
+import type { TaskAutoReviewMode, TaskExecutionMode, TaskImage } from "@/types";
 import { isMacPlatform, pasteShortcutLabel } from "@/utils/platform";
 import { useRawLocalStorageValue } from "@/utils/react-use";
 
@@ -115,6 +115,8 @@ export function TaskCreateDialog({
 	branchRef,
 	branchOptions,
 	onBranchRefChange,
+	executionMode,
+	onExecutionModeChange,
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -138,6 +140,8 @@ export function TaskCreateDialog({
 	branchRef: string;
 	branchOptions: BranchSelectOption[];
 	onBranchRefChange: (value: string) => void;
+	executionMode?: TaskExecutionMode;
+	onExecutionModeChange?: (value: TaskExecutionMode) => void;
 }): ReactElement {
 	const [mode, setMode] = useState<"single" | "multi">("single");
 	const [createMore, setCreateMore] = useState(false);
@@ -539,6 +543,36 @@ export function TaskCreateDialog({
 							/>
 						</div>
 					</div>
+
+					{onExecutionModeChange ? (
+						<div>
+							<span className="text-[11px] text-text-secondary block mb-1">Execution mode</span>
+							<div className="flex items-center gap-2">
+								<button
+									type="button"
+									onClick={() => onExecutionModeChange("local_agent")}
+									className={`px-2.5 py-1 rounded-md text-[12px] cursor-pointer border ${
+										executionMode !== "cloud_agent"
+											? "bg-accent text-white border-accent"
+											: "bg-surface-2 text-text-primary border-border-bright hover:bg-surface-3"
+									}`}
+								>
+									Local agent
+								</button>
+								<button
+									type="button"
+									onClick={() => onExecutionModeChange("cloud_agent")}
+									className={`px-2.5 py-1 rounded-md text-[12px] cursor-pointer border ${
+										executionMode === "cloud_agent"
+											? "bg-accent text-white border-accent"
+											: "bg-surface-2 text-text-primary border-border-bright hover:bg-surface-3"
+									}`}
+								>
+									Cloud agent
+								</button>
+							</div>
+						</div>
+					) : null}
 				</div>
 			</DialogBody>
 			<DialogFooter>
