@@ -321,6 +321,10 @@ export default function App(): ReactElement {
 		handleSaveAndStartEditedTask,
 		handleCreateTask,
 		handleCreateTasks,
+		newTaskExecutionMode,
+		setNewTaskExecutionMode,
+		editTaskExecutionMode,
+		setEditTaskExecutionMode,
 		resetTaskEditorState,
 	} = useTaskEditor({
 		board,
@@ -1069,6 +1073,8 @@ export default function App(): ReactElement {
 					branchRef={newTaskBranchRef}
 					branchOptions={createTaskBranchOptions}
 					onBranchRefChange={setNewTaskBranchRef}
+					executionMode={newTaskExecutionMode}
+					onExecutionModeChange={setNewTaskExecutionMode}
 				/>
 				<ClearTrashDialog
 					open={isClearTrashDialogOpen}

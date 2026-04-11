@@ -10,7 +10,7 @@ import {
 import type { RuntimeAgentId } from "@/runtime/types";
 import { addTaskToColumnWithResult, findCardSelection, updateTask } from "@/state/board-state";
 import { toTelemetrySelectedAgentId, trackTaskCreated } from "@/telemetry/events";
-import type { BoardCard, BoardData, TaskAutoReviewMode, TaskImage } from "@/types";
+import type { BoardCard, BoardData, TaskAutoReviewMode, TaskExecutionMode, TaskImage } from "@/types";
 import { resolveTaskAutoReviewMode } from "@/types";
 import { useBooleanLocalStorageValue, useRawLocalStorageValue } from "@/utils/react-use";
 
@@ -109,6 +109,8 @@ export function useTaskEditor({
 	const [editTaskAutoReviewEnabled, setEditTaskAutoReviewEnabled] = useState(false);
 	const [editTaskAutoReviewMode, setEditTaskAutoReviewMode] = useState<TaskAutoReviewMode>("commit");
 	const isEditTaskStartInPlanModeDisabled = editTaskAutoReviewEnabled && editTaskAutoReviewMode === "move_to_trash";
+	const [newTaskExecutionMode, setNewTaskExecutionMode] = useState<TaskExecutionMode>("local_agent");
+	const [editTaskExecutionMode, setEditTaskExecutionMode] = useState<TaskExecutionMode>("local_agent");
 	const [editTaskBranchRef, setEditTaskBranchRef] = useState("");
 
 	const lastCreatedTaskBranchRef = useMemo(() => {
@@ -298,6 +300,7 @@ export function useTaskEditor({
 				startInPlanMode: newTaskStartInPlanMode,
 				autoReviewEnabled: newTaskAutoReviewEnabled,
 				autoReviewMode: newTaskAutoReviewMode,
+				executionMode: newTaskExecutionMode,
 				images: newTaskImages,
 				baseRef,
 			});
@@ -328,6 +331,7 @@ export function useTaskEditor({
 			newTaskAutoReviewEnabled,
 			newTaskAutoReviewMode,
 			newTaskBranchRef,
+			newTaskExecutionMode,
 			newTaskImages,
 			newTaskPrompt,
 			newTaskStartInPlanMode,
@@ -447,6 +451,10 @@ export function useTaskEditor({
 		handleSaveAndStartEditedTask,
 		handleCreateTask,
 		handleCreateTasks,
+		newTaskExecutionMode,
+		setNewTaskExecutionMode,
+		editTaskExecutionMode,
+		setEditTaskExecutionMode,
 		resetTaskEditorState,
 	};
 }

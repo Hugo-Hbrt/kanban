@@ -14,6 +14,7 @@ import {
 	DEFAULT_TASK_AUTO_REVIEW_MODE,
 	resolveTaskAutoReviewMode,
 	type TaskAutoReviewMode,
+	type TaskExecutionMode,
 	type TaskImage,
 } from "@/types";
 
@@ -22,6 +23,7 @@ export interface TaskDraft {
 	startInPlanMode?: boolean;
 	autoReviewEnabled?: boolean;
 	autoReviewMode?: TaskAutoReviewMode;
+	executionMode?: TaskExecutionMode;
 	images?: TaskImage[];
 	baseRef: string;
 }
