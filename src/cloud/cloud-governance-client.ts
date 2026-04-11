@@ -102,17 +102,17 @@ export const usageEventRequestSchema = z.object({
 	orgId: z.string().min(1),
 	userId: z.string().min(1),
 	executionMode: z.string().min(1),
-	cpuSeconds: z.number().nonnegative().default(0),
-	memoryGbSeconds: z.number().nonnegative().default(0),
+	cpuSeconds: z.number().nonnegative().optional().default(0),
+	memoryGbSeconds: z.number().nonnegative().optional().default(0),
 	tokensIn: z.number().int().nonnegative().optional(),
 	tokensOut: z.number().int().nonnegative().optional(),
-	storageGbHours: z.number().nonnegative().default(0),
-	costUsd: z.number().nonnegative().default(0),
+	storageGbHours: z.number().nonnegative().optional().default(0),
+	costUsd: z.number().nonnegative().optional().default(0),
 	reservationId: z.string().optional(),
 	idempotencyKey: z.string().optional(),
 	executionContext: executionContextSchema.optional(),
 });
-export type UsageEventRequest = z.infer<typeof usageEventRequestSchema>;
+export type UsageEventRequest = z.input<typeof usageEventRequestSchema>;
 
 export const usageEventResponseSchema = z.object({
 	accepted: z.boolean(),

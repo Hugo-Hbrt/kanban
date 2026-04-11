@@ -108,7 +108,7 @@ const callbackPayloadOutputSchema = z.object({
 	idempotencyKey: z.string().optional(),
 });
 
-export const callbackPayloadSchema = callbackPayloadRawSchema.pipe(callbackPayloadOutputSchema);
+export const callbackPayloadSchema = callbackPayloadRawSchema.pipe(callbackPayloadOutputSchema as any);
 export type CallbackPayload = z.output<typeof callbackPayloadSchema>;
 
 // ---------------------------------------------------------------------------

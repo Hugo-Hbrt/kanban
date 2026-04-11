@@ -1372,7 +1372,7 @@ describe("validateExecutionIdentityFidelity", () => {
 			attemptNumber: 2,
 			branchIntent: "reuse_branch",
 			remoteMetadata: {
-				...(source.remoteMetadata ?? {}),
+				...source.remoteMetadata!,
 				instanceId: "pending-provisioning",
 				worktreePath: "task-fidelity-001/attempt-2",
 			},
@@ -1387,7 +1387,7 @@ describe("validateExecutionIdentityFidelity", () => {
 		const newExec = makeExecForFidelity({
 			attemptNumber: 2,
 			remoteMetadata: {
-				...(source.remoteMetadata ?? {}),
+				...source.remoteMetadata!,
 				instanceId: "pending-provisioning",
 				repoUrl: "https://github.com/other/repo.git",
 			},
@@ -1405,7 +1405,7 @@ describe("validateExecutionIdentityFidelity", () => {
 		const source = makeExecForFidelity({ attemptNumber: 1 });
 		const newExec = makeExecForFidelity({
 			attemptNumber: 2,
-			remoteMetadata: { ...(source.remoteMetadata ?? {}), instanceId: "p", baseBranch: "develop" },
+			remoteMetadata: { ...source.remoteMetadata!, instanceId: "p", baseBranch: "develop" },
 		});
 		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
 		expect(result.valid).toBe(false);
@@ -1418,7 +1418,7 @@ describe("validateExecutionIdentityFidelity", () => {
 			attemptNumber: 2,
 			branchIntent: "reuse_branch",
 			remoteMetadata: {
-				...(source.remoteMetadata ?? {}),
+				...source.remoteMetadata!,
 				instanceId: "p",
 				featureBranch: "task/different-branch",
 			},
@@ -1434,7 +1434,7 @@ describe("validateExecutionIdentityFidelity", () => {
 			attemptNumber: 2,
 			branchIntent: "fresh_branch",
 			remoteMetadata: {
-				...(source.remoteMetadata ?? {}),
+				...source.remoteMetadata!,
 				instanceId: "p",
 				featureBranch: undefined,
 				worktreePath: "task-fidelity-001/attempt-2",
@@ -1459,7 +1459,7 @@ describe("validateExecutionIdentityFidelity", () => {
 			attemptNumber: 2,
 			branchIntent: "fresh_branch",
 			remoteMetadata: {
-				...(source.remoteMetadata ?? {}),
+				...source.remoteMetadata!,
 				instanceId: "p",
 				featureBranch: undefined,
 				worktreePath: "/some/random/path",
@@ -1479,7 +1479,7 @@ describe("validateExecutionIdentityFidelity", () => {
 			attemptNumber: 2,
 			branchIntent: "fresh_branch",
 			remoteMetadata: {
-				...(source.remoteMetadata ?? {}),
+				...source.remoteMetadata!,
 				instanceId: "p",
 				featureBranch: undefined,
 				worktreePath: "task-fidelity-001/attempt-2",
@@ -1496,7 +1496,7 @@ describe("validateExecutionIdentityFidelity", () => {
 			attemptNumber: 3,
 			branchIntent: "fresh_branch",
 			remoteMetadata: {
-				...(source.remoteMetadata ?? {}),
+				...source.remoteMetadata!,
 				instanceId: "p",
 				featureBranch: undefined,
 				worktreePath: "task-fidelity-001/attempt-3",
@@ -1520,7 +1520,7 @@ describe("validateExecutionIdentityFidelity", () => {
 		const newExec = makeExecForFidelity({
 			attemptNumber: 2,
 			remoteMetadata: {
-				...(source.remoteMetadata ?? {}),
+				...source.remoteMetadata!,
 				instanceId: "p",
 				repoUrl: "https://other.example.com",
 			},

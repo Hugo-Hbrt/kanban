@@ -435,10 +435,10 @@ describe("reconciliation — canonical fields unchanged after terminal reconcili
 		expect(detectCanonicalFieldDrift(snapshotBefore, snapshotAfter)).toEqual([]);
 
 		// Verify callback-specific fields WERE updated
-		expect(updatedExec.terminalState).toBe("completed");
-		expect(updatedExec.completedAt).toBe("2026-04-10T12:00:00Z");
-		expect(updatedExec.resultSummary).toBeDefined();
-		expect(updatedExec.remoteMetadata?.callbackReceivedAt).toBe("2026-04-10T12:00:00Z");
+		expect(updatedExec!.terminalState).toBe("completed");
+		expect(updatedExec!.completedAt).toBe("2026-04-10T12:00:00Z");
+		expect(updatedExec!.resultSummary).toBeDefined();
+		expect(updatedExec!.remoteMetadata?.callbackReceivedAt).toBe("2026-04-10T12:00:00Z");
 	});
 
 	it("reconciliation does NOT trigger drift notification on normal path", async () => {
