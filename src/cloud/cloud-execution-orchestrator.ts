@@ -604,14 +604,14 @@ export class CloudExecutionOrchestrator {
 				policySnapshotId: decision.policySnapshotId,
 			});
 		} catch (e) {
-			// Governance client already handles fail-open/fail-closed internally,
-			// but if an unexpected error escapes, log and auto-authorize.
-			this.logger.error("Unexpected governance error, auto-authorizing", {
+			this.logger.error("Unexpected governance error, denying execution", {
 				taskId,
 				error: e instanceof Error ? e.message : String(e),
 			});
-			return this.applyTransition(taskId, "policy_check", "authorized", "system", {
-				governanceFallback: true,
+			return this.applyTransition(taskId, "policy_check", "denied", "system", {
+				governanceDecision: "denied",
+				reason: `governance error: ${e instanceof Error ? e.message : String(e)}`,
+				governanceError: true,
 			});
 		}
 	}

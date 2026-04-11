@@ -1050,6 +1050,40 @@ describe("Orchestrator — provisioning creates instance", () => {
 			expect(result?.trigger).toBe("denied");
 		});
 
+		it("denies policy_check when governance client throws unexpected error (fail-closed)", async () => {
+			const store = createMockStore();
+			const client = createMockClient();
+			const invoker = createMockRunInvoker();
+			const throwingGovernance: GovernanceClient = {
+				async checkAuthorization() {
+					throw new Error("governance service unavailable");
+				},
+				async reportUsage() {
+					return { accepted: true };
+				},
+				async reportAudit() {
+					return { accepted: true };
+				},
+			};
+			const orch = new CloudExecutionOrchestrator(
+				store,
+				client,
+				invoker,
+				FAST_CONFIG,
+				undefined,
+				null,
+				throwingGovernance,
+			);
+
+			await seedTaskToState(store, "task-1", "policy_check");
+			const result = await orch.processTask("task-1");
+
+			expect(result).not.toBeNull();
+			expect(result?.previousState).toBe("policy_check");
+			expect(result?.newState).toBe("failed");
+			expect(result?.trigger).toBe("denied");
+		});
+
 		it("passes full request context including projectId and orgId to checkAuthorization", async () => {
 			const store = createMockStore();
 			const client = createMockClient();
