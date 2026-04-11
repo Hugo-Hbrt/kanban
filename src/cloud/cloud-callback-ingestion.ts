@@ -50,19 +50,66 @@ export type CallbackTerminalStatus = z.infer<typeof callbackTerminalStatusSchema
  * Matches the currently implemented callback body shape in
  * `cloud-platform/apps/task-runner/runner/main.go` (PRD Section 15.3.C).
  */
-export const callbackPayloadSchema = z.object({
-	instanceId: z.string().min(1, "instanceId is required"),
+/**
+ * Raw schema that accepts both camelCase (cloud-platform current) and
+ * snake_case (legacy) field names, then normalises output to camelCase.
+ *
+ * The `instanceId` / `instance_id` field is required — at least one must
+ * be present and non-empty.
+ */
+const callbackPayloadRawSchema = z
+	.object({
+		instanceId: z.string().min(1).optional(),
+		instance_id: z.string().min(1).optional(),
+		status: callbackTerminalStatusSchema,
+		taskId: z.string().min(1).optional(),
+		task_id: z.string().min(1).optional(),
+		attemptNumber: z.number().int().positive().optional(),
+		attempt_number: z.number().int().positive().optional(),
+		prUrl: z.string().optional(),
+		pr_url: z.string().optional(),
+		taskOutput: z.string().optional(),
+		task_output: z.string().optional(),
+		error: z.string().optional(),
+		durationSeconds: z.number().nonnegative().optional(),
+		duration_seconds: z.number().nonnegative().optional(),
+		tokensUsed: z.number().int().nonnegative().optional(),
+		tokens_used: z.number().int().nonnegative().optional(),
+		idempotencyKey: z.string().optional(),
+		idempotency_key: z.string().optional(),
+	})
+	.refine((d) => !!(d.instanceId || d.instance_id), {
+		message: "instanceId is required",
+		path: ["instanceId"],
+	})
+	.transform((d) => ({
+		instanceId: (d.instanceId ?? d.instance_id) as string,
+		status: d.status,
+		taskId: d.taskId ?? d.task_id,
+		attemptNumber: d.attemptNumber ?? d.attempt_number,
+		prUrl: d.prUrl ?? d.pr_url,
+		taskOutput: d.taskOutput ?? d.task_output,
+		error: d.error,
+		durationSeconds: d.durationSeconds ?? d.duration_seconds,
+		tokensUsed: d.tokensUsed ?? d.tokens_used,
+		idempotencyKey: d.idempotencyKey ?? d.idempotency_key,
+	}));
+
+const callbackPayloadOutputSchema = z.object({
+	instanceId: z.string(),
 	status: callbackTerminalStatusSchema,
-	task_id: z.string().min(1).optional(),
-	attempt_number: z.number().int().positive().optional(),
-	pr_url: z.string().optional(),
-	task_output: z.string().optional(),
+	taskId: z.string().optional(),
+	attemptNumber: z.number().int().positive().optional(),
+	prUrl: z.string().optional(),
+	taskOutput: z.string().optional(),
 	error: z.string().optional(),
-	duration_seconds: z.number().nonnegative().optional(),
-	tokens_used: z.number().int().nonnegative().optional(),
-	idempotency_key: z.string().optional(),
+	durationSeconds: z.number().nonnegative().optional(),
+	tokensUsed: z.number().int().nonnegative().optional(),
+	idempotencyKey: z.string().optional(),
 });
-export type CallbackPayload = z.infer<typeof callbackPayloadSchema>;
+
+export const callbackPayloadSchema = callbackPayloadRawSchema.pipe(callbackPayloadOutputSchema);
+export type CallbackPayload = z.output<typeof callbackPayloadSchema>;
 
 // ---------------------------------------------------------------------------
 // Callback Headers
@@ -81,15 +128,18 @@ export interface CallbackHeaders {
 }
 
 export function extractCallbackHeaders(rawHeaders: Record<string, string | string[] | undefined>): CallbackHeaders {
-	const getHeader = (name: string): string | null => {
-		const value = rawHeaders[name] ?? rawHeaders[name.toLowerCase()];
-		if (Array.isArray(value)) return value[0] ?? null;
-		return typeof value === "string" ? value : null;
+	const getFirstHeader = (...names: string[]): string | null => {
+		for (const name of names) {
+			const value = rawHeaders[name] ?? rawHeaders[name.toLowerCase()];
+			if (Array.isArray(value)) return value[0] ?? null;
+			if (typeof value === "string") return value;
+		}
+		return null;
 	};
 	return {
-		timestamp: getHeader("x-cline-timestamp"),
-		signature: getHeader("x-cline-signature"),
-		eventId: getHeader("x-cline-event-id"),
+		timestamp: getFirstHeader("x-cline-timestamp", "x-callback-timestamp", "x-request-timestamp"),
+		signature: getFirstHeader("x-cline-signature", "x-callback-signature"),
+		eventId: getFirstHeader("x-cline-event-id", "x-request-id", "x-idempotency-key"),
 	};
 }
 
@@ -182,8 +232,13 @@ export function verifyCallbackSignature(
 	if (!timestamp) {
 		return { valid: false, reason: "Missing X-Cline-Timestamp header — required for signature verification." };
 	}
-	// Strip optional 'sha256=' prefix (PRD Section 5.3 format) for forward compatibility.
-	const rawSignature = signature.startsWith("sha256=") ? signature.slice(7) : signature;
+	// Strip known algorithm prefixes before comparison.
+	let rawSignature = signature;
+	if (rawSignature.startsWith("hmac-sha256=")) {
+		rawSignature = rawSignature.slice(12);
+	} else if (rawSignature.startsWith("sha256=")) {
+		rawSignature = rawSignature.slice(7);
+	}
 	const canonicalInput = buildCanonicalSigningInput(timestamp, eventId, body);
 	const expectedSignature = createHmac("sha256", secret).update(canonicalInput).digest("hex");
 	const sigBuffer = Buffer.from(rawSignature, "utf8");
@@ -323,7 +378,7 @@ export async function ingestTerminalCallback(
 	}
 
 	// 4. Resolve identity fields.
-	const taskId = identity.taskId ?? payload.task_id;
+	const taskId = identity.taskId ?? payload.taskId;
 	if (!taskId) {
 		return {
 			accepted: false,
@@ -332,18 +387,18 @@ export async function ingestTerminalCallback(
 			httpStatus: 400,
 		};
 	}
-	const attemptNumber = identity.attemptNumber ?? payload.attempt_number ?? 1;
+	const attemptNumber = identity.attemptNumber ?? payload.attemptNumber ?? 1;
 
 	// 5. Build composite dedupe key and check for duplicates.
 	const dedupeKey = buildDedupeKey(payload.instanceId, taskId, attemptNumber, payload.status);
 	if (await ctx.hasProcessedCallback(dedupeKey)) {
 		return { accepted: false, duplicate: true, reason: `Duplicate callback ignored: ${dedupeKey}`, httpStatus: 200 };
 	}
-	if (payload.idempotency_key && (await ctx.hasProcessedCallback(payload.idempotency_key))) {
+	if (payload.idempotencyKey && (await ctx.hasProcessedCallback(payload.idempotencyKey))) {
 		return {
 			accepted: false,
 			duplicate: true,
-			reason: `Duplicate callback ignored (idempotency_key): ${payload.idempotency_key}`,
+			reason: `Duplicate callback ignored (idempotency_key): ${payload.idempotencyKey}`,
 			httpStatus: 200,
 		};
 	}
@@ -376,8 +431,8 @@ export async function ingestTerminalCallback(
 
 	// 8. Record the dedupe key(s) BEFORE returning accepted.
 	await ctx.recordProcessedCallback(dedupeKey);
-	if (payload.idempotency_key) {
-		await ctx.recordProcessedCallback(payload.idempotency_key);
+	if (payload.idempotencyKey) {
+		await ctx.recordProcessedCallback(payload.idempotencyKey);
 	}
 
 	// 9. Return accepted result.

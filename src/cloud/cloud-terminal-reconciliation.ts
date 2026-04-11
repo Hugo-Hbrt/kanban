@@ -92,11 +92,11 @@ export interface TerminalReconciliationContext {
 export function buildResultSummary(payload: CallbackPayload): string {
 	const parts: string[] = [];
 	parts.push(`status=${payload.status}`);
-	if (payload.pr_url) parts.push(`pr=${payload.pr_url}`);
-	if (payload.duration_seconds !== undefined) parts.push(`duration=${payload.duration_seconds}s`);
-	if (payload.tokens_used !== undefined) parts.push(`tokens=${payload.tokens_used}`);
+	if (payload.prUrl) parts.push(`pr=${payload.prUrl}`);
+	if (payload.durationSeconds !== undefined) parts.push(`duration=${payload.durationSeconds}s`);
+	if (payload.tokensUsed !== undefined) parts.push(`tokens=${payload.tokensUsed}`);
 	if (payload.error) parts.push(`error=${payload.error}`);
-	if (payload.task_output) parts.push(`output=${payload.task_output}`);
+	if (payload.taskOutput) parts.push(`output=${payload.taskOutput}`);
 	return parts.join("; ");
 }
 
@@ -116,13 +116,13 @@ export function buildTerminalEventMetadata(
 		instanceId: payload.instanceId,
 		callbackStatus: payload.status,
 	};
-	if (payload.pr_url !== undefined) metadata.prUrl = payload.pr_url;
-	if (payload.task_output !== undefined) metadata.taskOutput = payload.task_output;
+	if (payload.prUrl !== undefined) metadata.prUrl = payload.prUrl;
+	if (payload.taskOutput !== undefined) metadata.taskOutput = payload.taskOutput;
 	if (payload.error !== undefined) metadata.error = payload.error;
-	if (payload.duration_seconds !== undefined) metadata.durationSeconds = payload.duration_seconds;
-	if (payload.tokens_used !== undefined) metadata.tokensUsed = payload.tokens_used;
-	if (payload.attempt_number !== undefined) metadata.attemptNumber = payload.attempt_number;
-	if (payload.idempotency_key !== undefined) metadata.idempotencyKey = payload.idempotency_key;
+	if (payload.durationSeconds !== undefined) metadata.durationSeconds = payload.durationSeconds;
+	if (payload.tokensUsed !== undefined) metadata.tokensUsed = payload.tokensUsed;
+	if (payload.attemptNumber !== undefined) metadata.attemptNumber = payload.attemptNumber;
+	if (payload.idempotencyKey !== undefined) metadata.idempotencyKey = payload.idempotencyKey;
 	if (extra) Object.assign(metadata, extra);
 	return metadata;
 }

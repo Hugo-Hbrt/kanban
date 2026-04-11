@@ -109,12 +109,12 @@ describe("Contract Tests \u2014 Callback payload shape", () => {
 		const valid = {
 			instanceId: "inst-abc",
 			status: "success" as const,
-			task_id: "task-123",
-			attempt_number: 1,
-			pr_url: "https://github.com/cline/kanban/pull/42",
-			task_output: "Completed successfully",
-			duration_seconds: 120,
-			tokens_used: 5000,
+			taskId: "task-123",
+			attemptNumber: 1,
+			prUrl: "https://github.com/cline/kanban/pull/42",
+			taskOutput: "Completed successfully",
+			durationSeconds: 120,
+			tokensUsed: 5000,
 		};
 		expect(callbackPayloadSchema.safeParse(valid).success).toBe(true);
 	});
@@ -148,7 +148,7 @@ describe("Contract Tests \u2014 Callback payload shape", () => {
 	});
 
 	it("callback with idempotency_key passes", () => {
-		const payload = { instanceId: "i", status: "success" as const, idempotency_key: "idem-123" };
+		const payload = { instanceId: "i", status: "success" as const, idempotencyKey: "idem-123" };
 		expect(callbackPayloadSchema.safeParse(payload).success).toBe(true);
 	});
 });

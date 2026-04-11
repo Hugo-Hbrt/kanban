@@ -164,8 +164,8 @@ describe("E2E Cancel Flows — Late callback after cancel is rejected", () => {
 		const payload: CallbackPayload = {
 			instanceId: "inst-late",
 			status: "success",
-			task_id: "task-late-1",
-			attempt_number: 1,
+			taskId: "task-late-1",
+			attemptNumber: 1,
 		};
 		const ingestionCtx = createCallbackIngestionContext({ currentState: "canceled" });
 		const result = await ingestTerminalCallback(
@@ -183,8 +183,8 @@ describe("E2E Cancel Flows — Late callback after cancel is rejected", () => {
 		const payload: CallbackPayload = {
 			instanceId: "inst-f",
 			status: "success",
-			task_id: "task-f-1",
-			attempt_number: 1,
+			taskId: "task-f-1",
+			attemptNumber: 1,
 		};
 		const result = await ingestTerminalCallback(
 			JSON.stringify(payload),

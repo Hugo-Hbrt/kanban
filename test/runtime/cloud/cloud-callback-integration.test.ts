@@ -73,10 +73,10 @@ function createBasePayload(overrides: Partial<CallbackPayload> = {}): CallbackPa
 	return {
 		instanceId: "inst-abc123",
 		status: "success",
-		task_id: "task-001",
-		attempt_number: 1,
-		pr_url: "https://github.com/org/repo/pull/42",
-		task_output: "All tests passed.",
+		taskId: "task-001",
+		attemptNumber: 1,
+		prUrl: "https://github.com/org/repo/pull/42",
+		taskOutput: "All tests passed.",
 		...overrides,
 	};
 }
@@ -167,10 +167,10 @@ describe("cloud callback integration — real persistence round-trip", () => {
 		const payload = createBasePayload({
 			instanceId,
 			status: "success",
-			task_id: taskId,
-			pr_url: "https://github.com/org/repo/pull/42",
-			duration_seconds: 120,
-			tokens_used: 5000,
+			taskId: taskId,
+			prUrl: "https://github.com/org/repo/pull/42",
+			durationSeconds: 120,
+			tokensUsed: 5000,
 		});
 		const ingestionResult = await ingestTerminalCallback(
 			JSON.stringify(payload),
@@ -206,7 +206,7 @@ describe("cloud callback integration — real persistence round-trip", () => {
 
 		const dedupeStore = new InMemoryCallbackDedupeStore();
 		const ctx = createIngestionContext(store, dedupeStore);
-		const payload = createBasePayload({ instanceId, status: "failed", task_id: taskId, error: "OOM killed" });
+		const payload = createBasePayload({ instanceId, status: "failed", taskId: taskId, error: "OOM killed" });
 		const result = await ingestTerminalCallback(JSON.stringify(payload), createBaseHeaders(), {}, ctx);
 		expect(result.accepted).toBe(true);
 		if (!result.accepted) throw new Error("Expected accepted");
@@ -225,7 +225,7 @@ describe("cloud callback integration — real persistence round-trip", () => {
 
 		const dedupeStore = new InMemoryCallbackDedupeStore();
 		const ctx = createIngestionContext(store, dedupeStore);
-		const body = JSON.stringify(createBasePayload({ instanceId, status: "success", task_id: taskId }));
+		const body = JSON.stringify(createBasePayload({ instanceId, status: "success", taskId: taskId }));
 
 		const result1 = await ingestTerminalCallback(body, createBaseHeaders(), {}, ctx);
 		expect(result1.accepted).toBe(true);
@@ -250,16 +250,16 @@ describe("cloud callback integration — real persistence round-trip", () => {
 		const p1 = createBasePayload({
 			instanceId: "inst-idem",
 			status: "success",
-			task_id: taskId1,
-			idempotency_key: "idem-key",
+			taskId: taskId1,
+			idempotencyKey: "idem-key",
 		});
 		expect((await ingestTerminalCallback(JSON.stringify(p1), createBaseHeaders(), {}, ctx)).accepted).toBe(true);
 
 		const p2 = createBasePayload({
 			instanceId: "inst-other",
 			status: "success",
-			task_id: taskId2,
-			idempotency_key: "idem-key",
+			taskId: taskId2,
+			idempotencyKey: "idem-key",
 		});
 		const result2 = await ingestTerminalCallback(JSON.stringify(p2), createBaseHeaders(), {}, ctx);
 		expect(result2.accepted).toBe(false);
@@ -273,7 +273,7 @@ describe("cloud callback integration — real persistence round-trip", () => {
 
 		const dedupeStore = new InMemoryCallbackDedupeStore();
 		const ctx = createIngestionContext(store, dedupeStore, { signingSecret: secret });
-		const body = JSON.stringify(createBasePayload({ instanceId: "inst-sig", status: "success", task_id: taskId }));
+		const body = JSON.stringify(createBasePayload({ instanceId: "inst-sig", status: "success", taskId: taskId }));
 		const ts = new Date().toISOString();
 		const evtId = "evt-sig-test";
 
@@ -310,7 +310,7 @@ describe("cloud callback integration — real persistence round-trip", () => {
 
 		const dedupeStore = new InMemoryCallbackDedupeStore();
 		const ctx = createIngestionContext(store, dedupeStore);
-		const payload = createBasePayload({ instanceId: "inst-persist", status: "success", task_id: taskId });
+		const payload = createBasePayload({ instanceId: "inst-persist", status: "success", taskId: taskId });
 		const result = await ingestTerminalCallback(JSON.stringify(payload), createBaseHeaders(), {}, ctx);
 		expect(result.accepted).toBe(true);
 		if (!result.accepted) throw new Error("Expected accepted");
@@ -337,7 +337,7 @@ describe("cloud callback integration — real persistence round-trip", () => {
 		const payload = createBasePayload({
 			instanceId: "inst-idempotent",
 			status: "failed",
-			task_id: taskId,
+			taskId: taskId,
 			error: "test",
 		});
 		const result = await ingestTerminalCallback(JSON.stringify(payload), createBaseHeaders(), {}, ctx);
@@ -363,7 +363,7 @@ describe("cloud callback integration — real persistence round-trip", () => {
 
 		const dedupeStore = new InMemoryCallbackDedupeStore();
 		const ctx = createIngestionContext(store, dedupeStore);
-		const payload = createBasePayload({ instanceId: "inst-cancel", status: "canceled", task_id: taskId });
+		const payload = createBasePayload({ instanceId: "inst-cancel", status: "canceled", taskId: taskId });
 		const result = await ingestTerminalCallback(JSON.stringify(payload), createBaseHeaders(), {}, ctx);
 		expect(result.accepted).toBe(true);
 		if (!result.accepted) throw new Error("Expected accepted");
@@ -388,7 +388,7 @@ describe("cloud callback integration — real persistence round-trip", () => {
 			recordProcessedCallback: async () => {},
 			signingSecret: null,
 		};
-		const payload = createBasePayload({ task_id: "nonexistent" });
+		const payload = createBasePayload({ taskId: "nonexistent" });
 		const result = await ingestTerminalCallback(JSON.stringify(payload), createBaseHeaders(), {}, ctx);
 		expect(result.accepted).toBe(false);
 		if (!result.accepted) {
@@ -475,7 +475,7 @@ describe("cloud callback HTTP handler — handleCloudCallback", () => {
 		const dedupeStore = new InMemoryCallbackDedupeStore();
 		const ctx = createHandlerCtx({ "task-http-1": "running" }, dedupeStore, secret);
 
-		const payload = createBasePayload({ task_id: "task-http-1", status: "success" });
+		const payload = createBasePayload({ taskId: "task-http-1", status: "success" });
 		const body = JSON.stringify(payload);
 		const ts = new Date().toISOString();
 		const evtId = "evt-handler-1";
@@ -506,7 +506,7 @@ describe("cloud callback HTTP handler — handleCloudCallback", () => {
 	it("duplicate callback returns 200 with duplicate:true", async () => {
 		const dedupeStore = new InMemoryCallbackDedupeStore();
 		const ctx = createHandlerCtx({ "task-dup": "running" }, dedupeStore);
-		const payload = createBasePayload({ task_id: "task-dup", status: "success" });
+		const payload = createBasePayload({ taskId: "task-dup", status: "success" });
 		const body = JSON.stringify(payload);
 
 		// First request — accepted
@@ -530,7 +530,7 @@ describe("cloud callback HTTP handler — handleCloudCallback", () => {
 	it("callback for unknown task returns 404", async () => {
 		const dedupeStore = new InMemoryCallbackDedupeStore();
 		const ctx = createHandlerCtx({}, dedupeStore);
-		const body = JSON.stringify(createBasePayload({ task_id: "nonexistent-task" }));
+		const body = JSON.stringify(createBasePayload({ taskId: "nonexistent-task" }));
 
 		const req = createMockRequest(body);
 		const { res, getStatus, getBody } = createMockResponse();
@@ -544,7 +544,7 @@ describe("cloud callback HTTP handler — handleCloudCallback", () => {
 		const dedupeStore = new InMemoryCallbackDedupeStore();
 		const ctx = createHandlerCtx({ "task-sig": "running" }, dedupeStore, secret);
 
-		const body = JSON.stringify(createBasePayload({ task_id: "task-sig", status: "success" }));
+		const body = JSON.stringify(createBasePayload({ taskId: "task-sig", status: "success" }));
 		const ts = new Date().toISOString();
 		const req = createMockRequest(body, "POST", CLOUD_CALLBACK_PATH, {
 			"x-cline-timestamp": ts,

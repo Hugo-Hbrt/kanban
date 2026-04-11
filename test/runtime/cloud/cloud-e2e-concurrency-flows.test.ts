@@ -219,8 +219,8 @@ describe("E2E Concurrency Flows \u2014 Concurrent cancel + callback race", () =>
 		const payload: CallbackPayload = {
 			instanceId: "inst-race",
 			status: "success",
-			task_id: "task-race",
-			attempt_number: 1,
+			taskId: "task-race",
+			attemptNumber: 1,
 		};
 		const cbResult = await ingestTerminalCallback(
 			JSON.stringify(payload),
@@ -259,8 +259,8 @@ describe("E2E Concurrency Flows \u2014 Concurrent cancel + callback race", () =>
 		const payload: CallbackPayload = {
 			instanceId: "inst-dd",
 			status: "success",
-			task_id: "task-dd",
-			attempt_number: 1,
+			taskId: "task-dd",
+			attemptNumber: 1,
 		};
 		const body = JSON.stringify(payload);
 		const headers = extractCallbackHeaders({});

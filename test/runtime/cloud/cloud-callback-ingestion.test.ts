@@ -28,10 +28,10 @@ function createBasePayload(overrides: Partial<CallbackPayload> = {}): CallbackPa
 	return {
 		instanceId: "inst_abc",
 		status: "success",
-		task_id: "task-1",
-		attempt_number: 1,
-		pr_url: "https://github.com/org/repo/pull/42",
-		task_output: "Task completed successfully.",
+		taskId: "task-1",
+		attemptNumber: 1,
+		prUrl: "https://github.com/org/repo/pull/42",
+		taskOutput: "Task completed successfully.",
 		error: "",
 		...overrides,
 	};
@@ -87,7 +87,7 @@ function computeCanonicalHmac(
 // ---------------------------------------------------------------------------
 
 describe("callbackPayloadSchema", () => {
-	it("accepts a valid full payload", () => {
+	it("accepts a valid full payload (camelCase)", () => {
 		const result = callbackPayloadSchema.safeParse(createBasePayload());
 		expect(result.success).toBe(true);
 	});
@@ -119,6 +119,57 @@ describe("callbackPayloadSchema", () => {
 			status: "success",
 		});
 		expect(result.success).toBe(false);
+	});
+
+	it("accepts snake_case fields and normalises to camelCase", () => {
+		const result = callbackPayloadSchema.safeParse({
+			instance_id: "inst_snake",
+			status: "success",
+			task_id: "task-s",
+			attempt_number: 2,
+			pr_url: "https://pr",
+			task_output: "out",
+			duration_seconds: 10,
+			tokens_used: 500,
+			idempotency_key: "idem-s",
+		});
+		expect(result.success).toBe(true);
+		if (result.success) {
+			expect(result.data.instanceId).toBe("inst_snake");
+			expect(result.data.taskId).toBe("task-s");
+			expect(result.data.attemptNumber).toBe(2);
+			expect(result.data.prUrl).toBe("https://pr");
+			expect(result.data.taskOutput).toBe("out");
+			expect(result.data.durationSeconds).toBe(10);
+			expect(result.data.tokensUsed).toBe(500);
+			expect(result.data.idempotencyKey).toBe("idem-s");
+		}
+	});
+
+	it("accepts instance_id when instanceId is absent", () => {
+		const result = callbackPayloadSchema.safeParse({
+			instance_id: "inst_from_snake",
+			status: "success",
+		});
+		expect(result.success).toBe(true);
+		if (result.success) {
+			expect(result.data.instanceId).toBe("inst_from_snake");
+		}
+	});
+
+	it("prefers camelCase over snake_case when both present", () => {
+		const result = callbackPayloadSchema.safeParse({
+			instanceId: "camel",
+			instance_id: "snake",
+			status: "success",
+			taskId: "camelTask",
+			task_id: "snakeTask",
+		});
+		expect(result.success).toBe(true);
+		if (result.success) {
+			expect(result.data.instanceId).toBe("camel");
+			expect(result.data.taskId).toBe("camelTask");
+		}
 	});
 });
 
@@ -186,7 +237,7 @@ describe("mapCallbackStatusToTerminalState", () => {
 // ---------------------------------------------------------------------------
 
 describe("extractCallbackHeaders", () => {
-	it("extracts all three headers", () => {
+	it("extracts all three headers (x-cline-* primary)", () => {
 		const headers = extractCallbackHeaders({
 			"x-cline-timestamp": "2026-04-09T12:00:00Z",
 			"x-cline-signature": "abc123",
@@ -209,6 +260,52 @@ describe("extractCallbackHeaders", () => {
 			"x-cline-event-id": ["evt-first", "evt-second"],
 		});
 		expect(headers.eventId).toBe("evt-first");
+	});
+
+	it("falls back to x-callback-timestamp", () => {
+		const headers = extractCallbackHeaders({
+			"x-callback-timestamp": "1718000000",
+		});
+		expect(headers.timestamp).toBe("1718000000");
+	});
+
+	it("falls back to x-callback-signature", () => {
+		const headers = extractCallbackHeaders({
+			"x-callback-signature": "hmac-sha256=abc",
+		});
+		expect(headers.signature).toBe("hmac-sha256=abc");
+	});
+
+	it("falls back to x-request-id for eventId", () => {
+		const headers = extractCallbackHeaders({
+			"x-request-id": "req-uuid",
+		});
+		expect(headers.eventId).toBe("req-uuid");
+	});
+
+	it("falls back to x-request-timestamp", () => {
+		const headers = extractCallbackHeaders({
+			"x-request-timestamp": "2026-04-10T00:00:00Z",
+		});
+		expect(headers.timestamp).toBe("2026-04-10T00:00:00Z");
+	});
+
+	it("falls back to x-idempotency-key for eventId", () => {
+		const headers = extractCallbackHeaders({
+			"x-idempotency-key": "idem-123",
+		});
+		expect(headers.eventId).toBe("idem-123");
+	});
+
+	it("prefers x-cline-* over x-callback-* when both present", () => {
+		const headers = extractCallbackHeaders({
+			"x-cline-signature": "cline-sig",
+			"x-callback-signature": "callback-sig",
+			"x-cline-timestamp": "cline-ts",
+			"x-callback-timestamp": "callback-ts",
+		});
+		expect(headers.signature).toBe("cline-sig");
+		expect(headers.timestamp).toBe("cline-ts");
 	});
 });
 
@@ -258,6 +355,14 @@ describe("verifyCallbackSignature", () => {
 		const secret = "my-signing-secret";
 		const hmacHex = computeCanonicalHmac(secret, body, ts, evtId);
 		const result = verifyCallbackSignature(body, `sha256=${hmacHex}`, secret, ts, evtId);
+		expect(result.valid).toBe(true);
+	});
+
+	it("accepts valid signature with 'hmac-sha256=' prefix", () => {
+		const body = '{"test": true}';
+		const secret = "my-signing-secret";
+		const hmacHex = computeCanonicalHmac(secret, body, ts, evtId);
+		const result = verifyCallbackSignature(body, `hmac-sha256=${hmacHex}`, secret, ts, evtId);
 		expect(result.valid).toBe(true);
 	});
 
@@ -421,7 +526,7 @@ describe("ingestTerminalCallback — success", () => {
 			expect(result.trigger).toBe("execution_done");
 			expect(result.fromState).toBe("running");
 			expect(result.toState).toBe("completing");
-			expect(result.payload.pr_url).toBe("https://github.com/org/repo/pull/42");
+			expect(result.payload.prUrl).toBe("https://github.com/org/repo/pull/42");
 		}
 	});
 
@@ -434,7 +539,6 @@ describe("ingestTerminalCallback — success", () => {
 		if (result.accepted === true) {
 			expect(result.trigger).toBe("execution_error");
 			expect(result.toState).toBe("failed");
-			// PRD 15.11: failure output must be preserved
 			expect(result.payload.error).toBe("OOM killed");
 		}
 	});
@@ -452,7 +556,7 @@ describe("ingestTerminalCallback — success", () => {
 	});
 
 	it("uses task_id from route identity over payload", async () => {
-		const payload = createBasePayload({ task_id: "payload-task" });
+		const payload = createBasePayload({ taskId: "payload-task" });
 		const ctx = createFakeContext({ taskStates: { "route-task": "running" } });
 		const result = await ingestTerminalCallback(
 			toRawBody(payload),
@@ -467,8 +571,8 @@ describe("ingestTerminalCallback — success", () => {
 		}
 	});
 
-	it("falls back to payload task_id when route identity has none", async () => {
-		const payload = createBasePayload({ task_id: "payload-task" });
+	it("falls back to payload taskId when route identity has none", async () => {
+		const payload = createBasePayload({ taskId: "payload-task" });
 		const ctx = createFakeContext({ taskStates: { "payload-task": "running" } });
 		const result = await ingestTerminalCallback(toRawBody(payload), createBaseHeaders(), {}, ctx);
 
@@ -511,11 +615,9 @@ describe("ingestTerminalCallback — duplicate detection", () => {
 		const body = toRawBody(payload);
 		const headers = createBaseHeaders();
 
-		// First call should succeed.
 		const result1 = await ingestTerminalCallback(body, headers, {}, ctx);
 		expect(result1.accepted).toBe(true);
 
-		// Second call with same payload should be duplicate.
 		const result2 = await ingestTerminalCallback(body, headers, {}, ctx);
 		expect(result2.accepted).toBe(false);
 		if (result2.accepted === false) {
@@ -524,7 +626,7 @@ describe("ingestTerminalCallback — duplicate detection", () => {
 		}
 	});
 
-	it("rejects duplicate via idempotency_key", async () => {
+	it("rejects duplicate via idempotencyKey", async () => {
 		const dedupeStore = new InMemoryCallbackDedupeStore();
 		const ctx = createFakeContext({
 			taskStates: { "task-1": "running", "task-2": "running" },
@@ -532,15 +634,14 @@ describe("ingestTerminalCallback — duplicate detection", () => {
 			recordProcessedCallback: async (key) => dedupeStore.add(key),
 		});
 
-		const payload1 = createBasePayload({ idempotency_key: "idem-1" });
+		const payload1 = createBasePayload({ idempotencyKey: "idem-1" });
 		const result1 = await ingestTerminalCallback(toRawBody(payload1), createBaseHeaders(), {}, ctx);
 		expect(result1.accepted).toBe(true);
 
-		// Different payload but same idempotency_key
 		const payload2 = createBasePayload({
-			task_id: "task-2",
+			taskId: "task-2",
 			instanceId: "inst_different",
-			idempotency_key: "idem-1",
+			idempotencyKey: "idem-1",
 		});
 		const result2 = await ingestTerminalCallback(toRawBody(payload2), createBaseHeaders(), {}, ctx);
 		expect(result2.accepted).toBe(false);
@@ -627,11 +728,14 @@ describe("ingestTerminalCallback — invalid payloads", () => {
 		}
 	});
 
-	it("rejects when task_id is missing from both route and payload", async () => {
+	it("rejects when taskId is missing from both route and payload", async () => {
 		const ctx = createFakeContext();
-		const payload = createBasePayload();
-		delete (payload as Record<string, unknown>).task_id;
-		const result = await ingestTerminalCallback(JSON.stringify(payload), createBaseHeaders(), {}, ctx);
+		const result = await ingestTerminalCallback(
+			JSON.stringify({ instanceId: "inst_abc", status: "success" }),
+			createBaseHeaders(),
+			{},
+			ctx,
+		);
 
 		expect(result.accepted).toBe(false);
 		if (result.accepted === false) {
@@ -648,7 +752,7 @@ describe("ingestTerminalCallback — invalid payloads", () => {
 describe("ingestTerminalCallback — unknown task", () => {
 	it("rejects callback for unknown task_id", async () => {
 		const ctx = createFakeContext({ taskStates: {} });
-		const payload = createBasePayload({ task_id: "nonexistent" });
+		const payload = createBasePayload({ taskId: "nonexistent" });
 		const result = await ingestTerminalCallback(toRawBody(payload), createBaseHeaders(), {}, ctx);
 
 		expect(result.accepted).toBe(false);
@@ -839,6 +943,21 @@ describe("ingestTerminalCallback — signature verification", () => {
 		);
 		expect(result.accepted).toBe(true);
 	});
+
+	it("accepts callback with 'hmac-sha256=' prefixed canonical signature", async () => {
+		const secret = "test-secret";
+		const payload = createBasePayload();
+		const body = toRawBody(payload);
+		const sig = `hmac-sha256=${computeCanonicalHmac(secret, body, recentTs, evtId)}`;
+		const ctx = createFakeContext({ taskStates: { "task-1": "running" }, signingSecret: secret });
+		const result = await ingestTerminalCallback(
+			body,
+			createBaseHeaders({ signature: sig, timestamp: recentTs, eventId: evtId }),
+			{},
+			ctx,
+		);
+		expect(result.accepted).toBe(true);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -851,42 +970,138 @@ describe("ingestTerminalCallback — failure preservation (PRD 15.11)", () => {
 		const payload = createBasePayload({
 			status: "failed",
 			error: errorOutput,
-			task_output: "Partial output before crash",
+			taskOutput: "Partial output before crash",
 		});
 		const ctx = createFakeContext({ taskStates: { "task-1": "running" } });
 		const result = await ingestTerminalCallback(toRawBody(payload), createBaseHeaders(), {}, ctx);
 		expect(result.accepted).toBe(true);
 		if (result.accepted === true) {
 			expect(result.payload.error).toBe(errorOutput);
-			expect(result.payload.task_output).toBe("Partial output before crash");
+			expect(result.payload.taskOutput).toBe("Partial output before crash");
 		}
 	});
 
 	it("preserves empty error string without discarding", async () => {
-		const payload = createBasePayload({ status: "failed", error: "", task_output: "" });
+		const payload = createBasePayload({ status: "failed", error: "", taskOutput: "" });
 		const ctx = createFakeContext({ taskStates: { "task-1": "running" } });
 		const result = await ingestTerminalCallback(toRawBody(payload), createBaseHeaders(), {}, ctx);
 		expect(result.accepted).toBe(true);
 		if (result.accepted === true) {
 			expect(result.payload.error).toBe("");
-			expect(result.payload.task_output).toBe("");
+			expect(result.payload.taskOutput).toBe("");
 		}
 	});
 
 	it("preserves metadata fields (duration, tokens, PR URL)", async () => {
 		const payload = createBasePayload({
 			status: "success",
-			pr_url: "https://github.com/org/repo/pull/99",
-			duration_seconds: 120,
-			tokens_used: 5000,
+			prUrl: "https://github.com/org/repo/pull/99",
+			durationSeconds: 120,
+			tokensUsed: 5000,
 		});
 		const ctx = createFakeContext({ taskStates: { "task-1": "running" } });
 		const result = await ingestTerminalCallback(toRawBody(payload), createBaseHeaders(), {}, ctx);
 		expect(result.accepted).toBe(true);
 		if (result.accepted === true) {
-			expect(result.payload.pr_url).toBe("https://github.com/org/repo/pull/99");
-			expect(result.payload.duration_seconds).toBe(120);
-			expect(result.payload.tokens_used).toBe(5000);
+			expect(result.payload.prUrl).toBe("https://github.com/org/repo/pull/99");
+			expect(result.payload.durationSeconds).toBe(120);
+			expect(result.payload.tokensUsed).toBe(5000);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// ingestTerminalCallback — cloud-platform contract test
+// ---------------------------------------------------------------------------
+
+describe("ingestTerminalCallback — cloud-platform contract", () => {
+	it("accepts a callback exactly as cloud-platform task-runner sends it", async () => {
+		const secret = "test-callback-signing-key";
+		const timestamp = new Date(Date.now() - 5_000).toISOString();
+		const eventId = "4f3c2a1b9e8d7c6f5a4b3c2d1e0f9a8b";
+
+		// Cloud-platform sends ALL camelCase JSON (after cf03b6d)
+		const cloudPlatformBody = JSON.stringify({
+			instanceId: "inst_gcp_abc123",
+			taskId: "task-42",
+			attemptNumber: 1,
+			status: "success",
+			featureBranch: "feat/my-feature",
+			prUrl: "https://github.com/org/repo/pull/99",
+			taskOutput: "All tests passed. PR created.",
+			error: "",
+		});
+
+		const sig = computeCanonicalHmac(secret, cloudPlatformBody, timestamp, eventId);
+
+		// Cloud-platform sends X-Cline-* headers (after 5ee9418) with sha256= prefix
+		const rawHeaders: Record<string, string> = {
+			"x-cline-signature": `sha256=${sig}`,
+			"x-cline-timestamp": timestamp,
+			"x-cline-event-id": eventId,
+			"content-type": "application/json",
+		};
+
+		const headers = extractCallbackHeaders(rawHeaders);
+		const ctx = createFakeContext({
+			taskStates: { "task-42": "running" },
+			signingSecret: secret,
+		});
+
+		const result = await ingestTerminalCallback(cloudPlatformBody, headers, {}, ctx);
+
+		expect(result.accepted).toBe(true);
+		if (result.accepted === true) {
+			expect(result.taskId).toBe("task-42");
+			expect(result.instanceId).toBe("inst_gcp_abc123");
+			expect(result.trigger).toBe("execution_done");
+			expect(result.payload.prUrl).toBe("https://github.com/org/repo/pull/99");
+			expect(result.payload.taskOutput).toBe("All tests passed. PR created.");
+			expect(result.payload.attemptNumber).toBe(1);
+		}
+	});
+
+	it("accepts a callback with legacy snake_case body and x-callback-* headers", async () => {
+		const secret = "legacy-key";
+		const timestamp = new Date(Date.now() - 5_000).toISOString();
+		const eventId = "nonce-legacy-abc";
+
+		// Legacy snake_case JSON
+		const legacyBody = JSON.stringify({
+			instance_id: "inst_legacy_001",
+			task_id: "task-legacy",
+			attempt_number: 2,
+			status: "failed",
+			pr_url: "",
+			task_output: "",
+			error: "OOM killed",
+		});
+
+		const sig = computeCanonicalHmac(secret, legacyBody, timestamp, eventId);
+
+		// Legacy x-callback-* headers with hmac-sha256= prefix
+		const rawHeaders: Record<string, string> = {
+			"x-callback-signature": `hmac-sha256=${sig}`,
+			"x-callback-timestamp": timestamp,
+			"x-request-id": eventId,
+		};
+
+		const headers = extractCallbackHeaders(rawHeaders);
+		const ctx = createFakeContext({
+			taskStates: { "task-legacy": "running" },
+			signingSecret: secret,
+		});
+
+		const result = await ingestTerminalCallback(legacyBody, headers, {}, ctx);
+
+		expect(result.accepted).toBe(true);
+		if (result.accepted === true) {
+			expect(result.taskId).toBe("task-legacy");
+			expect(result.instanceId).toBe("inst_legacy_001");
+			expect(result.trigger).toBe("execution_error");
+			expect(result.toState).toBe("failed");
+			expect(result.payload.error).toBe("OOM killed");
+			expect(result.payload.attemptNumber).toBe(2);
 		}
 	});
 });

@@ -20,13 +20,13 @@ function createBasePayload(overrides: Partial<CallbackPayload> = {}): CallbackPa
 	return {
 		instanceId: "inst_abc",
 		status: "success",
-		task_id: "task-1",
-		attempt_number: 1,
-		pr_url: "https://github.com/org/repo/pull/42",
-		task_output: "Task completed successfully.",
+		taskId: "task-1",
+		attemptNumber: 1,
+		prUrl: "https://github.com/org/repo/pull/42",
+		taskOutput: "Task completed successfully.",
 		error: "",
-		duration_seconds: 120,
-		tokens_used: 5000,
+		durationSeconds: 120,
+		tokensUsed: 5000,
 		...overrides,
 	};
 }
@@ -181,7 +181,7 @@ describe("buildResultSummary", () => {
 			createBasePayload({
 				status: "failed",
 				error: "OOM killed",
-				task_output: "partial output",
+				taskOutput: "partial output",
 			}),
 		);
 		expect(summary).toContain("error=OOM killed");
@@ -347,7 +347,7 @@ describe("reconcileTerminalCallback — failed callback", () => {
 				payload: createBasePayload({
 					status: "failed",
 					error: "Segmentation fault at 0x00000001",
-					task_output: "Partial output before crash",
+					taskOutput: "Partial output before crash",
 				}),
 			}),
 			ctx,
@@ -790,8 +790,8 @@ describe("reconcileTerminalCallback — execution metadata", () => {
 		await reconcileTerminalCallback(
 			createAcceptedResult({
 				payload: createBasePayload({
-					duration_seconds: 300,
-					tokens_used: 15000,
+					durationSeconds: 300,
+					tokensUsed: 15000,
 				}),
 			}),
 			ctx,

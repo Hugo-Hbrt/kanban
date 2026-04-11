@@ -224,7 +224,7 @@ describe("UAT-4: User-canceled task", () => {
 			async recordProcessedCallback() {},
 			signingSecret: null,
 		};
-		const p: CallbackPayload = { instanceId: "i-uat4", status: "success", task_id: "uat4", attempt_number: 1 };
+		const p: CallbackPayload = { instanceId: "i-uat4", status: "success", taskId: "uat4", attemptNumber: 1 };
 		const r = await ingestTerminalCallback(JSON.stringify(p), extractCallbackHeaders({}), { taskId: "uat4" }, ctx);
 		expect(r.accepted).toBe(false);
 		if (!r.accepted) expect(r.duplicate).toBe(true);
@@ -250,7 +250,7 @@ describe("UAT-5: Duplicate callback safety", () => {
 			},
 			signingSecret: null,
 		};
-		const p: CallbackPayload = { instanceId: "i-uat5", status: "success", task_id: "uat5", attempt_number: 1 };
+		const p: CallbackPayload = { instanceId: "i-uat5", status: "success", taskId: "uat5", attemptNumber: 1 };
 		const body = JSON.stringify(p);
 		const h = extractCallbackHeaders({});
 		const r1 = await ingestTerminalCallback(body, h, { taskId: "uat5" }, ctx);
@@ -282,8 +282,8 @@ describe("UAT-5: Duplicate callback safety", () => {
 		const p: CallbackPayload = {
 			instanceId: "i-uat5a",
 			status: "failed",
-			task_id: "uat5a",
-			attempt_number: 1,
+			taskId: "uat5a",
+			attemptNumber: 1,
 			error: "OOM",
 		};
 		const body = JSON.stringify(p);
@@ -311,9 +311,9 @@ describe("UAT-5: Duplicate callback safety", () => {
 		const p: CallbackPayload = {
 			instanceId: "i-uat5b",
 			status: "success",
-			task_id: "uat5b",
-			attempt_number: 1,
-			idempotency_key: "idem-uat5",
+			taskId: "uat5b",
+			attemptNumber: 1,
+			idempotencyKey: "idem-uat5",
 		};
 		const body = JSON.stringify(p);
 		const h = extractCallbackHeaders({});
