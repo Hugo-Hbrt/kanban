@@ -389,6 +389,7 @@ async function startServer(): Promise<{
 	*/
 	const [
 		{ resolveProjectInputPath },
+		{ GlobalCodexHostService },
 		{ pickDirectoryPathFromSystemDialog },
 		{ createRuntimeServer },
 		{ createRuntimeStateHub },
@@ -397,6 +398,7 @@ async function startServer(): Promise<{
 		{ collectProjectWorktreeTaskIdsForRemoval, createWorkspaceRegistry },
 	] = await Promise.all([
 		import("./projects/project-path.js"),
+		import("./codex-sdk/global-codex-host-service.js"),
 		import("./server/directory-picker.js"),
 		import("./server/runtime-server.js"),
 		import("./server/runtime-state-hub.js"),
@@ -405,12 +407,18 @@ async function startServer(): Promise<{
 		import("./server/workspace-registry.js"),
 	]);
 	let runtimeStateHub: RuntimeStateHub | undefined;
+	const globalCodexHostService = new GlobalCodexHostService();
+	await globalCodexHostService.start().catch((error) => {
+		const message = error instanceof Error ? error.message : String(error);
+		console.warn(`[kanban] Could not prewarm Codex app-server. ${message}`);
+	});
 	const workspaceRegistry = await createWorkspaceRegistry({
 		cwd: process.cwd(),
 		loadGlobalRuntimeConfig,
 		loadRuntimeConfig,
 		hasGitRepository,
 		pathIsDirectory,
+		globalCodexHostService,
 		onTerminalManagerReady: (workspaceId, manager) => {
 			runtimeStateHub?.trackTerminalManager(workspaceId, manager);
 		},
@@ -455,6 +463,7 @@ async function startServer(): Promise<{
 
 	const close = async () => {
 		await runtimeServer.close();
+		await globalCodexHostService.dispose();
 	};
 
 	const shutdown = async (options?: { skipSessionCleanup?: boolean }) => {

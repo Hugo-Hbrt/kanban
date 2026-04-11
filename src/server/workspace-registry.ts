@@ -1,3 +1,4 @@
+import type { CodexHostService } from "../codex-sdk/global-codex-host-service";
 import { type RuntimeConfigState, toGlobalRuntimeConfigState } from "../config/runtime-config";
 import type {
 	RuntimeBoardColumnId,
@@ -29,6 +30,7 @@ export interface CreateWorkspaceRegistryDependencies {
 	hasGitRepository: (path: string) => boolean;
 	pathIsDirectory: (path: string) => Promise<boolean>;
 	onTerminalManagerReady?: (workspaceId: string, manager: TerminalSessionManager) => void;
+	globalCodexHostService?: CodexHostService;
 }
 
 export interface DisposeWorkspaceRegistryOptions {
@@ -234,7 +236,7 @@ export async function createWorkspaceRegistry(deps: CreateWorkspaceRegistryDepen
 			return loaded;
 		}
 		const loading = (async () => {
-			const manager = new TerminalSessionManager();
+			const manager = new TerminalSessionManager(deps.globalCodexHostService);
 			try {
 				const existingWorkspace = await loadWorkspaceState(repoPath);
 				manager.hydrateFromRecord(existingWorkspace.sessions);
