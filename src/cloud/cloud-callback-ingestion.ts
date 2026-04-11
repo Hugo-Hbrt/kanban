@@ -296,6 +296,12 @@ export interface CallbackIngestionContext {
 	signingSecret: string | null;
 	nowMs?: number;
 	replayWindowMs?: number;
+	/**
+	 * Resolve taskId from instanceId when neither the route nor the payload
+	 * provides a task_id. Searches executions where remoteMetadata.instanceId
+	 * matches. Returns null if no matching execution is found.
+	 */
+	resolveTaskIdByInstanceId?(instanceId: string): Promise<string | null>;
 }
 
 // ---------------------------------------------------------------------------
@@ -378,12 +384,16 @@ export async function ingestTerminalCallback(
 	}
 
 	// 4. Resolve identity fields.
-	const taskId = identity.taskId ?? payload.taskId;
+	//    Priority: route identity → payload body → instanceId lookup (backward compat)
+	let taskId = identity.taskId ?? payload.taskId;
+	if (!taskId && ctx.resolveTaskIdByInstanceId) {
+		taskId = await ctx.resolveTaskIdByInstanceId(payload.instanceId) ?? undefined;
+	}
 	if (!taskId) {
 		return {
 			accepted: false,
 			duplicate: false,
-			reason: "Missing task_id: not provided in payload or route.",
+			reason: "Missing task_id: not provided in payload, route, or resolvable from instance_id.",
 			httpStatus: 400,
 		};
 	}

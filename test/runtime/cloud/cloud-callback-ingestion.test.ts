@@ -61,6 +61,7 @@ function createFakeContext(
 		signingSecret: overrides.signingSecret ?? null,
 		nowMs: overrides.nowMs,
 		replayWindowMs: overrides.replayWindowMs,
+		resolveTaskIdByInstanceId: overrides.resolveTaskIdByInstanceId,
 	};
 }
 
@@ -1103,6 +1104,82 @@ describe("ingestTerminalCallback — cloud-platform contract", () => {
 			expect(result.payload.error).toBe("OOM killed");
 			expect(result.payload.attemptNumber).toBe(2);
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// instanceId → taskId fallback resolution
+// ---------------------------------------------------------------------------
+
+describe("ingestTerminalCallback — instanceId → taskId fallback resolution", () => {
+	it("resolves taskId via resolveTaskIdByInstanceId when not in route or payload", async () => {
+		const ctx = createFakeContext({
+			taskStates: { "resolved-task-42": "running" },
+			resolveTaskIdByInstanceId: async (instanceId) => {
+				if (instanceId === "inst_abc") return "resolved-task-42";
+				return null;
+			},
+		});
+
+		const body = JSON.stringify({ instance_id: "inst_abc", status: "success" });
+		const result = await ingestTerminalCallback(body, createBaseHeaders(), {}, ctx);
+
+		expect(result.accepted).toBe(true);
+		if (!result.accepted) return;
+		expect(result.taskId).toBe("resolved-task-42");
+	});
+
+	it("returns 400 when taskId not resolvable from any source", async () => {
+		const ctx = createFakeContext({
+			resolveTaskIdByInstanceId: async () => null,
+		});
+
+		const body = JSON.stringify({ instance_id: "inst_unknown", status: "success" });
+		const result = await ingestTerminalCallback(body, createBaseHeaders(), {}, ctx);
+
+		expect(result.accepted).toBe(false);
+		if (result.accepted) return;
+		expect(result.httpStatus).toBe(400);
+		expect(result.reason).toContain("Missing task_id");
+	});
+
+	it("returns 400 when no resolver is configured and taskId is missing", async () => {
+		const ctx = createFakeContext();
+		const body = JSON.stringify({ instance_id: "inst_abc", status: "success" });
+		const result = await ingestTerminalCallback(body, createBaseHeaders(), {}, ctx);
+
+		expect(result.accepted).toBe(false);
+		if (result.accepted) return;
+		expect(result.httpStatus).toBe(400);
+		expect(result.reason).toContain("Missing task_id");
+	});
+
+	it("prefers route identity over instanceId resolver", async () => {
+		const ctx = createFakeContext({
+			taskStates: { "route-task": "running" },
+			resolveTaskIdByInstanceId: async () => "should-not-use-this",
+		});
+
+		const body = JSON.stringify({ instance_id: "inst_abc", status: "success" });
+		const result = await ingestTerminalCallback(body, createBaseHeaders(), { taskId: "route-task" }, ctx);
+
+		expect(result.accepted).toBe(true);
+		if (!result.accepted) return;
+		expect(result.taskId).toBe("route-task");
+	});
+
+	it("prefers payload taskId over instanceId resolver", async () => {
+		const ctx = createFakeContext({
+			taskStates: { "payload-task": "running" },
+			resolveTaskIdByInstanceId: async () => "should-not-use-this",
+		});
+
+		const body = JSON.stringify({ instance_id: "inst_abc", status: "success", task_id: "payload-task" });
+		const result = await ingestTerminalCallback(body, createBaseHeaders(), {}, ctx);
+
+		expect(result.accepted).toBe(true);
+		if (!result.accepted) return;
+		expect(result.taskId).toBe("payload-task");
 	});
 });
 
