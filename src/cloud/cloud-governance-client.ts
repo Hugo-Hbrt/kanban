@@ -399,9 +399,10 @@ export class GovernanceHttpClient implements GovernanceClient {
 	}
 
 	private buildHeaders(): Record<string, string> {
+		const token = this.authToken.startsWith("svc_") ? this.authToken : `svc_${this.authToken}`;
 		return {
 			"Content-Type": "application/json",
-			Authorization: `Bearer ${this.authToken}`,
+			Authorization: `Bearer ${token}`,
 			"X-Service-Name": this.serviceName,
 		};
 	}

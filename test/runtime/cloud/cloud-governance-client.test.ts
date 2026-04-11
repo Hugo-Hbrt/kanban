@@ -451,7 +451,7 @@ describe("GovernanceHttpClient — checkAuthorization", () => {
 		const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
 		expect(url).toBe(`${TEST_BASE_URL}/api/v1/execution/authorize`);
 		expect(init.method).toBe("POST");
-		expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${TEST_AUTH_TOKEN}`);
+		expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer svc_${TEST_AUTH_TOKEN}`);
 		expect((init.headers as Record<string, string>)["X-Service-Name"]).toBe("kanban");
 	});
 

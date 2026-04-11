@@ -120,6 +120,13 @@ export interface InvokeRunRequest {
 	readonly instanceId: string;
 	readonly hostname: string;
 	readonly prompt: string;
+	readonly branchName?: string;
+	readonly baseBranch?: string;
+	readonly startingCommitSha?: string;
+	readonly callbackUrl?: string;
+	readonly callbackSecret?: string;
+	readonly attemptNumber?: number;
+	readonly reservationId?: string;
 }
 
 export interface InvokeRunResponse {
@@ -764,6 +771,9 @@ export class CloudExecutionOrchestrator {
 				});
 			}
 
+			const meta = latest?.remoteMetadata;
+			const reservationId = await this.findReservationId(taskId);
+
 			const resp = await this.runInvoker.invokeRun(
 				{
 					taskId,
@@ -771,6 +781,11 @@ export class CloudExecutionOrchestrator {
 					instanceId,
 					hostname,
 					prompt,
+					branchName: meta?.featureBranch,
+					baseBranch: meta?.baseBranch,
+					startingCommitSha: meta?.startingCommitSha ?? latest?.startingCommitSha,
+					attemptNumber: latest?.attemptNumber,
+					reservationId,
 				},
 				ctx.abortController.signal,
 			);
@@ -818,6 +833,7 @@ export class CloudExecutionOrchestrator {
 				const execs = await this.store.readExecutionsForTask(taskId);
 				const latest = execs[execs.length - 1];
 				const meta = latest?.remoteMetadata;
+				const reservationId = await this.findReservationId(taskId);
 				await this.governanceClient.reportUsage({
 					taskId,
 					orgId: this.config.orgId ?? "",
@@ -825,6 +841,7 @@ export class CloudExecutionOrchestrator {
 					executionMode: latest?.executionMode ?? "cloud_agent",
 					cpuSeconds: latest?.durationSeconds ?? 0,
 					tokensIn: meta?.tokenUsage,
+					reservationId,
 					executionContext: {
 						repoUrl: meta?.repoUrl ?? "",
 						baseBranch: meta?.baseBranch ?? "",
@@ -1128,6 +1145,21 @@ export class CloudExecutionOrchestrator {
 			this.activeTasks.set(taskId, ctx);
 		}
 		return ctx;
+	}
+
+	/**
+	 * Find the reservationId from the policy_check → provisioning event metadata.
+	 * Scans task events for the `authorized` trigger where reservationId was stored.
+	 */
+	private async findReservationId(taskId: string): Promise<string | undefined> {
+		const events = await this.store.readEventsForTask(taskId);
+		for (let i = events.length - 1; i >= 0; i--) {
+			const evt = events[i];
+			if (evt?.trigger === "authorized" && evt.metadata?.reservationId) {
+				return evt.metadata.reservationId as string;
+			}
+		}
+		return undefined;
 	}
 
 	private cleanupCtx(taskId: string): void {
