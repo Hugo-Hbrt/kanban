@@ -39,7 +39,7 @@ declare module "kanban" {
 		authToken: string;
 		pid: number;
 		updatedAt: string;
-		source?: "desktop" | "terminal";
+		source?: "desktop" | "cli";
 		desktopSessionId?: string;
 	}
 
@@ -58,4 +58,18 @@ declare module "kanban" {
 	export function writeRuntimeDescriptor(descriptor: RuntimeDescriptor): Promise<void>;
 	export function clearRuntimeDescriptor(): Promise<void>;
 	export function evaluateDescriptorTrust(currentSessionId: string): Promise<DescriptorTrustResult>;
+
+	export interface TakeoverCallbacks {
+		startRuntime: () => Promise<{ url: string; authToken: string }>;
+		onAttach: (descriptor: RuntimeDescriptor) => Promise<void>;
+		onTakeoverStarting?: () => void;
+		onReconnected?: () => void;
+		warn?: (message: string) => void;
+	}
+
+	export function handleRuntimeDisconnect(
+		failedUrl: string,
+		failedAuthToken: string,
+		callbacks: TakeoverCallbacks,
+	): Promise<void>;
 }
