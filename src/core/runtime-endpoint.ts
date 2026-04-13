@@ -168,7 +168,7 @@ export function getRuntimeFetch(): Promise<typeof globalThis.fetch> {
 }
 
 // ---------------------------------------------------------------------------
-// Resolved runtime connection — async, with descriptor fallback
+// Resolved runtime connection — async, descriptor-first
 // ---------------------------------------------------------------------------
 
 export interface ResolvedRuntimeConnection {
@@ -191,15 +191,30 @@ function getEnvAuthToken(): string | null {
 }
 
 /**
+ * Extract just the origin (scheme + host + port) from a descriptor URL.
+ *
+ * Descriptor URLs may include a workspace path (e.g.
+ * "http://127.0.0.1:62929/cline") that is useful for browser navigation
+ * but must NOT be included in the API base URL — otherwise TRPC calls
+ * get routed to the wrong path.
+ */
+export function descriptorOriginFromUrl(descriptorUrl: string): string {
+	return new URL(descriptorUrl).origin;
+}
+
+/**
  * Quick connectivity check — try to reach the runtime with a short timeout.
  * Returns true if the server responds to a simple HTTP request.
+ *
+ * Uses /api/health as the probe endpoint.  Any HTTP response (including
+ * 401/404) means the server process is alive.  If the runtime renames or
+ * relocates that path in the future, update this probe to match.
  */
 async function isRuntimeReachable(origin: string, timeoutMs = 1500): Promise<boolean> {
 	try {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
-		// Use /api/trpc as a lightweight probe — any 2xx/4xx means the server is alive.
-		const response = await fetch(`${origin}/api/trpc/runtime.getInfo?batch=1&input={}`, {
+		const response = await fetch(`${origin}/api/health`, {
 			method: "GET",
 			signal: controller.signal,
 		});
@@ -212,17 +227,17 @@ async function isRuntimeReachable(origin: string, timeoutMs = 1500): Promise<boo
 }
 
 /**
- * Resolve the runtime connection with fallback to the desktop runtime descriptor.
+ * Resolve the runtime connection — descriptor-first policy.
+ *
+ * The runtime descriptor (~/.cline/kanban/runtime.json) is the single
+ * shared authority pointer. All non-explicit clients should connect to
+ * whatever runtime the descriptor points at, preventing split-brain
+ * when multiple runtimes are running on different ports.
  *
  * Resolution priority:
- *   1. Explicit env vars → use configured host/port, no fallback
- *   2. Default localhost:3484 → check if reachable
- *   3. Desktop runtime descriptor → if default is unreachable, read ~/.cline/kanban/runtime.json
- *
- * Existing behavior is 100% preserved:
- *   - If env vars are set, they win unconditionally (same as before).
- *   - If no env vars and default port is reachable, use it (same as before).
- *   - The descriptor is ONLY consulted when the default is unreachable.
+ *   1. Explicit env vars (KANBAN_RUNTIME_HOST / PORT) → use configured endpoint, no fallback.
+ *   2. Healthy runtime descriptor → the authority runtime, wherever it lives.
+ *   3. Default localhost:3484 → fallback when no descriptor exists.
  */
 export async function resolveRuntimeConnection(): Promise<ResolvedRuntimeConnection> {
 	// Priority 1: explicit env config — use it, no fallback.
@@ -237,23 +252,30 @@ export async function resolveRuntimeConnection(): Promise<ResolvedRuntimeConnect
 		};
 	}
 
-	// Priority 2: default endpoint — check if reachable.
+	// Priority 2: runtime descriptor — the shared authority pointer.
+	// Both CLI and desktop publish descriptors when they start a runtime.
+	// Clients should connect to the descriptor authority first; the default
+	// port is only a fallback when no authority has been established.
+	const descriptor = await readRuntimeDescriptor();
+	if (descriptor && !isDescriptorStale(descriptor)) {
+		const descriptorOrigin = descriptorOriginFromUrl(descriptor.url);
+		if (await isRuntimeReachable(descriptorOrigin)) {
+			return {
+				origin: descriptorOrigin,
+				authToken: descriptor.authToken,
+				source: "descriptor",
+			};
+		}
+		// Descriptor exists but runtime is unreachable — fall through to default.
+	}
+
+	// Priority 3: default endpoint — fallback when no authority descriptor exists.
 	const defaultOrigin = getKanbanRuntimeOrigin();
 	if (await isRuntimeReachable(defaultOrigin)) {
 		return {
 			origin: defaultOrigin,
 			authToken: null,
 			source: "default",
-		};
-	}
-
-	// Priority 3: desktop runtime descriptor.
-	const descriptor = await readRuntimeDescriptor();
-	if (descriptor && !isDescriptorStale(descriptor)) {
-		return {
-			origin: descriptor.url,
-			authToken: descriptor.authToken,
-			source: "descriptor",
 		};
 	}
 

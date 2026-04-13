@@ -1,14 +1,20 @@
 /**
- * Runtime descriptor — a per-user file that the desktop app writes when its
- * runtime child becomes ready.  CLI helper commands (task, hooks, etc.) read
- * this as a **fallback** when the default localhost:3484 is unreachable.
+ * Runtime descriptor — a per-user file that each runtime (CLI or desktop)
+ * writes when it becomes the active authority.  Other processes read this as
+ * the **primary** connection target, preventing split-brain when multiple
+ * runtimes are running on different ports.
  *
  * File location: ~/.cline/kanban/runtime.json
  *
- * Resolution priority (unchanged for existing users):
+ * Resolution priority (see resolveRuntimeConnection in runtime-endpoint.ts):
  *   1. Explicit env vars: KANBAN_RUNTIME_HOST / KANBAN_RUNTIME_PORT
- *   2. Default localhost:3484
- *   3. Desktop runtime descriptor (this file)
+ *   2. Healthy runtime descriptor (this file) — the shared authority pointer
+ *   3. Default localhost:3484 — fallback when no descriptor exists
+ *
+ * Staleness: the descriptor records the PID of the owning process.
+ * Consumers check PID liveness to avoid connecting to a stale descriptor
+ * from a crashed process.  This is a best-effort heuristic — PID reuse is
+ * theoretically possible but extremely unlikely on short timescales.
  */
 
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -38,25 +44,28 @@ export interface RuntimeDescriptor {
 // Path
 // ---------------------------------------------------------------------------
 
-const DESCRIPTOR_DIR = process.env.KANBAN_DESKTOP_RUNTIME_DESCRIPTOR_DIR || join(homedir(), ".cline", "kanban");
 const DESCRIPTOR_FILENAME = "runtime.json";
 
+export function getRuntimeDescriptorDir(): string {
+	return process.env.KANBAN_DESKTOP_RUNTIME_DESCRIPTOR_DIR || join(homedir(), ".cline", "kanban");
+}
+
 export function getRuntimeDescriptorPath(): string {
-	return join(DESCRIPTOR_DIR, DESCRIPTOR_FILENAME);
+	return join(getRuntimeDescriptorDir(), DESCRIPTOR_FILENAME);
 }
 
 // ---------------------------------------------------------------------------
-// Write — called by the desktop app when the runtime child reports ready
+// Write — called by any runtime (CLI or desktop) to claim authority
 // ---------------------------------------------------------------------------
 
 export async function writeRuntimeDescriptor(descriptor: RuntimeDescriptor): Promise<void> {
-	await mkdir(DESCRIPTOR_DIR, { recursive: true });
+	await mkdir(getRuntimeDescriptorDir(), { recursive: true });
 	const content = JSON.stringify(descriptor, null, "\t");
 	await writeFile(getRuntimeDescriptorPath(), content, "utf-8");
 }
 
 // ---------------------------------------------------------------------------
-// Read — called by CLI helpers as a fallback
+// Read — called by any process to discover the current runtime authority
 // ---------------------------------------------------------------------------
 
 export async function readRuntimeDescriptor(): Promise<RuntimeDescriptor | null> {
@@ -136,7 +145,7 @@ export function isDesktopDescriptorFromCurrentSession(
 
 export type DescriptorTrustReason =
 	| "current-session"
-	| "terminal-owned"
+	| "cli-owned"
 	| "pid-dead"
 	| "prior-desktop-session"
 	| "no-descriptor";
@@ -152,7 +161,7 @@ export interface DescriptorTrustResult {
  * should trust it.
  *
  * - **no-descriptor** — file absent or invalid → not trusted (nothing to trust).
- * - **terminal-owned** — source is "cli" → trusted (never interfere with CLI runtimes).
+ * - **cli-owned** — source is "cli" → trusted (never interfere with CLI runtimes).
  * - **current-session** — desktop descriptor with matching session ID → trusted.
  * - **pid-dead** — desktop descriptor from a prior session whose PID is dead →
  *   cleaned up and not trusted.
@@ -168,7 +177,7 @@ export async function evaluateDescriptorTrust(currentSessionId: string): Promise
 
 	// CLI-owned descriptors are always trusted — desktop never interferes.
 	if (descriptor.source === "cli") {
-		return { trusted: true, reason: "terminal-owned", descriptor };
+		return { trusted: true, reason: "cli-owned", descriptor };
 	}
 
 	// Desktop descriptor from the current session — trust it.

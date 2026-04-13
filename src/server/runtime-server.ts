@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
@@ -32,7 +33,7 @@ import {
 	validatePasscode,
 	validateSession,
 } from "../security/passcode-manager";
-import { loadWorkspaceContextById } from "../state/workspace-state";
+import { getWorkspaceDirectoryPath, loadWorkspaceContextById } from "../state/workspace-state";
 import type { TerminalSessionManager } from "../terminal/session-manager";
 import { createTerminalWebSocketBridge } from "../terminal/ws-server";
 import { type RuntimeTrpcContext, type RuntimeTrpcWorkspaceScope, runtimeAppRouter } from "../trpc/app-router";
@@ -44,6 +45,7 @@ import { getWebUiDir, normalizeRequestPath, readAsset } from "./assets";
 import { createAuthMiddleware } from "./auth-middleware";
 import type { RuntimeStateHub } from "./runtime-state-hub";
 import type { WorkspaceRegistry } from "./workspace-registry";
+import { createWorkspaceStateWatcher } from "./workspace-state-watcher";
 
 interface DisposeTrackedWorkspaceResult {
 	terminalManager: TerminalSessionManager | null;
@@ -135,13 +137,37 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 				workspaceScope: null,
 			};
 		}
+		const scope: RuntimeTrpcWorkspaceScope = {
+			workspaceId: requestedWorkspaceContext.workspaceId,
+			workspacePath: requestedWorkspaceContext.repoPath,
+		};
+
+		// Eagerly start the file watcher so external changes from another
+		// runtime (e.g. Electron ↔ CLI) are detected even if this runtime
+		// has not yet written to the workspace itself.
+		workspaceStateWatcher.watch(scope.workspaceId, scope.workspacePath, getWorkspaceDirectoryPath(scope.workspaceId));
+
 		return {
 			requestedWorkspaceId,
-			workspaceScope: {
-				workspaceId: requestedWorkspaceContext.workspaceId,
-				workspacePath: requestedWorkspaceContext.repoPath,
-			},
+			workspaceScope: scope,
 		};
+	};
+
+	// ── Workspace state file watcher ──────────────────────────────────────
+	// Detects external writes to meta.json (by another runtime instance)
+	// and broadcasts updates to connected WebSocket clients so they stay
+	// in sync without requiring a manual browser refresh.
+	const workspaceStateWatcher = createWorkspaceStateWatcher({
+		broadcastRuntimeWorkspaceStateUpdated: (workspaceId, workspacePath) =>
+			deps.runtimeStateHub.broadcastRuntimeWorkspaceStateUpdated(workspaceId, workspacePath),
+		warn: deps.warn,
+	});
+
+	/** Wraps the hub broadcast to mark self-writes + lazily start watching. */
+	const broadcastAndMarkSelfWrite = async (workspaceId: string, workspacePath: string): Promise<void> => {
+		workspaceStateWatcher.markSelfWrite(workspaceId);
+		workspaceStateWatcher.watch(workspaceId, workspacePath, getWorkspaceDirectoryPath(workspaceId));
+		await deps.runtimeStateHub.broadcastRuntimeWorkspaceStateUpdated(workspaceId, workspacePath);
 	};
 
 	const getScopedTerminalManager = async (scope: RuntimeTrpcWorkspaceScope): Promise<TerminalSessionManager> =>
@@ -216,7 +242,7 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 			workspaceApi: createWorkspaceApi({
 				ensureTerminalManagerForWorkspace: deps.ensureTerminalManagerForWorkspace,
 				getScopedClineTaskSessionService,
-				broadcastRuntimeWorkspaceStateUpdated: deps.runtimeStateHub.broadcastRuntimeWorkspaceStateUpdated,
+				broadcastRuntimeWorkspaceStateUpdated: broadcastAndMarkSelfWrite,
 				broadcastRuntimeProjectsUpdated: deps.runtimeStateHub.broadcastRuntimeProjectsUpdated,
 				buildWorkspaceStateSnapshot: deps.workspaceRegistry.buildWorkspaceStateSnapshot,
 			}),
@@ -246,7 +272,7 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 			hooksApi: createHooksApi({
 				getWorkspacePathById: deps.workspaceRegistry.getWorkspacePathById,
 				ensureTerminalManagerForWorkspace: deps.ensureTerminalManagerForWorkspace,
-				broadcastRuntimeWorkspaceStateUpdated: deps.runtimeStateHub.broadcastRuntimeWorkspaceStateUpdated,
+				broadcastRuntimeWorkspaceStateUpdated: broadcastAndMarkSelfWrite,
 				broadcastTaskReadyForReview: deps.runtimeStateHub.broadcastTaskReadyForReview,
 			}),
 		};
@@ -286,6 +312,38 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 			}
 			const requestUrl = new URL(req.url ?? "/", "http://localhost");
 			const pathname = normalizeRequestPath(requestUrl.pathname);
+
+			// ── Auth token handshake (CLI → desktop runtime) ─────────────────
+			// When the CLI opens a browser to a desktop-owned runtime, it
+			// appends ?auth=TOKEN to the URL. We validate the token, set a
+			// session cookie, and redirect to the clean URL so all subsequent
+			// requests (including WS upgrades) are authenticated via cookie.
+			const authParam = requestUrl.searchParams.get("auth");
+			if (authParam && deps.authToken && !pathname.startsWith("/api/")) {
+				const tokenBuffer = Buffer.from(authParam, "utf8");
+				const expectedBuffer = Buffer.from(deps.authToken, "utf8");
+				if (tokenBuffer.length === expectedBuffer.length && timingSafeEqual(tokenBuffer, expectedBuffer)) {
+					const cookieFlags = [
+						`kanban-auth=${authParam}`,
+						"HttpOnly",
+						"SameSite=Strict",
+						"Path=/",
+						`Max-Age=${24 * 60 * 60}`,
+						...(tlsConfig !== null ? ["Secure"] : []),
+					].join("; ");
+					// Remove the auth param from the redirect URL.
+					requestUrl.searchParams.delete("auth");
+					const redirectUrl = requestUrl.pathname + (requestUrl.search || "");
+					res.writeHead(302, {
+						"Set-Cookie": cookieFlags,
+						Location: redirectUrl,
+						"Cache-Control": "no-store",
+					});
+					res.end();
+					return;
+				}
+				// Invalid token — ignore the param and serve normally.
+			}
 
 			// ── Passcode gate (remote mode only) ──────────────────────────────
 			const passcodeActive = isRemoteMode && isPasscodeEnabled();
@@ -502,6 +560,7 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 	return {
 		url,
 		close: async () => {
+			workspaceStateWatcher.close();
 			await Promise.all(
 				Array.from(clineTaskSessionServiceByWorkspaceId.values()).map(async (service) => {
 					await service.dispose();
