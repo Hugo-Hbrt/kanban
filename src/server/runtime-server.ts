@@ -18,6 +18,7 @@ import {
 	getKanbanRuntimePort,
 	getKanbanRuntimeTls,
 	isKanbanRemoteHost,
+	setKanbanRuntimePort,
 } from "../core/runtime-endpoint";
 import {
 	checkRateLimit,
@@ -40,6 +41,7 @@ import { createProjectsApi } from "../trpc/projects-api";
 import { createRuntimeApi } from "../trpc/runtime-api";
 import { createWorkspaceApi } from "../trpc/workspace-api";
 import { getWebUiDir, normalizeRequestPath, readAsset } from "./assets";
+import { createAuthMiddleware } from "./auth-middleware";
 import type { RuntimeStateHub } from "./runtime-state-hub";
 import type { WorkspaceRegistry } from "./workspace-registry";
 
@@ -65,7 +67,10 @@ export interface CreateRuntimeServerDependencies {
 		},
 	) => DisposeTrackedWorkspaceResult;
 	collectProjectWorktreeTaskIdsForRemoval: (board: RuntimeWorkspaceStateResponse["board"]) => Set<string>;
-	pickDirectoryPathFromSystemDialog: () => string | null;
+	pickDirectoryPathFromSystemDialog: () => Promise<string | null> | string | null;
+	authToken?: string;
+	allowedOrigins?: string[] | (() => string[]);
+	version: string;
 }
 
 export interface RuntimeServer {
@@ -94,6 +99,14 @@ function readWorkspaceIdFromRequest(request: IncomingMessage, requestUrl: URL): 
 
 export async function createRuntimeServer(deps: CreateRuntimeServerDependencies): Promise<RuntimeServer> {
 	const webUiDir = getWebUiDir();
+	const authMiddleware = createAuthMiddleware({
+		authToken: deps.authToken,
+		// Forward directly — the auth middleware accepts both static arrays
+		// and lazy getters.  When port 0 is used (OS-assigned port), callers
+		// pass a getter so the origin resolves after the global port is set.
+		allowedOrigins: deps.allowedOrigins,
+		version: deps.version,
+	});
 
 	try {
 		await readFile(join(webUiDir, "index.html"));
@@ -268,6 +281,9 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 	const tlsConfig = getKanbanRuntimeTls();
 	const requestHandler = async (req: IncomingMessage, res: import("node:http").ServerResponse) => {
 		try {
+			if (!authMiddleware.handleHttpRequest(req, res)) {
+				return;
+			}
 			const requestUrl = new URL(req.url ?? "/", "http://localhost");
 			const pathname = normalizeRequestPath(requestUrl.pathname);
 
@@ -470,6 +486,14 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 	if (!address || typeof address === "string") {
 		throw new Error("Failed to start local server.");
 	}
+
+	// When port 0 was requested, the OS assigned an ephemeral port.
+	// Update the global runtime port so getKanbanRuntimeOrigin() /
+	// buildKanbanRuntimeUrl() reflect the actual listening port.
+	if (address.port !== getKanbanRuntimePort()) {
+		setKanbanRuntimePort(address.port);
+	}
+
 	const activeWorkspaceId = deps.workspaceRegistry.getActiveWorkspaceId();
 	const url = activeWorkspaceId
 		? buildKanbanRuntimeUrl(`/${encodeURIComponent(activeWorkspaceId)}`)
