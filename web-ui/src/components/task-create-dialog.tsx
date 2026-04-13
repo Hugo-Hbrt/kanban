@@ -625,6 +625,7 @@ export function TaskCreateDialog({
 								</button>
 							</div>
 						</div>
+					) : null}
 					{onAgentIdChange && onClineSettingsChange ? (
 						<TaskAgentModelPicker
 							agentId={agentId}

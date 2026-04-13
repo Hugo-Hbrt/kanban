@@ -36,6 +36,7 @@ import {
 	parseTaskSessionStartRequest,
 	parseTaskSessionStopRequest,
 } from "../core/api-validation";
+import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isHomeAgentSessionId } from "../core/home-agent-session";
 import { resolveTaskTitle } from "../core/task-title.js";
@@ -164,6 +165,7 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 		startTaskSession: async (workspaceScope, input) => {
 			try {
 				const body = parseTaskSessionStartRequest(input);
+				console.log("[DEBUG startTaskSession] executionMode:", body.executionMode, "| raw input executionMode:", (input as any)?.executionMode);
 				if (body.resumeFromTrash) {
 					deps.broadcastTaskChatCleared?.(workspaceScope.workspaceId, body.taskId);
 				}
@@ -178,6 +180,19 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 							error: "Cloud execution is not configured. Set KANBAN_CLOUD_PLATFORM_BASE_URL to enable cloud agents.",
 						};
 					}
+
+					// Resolve git remote URL from the workspace for cloud provisioning
+					let repoUrl = "";
+					try {
+						repoUrl = execSync("git remote get-url origin", {
+							cwd: workspaceScope.workspacePath,
+							encoding: "utf8",
+							timeout: 5000,
+						}).trim();
+					} catch {
+						// Not a git repo or no remote — will be caught by provisioning
+					}
+
 					await cloudRuntime.store.appendEvent({
 						eventId: randomUUID(),
 						taskId: body.taskId,
@@ -190,10 +205,33 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 							prompt: body.prompt,
 							baseRef: body.baseRef,
 							executionMode: "cloud_agent",
+							repoUrl,
 						},
 					});
-					// Immediately process the newly queued task
-					void cloudRuntime.orchestrator.processTask(body.taskId).catch(() => {});
+
+					// Drive the orchestrator synchronously through quick steps
+					// until the task is running (sandbox ready) or hits a terminal state.
+					const terminalStates = new Set(["completed", "failed", "canceled", "archived"]);
+					const maxSteps = 10;
+					let lastResult: Awaited<ReturnType<typeof cloudRuntime.orchestrator.processTask>> = null;
+					for (let i = 0; i < maxSteps; i++) {
+						lastResult = await cloudRuntime.orchestrator.processTask(body.taskId);
+						if (!lastResult) break;
+						if (terminalStates.has(lastResult.newState)) break;
+						if (lastResult.newState === "running") break;
+					}
+
+					// If the task reached a terminal/failed state, return error so
+					// the UI does NOT move the card to in_progress.
+					const finalState = lastResult?.newState ?? "queued";
+					if (terminalStates.has(finalState)) {
+						return {
+							ok: false,
+							summary: null,
+							error: `Cloud execution failed (state: ${finalState}). Check cloud-platform connectivity and API key.`,
+						};
+					}
+
 					return {
 						ok: true,
 						summary: {

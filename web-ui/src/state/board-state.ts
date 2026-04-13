@@ -345,6 +345,7 @@ export function addTaskToColumnWithResult(
 			startInPlanMode: draft.startInPlanMode,
 			autoReviewEnabled: draft.autoReviewEnabled,
 			autoReviewMode: draft.autoReviewMode,
+			executionMode: draft.executionMode,
 			images: draft.images,
 			agentId: draft.agentId,
 			clineSettings: draft.clineSettings,

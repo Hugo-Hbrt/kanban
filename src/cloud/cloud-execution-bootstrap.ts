@@ -47,7 +47,7 @@ import type { CreateInstanceRequest } from "./cloud-execution-orchestrator";
  * orchestrator's CloudInstanceFullClient interface (camelCase).
  */
 function createInstanceClientAdapter(
-	config: CloudInstanceClientConfig,
+	config: CloudInstanceClientConfig & { userId?: string; githubPat?: string },
 ): CloudInstanceFullClient {
 	const httpClient = new CloudInstanceHttpClient(config);
 
@@ -58,10 +58,11 @@ function createInstanceClientAdapter(
 			const idempotencyKey = `create-${request.taskId}-${attemptNumber}-${Date.now()}`;
 			const result = await httpClient.createInstance(
 				{
-					user_id: config.serviceCredential,
+					user_id: config.userId ?? "usr-dev-local-user",
 					repo_url: request.repoUrl,
 					api_key: config.serviceCredential,
 					instance_type: "task-runner",
+					github_pat: config.githubPat ?? null,
 					pr_base_branch: request.baseBranch,
 					starting_commit_sha: request.startingCommitSha,
 				},
@@ -108,6 +109,7 @@ const ENV = {
 	ORG_ID: "KANBAN_ORG_ID",
 	USER_ID: "KANBAN_USER_ID",
 	PROJECT_ID: "KANBAN_PROJECT_ID",
+	GITHUB_PAT: "KANBAN_GITHUB_PAT",
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -228,6 +230,8 @@ export function bootstrapCloudExecution(
 		baseUrl: cloudBaseUrl,
 		serviceCredential: apiKey,
 		fetch: overrides?.fetchFn,
+		userId: env[ENV.USER_ID],
+		githubPat: env[ENV.GITHUB_PAT],
 	});
 
 	// Run invoker

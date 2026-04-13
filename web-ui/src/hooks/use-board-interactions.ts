@@ -334,12 +334,13 @@ export function useBoardInteractions({
 			if (!started.ok) {
 				notifyError(started.message ?? "Could not start task session.");
 				if (optimisticMove) {
+					const revertTarget = task.executionMode === "cloud_agent" ? "trash" as const : fromColumnId;
 					setBoard((currentBoard) => {
 						const currentColumnId = getTaskColumnId(currentBoard, taskId);
 						if (currentColumnId !== "in_progress") {
 							return currentBoard;
 						}
-						const reverted = moveTaskToColumn(currentBoard, taskId, fromColumnId);
+						const reverted = moveTaskToColumn(currentBoard, taskId, revertTarget);
 						return reverted.moved ? reverted.board : currentBoard;
 					});
 				}
