@@ -15,6 +15,9 @@
 
 import { z } from "zod";
 
+import type { CloudAuthProvider } from "./cloud-auth-provider";
+import { EnvironmentCloudAuthProvider } from "./cloud-auth-provider";
+
 // ---------------------------------------------------------------------------
 // Shared Types (matches core-platform ExecutionContext)
 // ---------------------------------------------------------------------------
@@ -214,7 +217,10 @@ export const DEFAULT_GOVERNANCE_RETRY_CONFIGS = {
 
 export interface GovernanceClientConfig {
 	readonly baseUrl: string;
-	readonly authToken: string;
+	/** @deprecated Use `authProvider` instead. Kept for backward compatibility. */
+	readonly authToken?: string;
+	/** Auth provider for outbound calls. Takes precedence over `authToken`. */
+	readonly authProvider?: CloudAuthProvider;
 	/** When true, unreachable governance returns 'authorized'. @default true */
 	readonly failOpen: boolean;
 	/** Service name sent in X-Service-Name header. @default "kanban" */
@@ -266,7 +272,7 @@ export function isGovernanceRetryableStatus(statusCode: number): boolean {
 
 export class GovernanceHttpClient implements GovernanceClient {
 	private readonly baseUrl: string;
-	private readonly authToken: string;
+	private readonly authProvider: CloudAuthProvider;
 	private readonly failOpen: boolean;
 	private readonly serviceName: string;
 	private readonly retryConfigs: Record<keyof typeof DEFAULT_GOVERNANCE_RETRY_CONFIGS, GovernanceRetryConfig>;
@@ -276,7 +282,7 @@ export class GovernanceHttpClient implements GovernanceClient {
 
 	constructor(config: GovernanceClientConfig, logger: GovernanceLogger = noopLogger) {
 		this.baseUrl = config.baseUrl.replace(/\/+$/, "");
-		this.authToken = config.authToken;
+		this.authProvider = config.authProvider ?? new EnvironmentCloudAuthProvider({ apiKey: config.authToken ?? "" });
 		this.failOpen = config.failOpen;
 		this.serviceName = config.serviceName ?? "kanban";
 		this.fetchFn = config.fetch ?? globalThis.fetch;
@@ -297,7 +303,7 @@ export class GovernanceHttpClient implements GovernanceClient {
 				async (sig) =>
 					this.fetchFn(`${this.baseUrl}/api/v1/execution/authorize`, {
 						method: "POST",
-						headers: this.buildHeaders(),
+						headers: await this.buildHeaders(),
 						body: JSON.stringify(validated),
 						signal: sig,
 					}),
@@ -337,7 +343,7 @@ export class GovernanceHttpClient implements GovernanceClient {
 			async (sig) =>
 				this.fetchFn(`${this.baseUrl}/api/v1/usage/reservations`, {
 					method: "POST",
-					headers: this.buildHeaders(),
+					headers: await this.buildHeaders(),
 					body: JSON.stringify(validated),
 					signal: sig,
 				}),
@@ -355,7 +361,7 @@ export class GovernanceHttpClient implements GovernanceClient {
 				async (sig) =>
 					this.fetchFn(`${this.baseUrl}/api/v1/usage/events`, {
 						method: "POST",
-						headers: this.buildHeaders(),
+						headers: await this.buildHeaders(),
 						body: JSON.stringify(validated),
 						signal: sig,
 					}),
@@ -380,7 +386,7 @@ export class GovernanceHttpClient implements GovernanceClient {
 				async (sig) =>
 					this.fetchFn(`${this.baseUrl}/api/v1/audit/events`, {
 						method: "POST",
-						headers: this.buildHeaders(),
+						headers: await this.buildHeaders(),
 						body: JSON.stringify(validated),
 						signal: sig,
 					}),
@@ -398,11 +404,11 @@ export class GovernanceHttpClient implements GovernanceClient {
 		}
 	}
 
-	private buildHeaders(): Record<string, string> {
-		const token = this.authToken.startsWith("svc_") ? this.authToken : `svc_${this.authToken}`;
+	private async buildHeaders(): Promise<Record<string, string>> {
+		const authHeaders = await this.authProvider.getAuthHeaders();
 		return {
 			"Content-Type": "application/json",
-			Authorization: `Bearer ${token}`,
+			...authHeaders,
 			"X-Service-Name": this.serviceName,
 		};
 	}
@@ -500,5 +506,7 @@ export function parseGovernanceConfig(
 	const authToken = overrides?.authToken ?? env[GOVERNANCE_AUTH_TOKEN_ENV] ?? "";
 	const failOpenEnv = env[GOVERNANCE_FAIL_OPEN_ENV];
 	const failOpen = overrides?.failOpen ?? (failOpenEnv !== undefined ? failOpenEnv !== "false" : true);
-	return { baseUrl, authToken, failOpen, ...overrides };
+	// Use provided authProvider, or fall back to env-based provider with the token
+	const authProvider = overrides?.authProvider ?? new EnvironmentCloudAuthProvider({ apiKey: authToken });
+	return { baseUrl, authToken, authProvider, failOpen, ...overrides };
 }
