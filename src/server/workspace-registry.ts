@@ -12,6 +12,7 @@ import {
 	loadWorkspaceBoardById,
 	loadWorkspaceContext,
 	loadWorkspaceState,
+	mutateWorkspaceState,
 	type RuntimeWorkspaceIndexEntry,
 	removeWorkspaceIndexEntry,
 	removeWorkspaceStateFiles,
@@ -206,6 +207,8 @@ export async function createWorkspaceRegistry(deps: CreateWorkspaceRegistryDepen
 	const projectTaskCountsByWorkspaceId = new Map<string, RuntimeProjectTaskCounts>();
 	const terminalManagersByWorkspaceId = new Map<string, TerminalSessionManager>();
 	const terminalManagerLoadPromises = new Map<string, Promise<TerminalSessionManager>>();
+	const terminalSummaryPersistPromisesByWorkspaceId = new Map<string, Promise<void>>();
+	const terminalSummaryPersistUnsubscribeByWorkspaceId = new Map<string, () => void>();
 
 	const rememberWorkspace = (workspaceId: string, repoPath: string): void => {
 		workspacePathsById.set(workspaceId, repoPath);
@@ -217,6 +220,46 @@ export async function createWorkspaceRegistry(deps: CreateWorkspaceRegistryDepen
 
 	const getTerminalManagerForWorkspace = (workspaceId: string): TerminalSessionManager | null => {
 		return terminalManagersByWorkspaceId.get(workspaceId) ?? null;
+	};
+
+	const queueTerminalSummaryPersistence = (
+		workspaceId: string,
+		repoPath: string,
+		manager: TerminalSessionManager,
+		taskId: string,
+	): void => {
+		const previous = terminalSummaryPersistPromisesByWorkspaceId.get(workspaceId) ?? Promise.resolve();
+		const next = previous
+			.catch(() => undefined)
+			.then(async () => {
+				const summary = manager.getSummary(taskId);
+				if (!summary) {
+					return;
+				}
+				const snapshot = await manager.getRestoreSnapshot(taskId).catch(() => null);
+				const persistedSummary = {
+					...summary,
+					terminalRestoreSnapshot: snapshot ?? summary.terminalRestoreSnapshot ?? null,
+					lastKnownWorkspacePath: summary.lastKnownWorkspacePath ?? summary.workspacePath ?? null,
+				};
+				await mutateWorkspaceState(repoPath, (state) => ({
+					board: state.board,
+					sessions: {
+						...state.sessions,
+						[taskId]: persistedSummary,
+					},
+					value: undefined,
+				}));
+			})
+			.catch(() => {
+				// Best effort only; a later summary update will resync persisted session state.
+			});
+		terminalSummaryPersistPromisesByWorkspaceId.set(workspaceId, next);
+		void next.finally(() => {
+			if (terminalSummaryPersistPromisesByWorkspaceId.get(workspaceId) === next) {
+				terminalSummaryPersistPromisesByWorkspaceId.delete(workspaceId);
+			}
+		});
 	};
 
 	const ensureTerminalManagerForWorkspace = async (
@@ -243,6 +286,12 @@ export async function createWorkspaceRegistry(deps: CreateWorkspaceRegistryDepen
 			} catch {
 				// Workspace state will be created on demand.
 			}
+			terminalSummaryPersistUnsubscribeByWorkspaceId.set(
+				workspaceId,
+				manager.onSummary((summary) => {
+					queueTerminalSummaryPersistence(workspaceId, repoPath, manager, summary.taskId);
+				}),
+			);
 			terminalManagersByWorkspaceId.set(workspaceId, manager);
 			return manager;
 		})().finally(() => {
@@ -274,6 +323,9 @@ export async function createWorkspaceRegistry(deps: CreateWorkspaceRegistryDepen
 		options?: DisposeWorkspaceRegistryOptions,
 	): { terminalManager: TerminalSessionManager | null; workspacePath: string | null } => {
 		const terminalManager = getTerminalManagerForWorkspace(workspaceId);
+		terminalSummaryPersistUnsubscribeByWorkspaceId.get(workspaceId)?.();
+		terminalSummaryPersistUnsubscribeByWorkspaceId.delete(workspaceId);
+		terminalSummaryPersistPromisesByWorkspaceId.delete(workspaceId);
 		if (terminalManager) {
 			if (options?.stopTerminalSessions !== false) {
 				terminalManager.markInterruptedAndStopAll();

@@ -10,6 +10,7 @@ import type {
 	RuntimeTaskSessionState,
 	RuntimeTaskSessionSummary,
 	RuntimeTaskTurnCheckpoint,
+	RuntimeTerminalRestoreSnapshot,
 } from "../core/api-contract";
 import { resolveHomeAgentAppendSystemPrompt } from "../prompts/append-system-prompt";
 import {
@@ -135,7 +136,9 @@ function createDefaultSummary(taskId: string): RuntimeTaskSessionSummary {
 		taskId,
 		state: "idle",
 		agentId: null,
+		agentSessionId: null,
 		workspacePath: null,
+		lastKnownWorkspacePath: null,
 		pid: null,
 		startedAt: null,
 		updatedAt: now(),
@@ -147,12 +150,17 @@ function createDefaultSummary(taskId: string): RuntimeTaskSessionSummary {
 		warningMessage: null,
 		latestTurnCheckpoint: null,
 		previousTurnCheckpoint: null,
+		terminalRestoreSnapshot: null,
 	};
 }
 
 function cloneSummary(summary: RuntimeTaskSessionSummary): RuntimeTaskSessionSummary {
 	return {
 		...summary,
+		latestHookActivity: summary.latestHookActivity ? { ...summary.latestHookActivity } : null,
+		latestTurnCheckpoint: summary.latestTurnCheckpoint ? { ...summary.latestTurnCheckpoint } : null,
+		previousTurnCheckpoint: summary.previousTurnCheckpoint ? { ...summary.previousTurnCheckpoint } : null,
+		terminalRestoreSnapshot: summary.terminalRestoreSnapshot ? { ...summary.terminalRestoreSnapshot } : null,
 	};
 }
 
@@ -226,6 +234,17 @@ function hasCodexStartupUiRendered(text: string): boolean {
 	return stripped.includes("openai codex (v");
 }
 
+function getPersistedTerminalRestoreSnapshot(
+	summary: RuntimeTaskSessionSummary,
+): RuntimeTerminalRestoreSnapshot | null {
+	return summary.terminalRestoreSnapshot ?? null;
+}
+
+function getPersistedCodexAgentSessionId(summary: RuntimeTaskSessionSummary): string | null {
+	const value = summary.agentSessionId;
+	return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
 export class TerminalSessionManager implements TerminalSessionService {
 	private readonly entries = new Map<string, SessionEntry>();
 	private readonly summaryListeners = new Set<(summary: RuntimeTaskSessionSummary) => void>();
@@ -291,6 +310,7 @@ export class TerminalSessionManager implements TerminalSessionService {
 			warningMessage: null,
 			exitCode: null,
 			pid: this.globalCodexHostService.getPid(),
+			lastKnownWorkspacePath: cwd,
 		});
 		this.emitActiveState(entry);
 	}
@@ -385,6 +405,10 @@ export class TerminalSessionManager implements TerminalSessionService {
 		const cols = Number.isFinite(request.cols) && (request.cols ?? 0) > 0 ? Math.floor(request.cols ?? 0) : 120;
 		const rows = Number.isFinite(request.rows) && (request.rows ?? 0) > 0 ? Math.floor(request.rows ?? 0) : 40;
 		const terminalStateMirror = new TerminalStateMirror(cols, rows);
+		const persistedRestoreSnapshot = getPersistedTerminalRestoreSnapshot(entry.summary);
+		if (persistedRestoreSnapshot) {
+			terminalStateMirror.restoreSnapshot(persistedRestoreSnapshot);
+		}
 		const preparedPrompt = await prepareTaskPromptWithImages({
 			prompt: request.prompt,
 			images: request.images,
@@ -399,12 +423,21 @@ export class TerminalSessionManager implements TerminalSessionService {
 			throw new Error("Codex host service is unavailable.");
 		}
 		const developerInstructions = resolveHomeAgentAppendSystemPrompt(request.taskId);
-		const thread = await codexHostService.startThread({
-			cwd: request.cwd,
-			developerInstructions: developerInstructions ?? undefined,
-			approvalMode: request.autonomousModeEnabled ? "approve" : "deny",
-			autonomousModeEnabled: request.autonomousModeEnabled === true,
-		});
+		const persistedThreadId = request.resumeFromTrash ? getPersistedCodexAgentSessionId(entry.summary) : null;
+		const thread = persistedThreadId
+			? await codexHostService.resumeThread({
+					threadId: persistedThreadId,
+					cwd: request.cwd,
+					developerInstructions: developerInstructions ?? undefined,
+					approvalMode: request.autonomousModeEnabled ? "approve" : "deny",
+					autonomousModeEnabled: request.autonomousModeEnabled === true,
+				})
+			: await codexHostService.startThread({
+					cwd: request.cwd,
+					developerInstructions: developerInstructions ?? undefined,
+					approvalMode: request.autonomousModeEnabled ? "approve" : "deny",
+					autonomousModeEnabled: request.autonomousModeEnabled === true,
+				});
 		const session = new CodexHostSession(codexHostService.getPid(), {
 			onEcho: (chunk) => {
 				if (!entry.active?.codexHost || entry.active.codexHost.activeTurnId !== null) {
@@ -470,13 +503,15 @@ export class TerminalSessionManager implements TerminalSessionService {
 		entry.terminalStateMirror = terminalStateMirror;
 
 		updateSummary(entry, {
-			state: "running",
+			state: request.resumeFromTrash ? "awaiting_review" : "running",
 			agentId: request.agentId,
-			workspacePath: request.cwd,
+			agentSessionId: thread.threadId,
+			workspacePath: thread.cwd,
+			lastKnownWorkspacePath: thread.cwd,
 			pid: this.globalCodexHostService?.getPid() ?? null,
 			startedAt: now(),
 			lastOutputAt: null,
-			reviewReason: null,
+			reviewReason: request.resumeFromTrash ? "attention" : null,
 			exitCode: null,
 			lastHookAt: null,
 			latestHookActivity: null,
@@ -485,9 +520,12 @@ export class TerminalSessionManager implements TerminalSessionService {
 			previousTurnCheckpoint: null,
 		});
 		this.emitSummary(entry.summary);
+		if (request.resumeFromTrash) {
+			return cloneSummary(entry.summary);
+		}
 		this.emitActiveOutput(entry, Buffer.from(`› ${effectivePrompt}\r\n\r\n`, "utf8"));
 		try {
-			await this.submitCodexTurn(entry, effectivePrompt, request.cwd);
+			await this.submitCodexTurn(entry, effectivePrompt, thread.cwd);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			this.emitActiveOutput(entry, Buffer.from(`[kanban] ${message}\r\n› `, "utf8"));
@@ -584,14 +622,26 @@ export class TerminalSessionManager implements TerminalSessionService {
 
 	async getRestoreSnapshot(taskId: string) {
 		const entry = this.entries.get(taskId);
-		if (!entry?.terminalStateMirror) {
+		if (!entry) {
 			return null;
 		}
-		return await entry.terminalStateMirror.getSnapshot();
+		if (entry.terminalStateMirror) {
+			return await entry.terminalStateMirror.getSnapshot();
+		}
+		return getPersistedTerminalRestoreSnapshot(entry.summary);
 	}
 
 	async startTaskSession(request: StartTaskSessionRequest): Promise<RuntimeTaskSessionSummary> {
-		if (request.agentId === "codex" && this.globalCodexHostService && !request.resumeFromTrash) {
+		const persistedSummary = this.entries.get(request.taskId)?.summary ?? null;
+		const canResumeCodexHostSession =
+			request.resumeFromTrash && persistedSummary
+				? getPersistedCodexAgentSessionId(persistedSummary) !== null
+				: false;
+		if (
+			request.agentId === "codex" &&
+			this.globalCodexHostService &&
+			(!request.resumeFromTrash || canResumeCodexHostSession)
+		) {
 			return await this.startCodexHostTaskSession(request);
 		}
 
@@ -791,7 +841,9 @@ export class TerminalSessionManager implements TerminalSessionService {
 			const summary = updateSummary(entry, {
 				state: "failed",
 				agentId: request.agentId,
+				agentSessionId: null,
 				workspacePath: request.cwd,
+				lastKnownWorkspacePath: request.cwd,
 				pid: null,
 				startedAt: null,
 				lastOutputAt: null,
@@ -836,7 +888,9 @@ export class TerminalSessionManager implements TerminalSessionService {
 		updateSummary(entry, {
 			state: request.resumeFromTrash ? "awaiting_review" : "running",
 			agentId: request.agentId,
+			agentSessionId: null,
 			workspacePath: request.cwd,
+			lastKnownWorkspacePath: request.cwd,
 			pid: session.pid,
 			startedAt,
 			lastOutputAt: null,
@@ -951,7 +1005,9 @@ export class TerminalSessionManager implements TerminalSessionService {
 			const summary = updateSummary(entry, {
 				state: "failed",
 				agentId: null,
+				agentSessionId: null,
 				workspacePath: request.cwd,
+				lastKnownWorkspacePath: request.cwd,
 				pid: null,
 				startedAt: null,
 				lastOutputAt: null,
@@ -989,7 +1045,9 @@ export class TerminalSessionManager implements TerminalSessionService {
 		updateSummary(entry, {
 			state: "running",
 			agentId: null,
+			agentSessionId: null,
 			workspacePath: request.cwd,
+			lastKnownWorkspacePath: request.cwd,
 			pid: session.pid,
 			startedAt: now(),
 			lastOutputAt: null,

@@ -43,6 +43,14 @@ export interface StartCodexTurnRequest {
 	cwd?: string;
 }
 
+export interface ResumeCodexThreadRequest {
+	threadId: string;
+	cwd: string;
+	developerInstructions?: string;
+	approvalMode: CodexApprovalMode;
+	autonomousModeEnabled: boolean;
+}
+
 export interface CodexHostService {
 	getPid(): number | null;
 	start(): Promise<void>;
@@ -50,6 +58,7 @@ export interface CodexHostService {
 	subscribe(threadId: string, listener: (notification: CodexHostNotification) => void): () => void;
 	releaseThread(threadId: string): void;
 	startThread(request: StartCodexThreadRequest): Promise<{ threadId: string; cwd: string }>;
+	resumeThread(request: ResumeCodexThreadRequest): Promise<{ threadId: string; cwd: string }>;
 	startTurn(request: StartCodexTurnRequest): Promise<{ turnId: string }>;
 	interruptTurn(threadId: string, turnId: string): Promise<void>;
 }
@@ -118,6 +127,19 @@ function extractTurnId(params: Record<string, unknown> | null): string | null {
 
 function buildJsonRpcError(message: string, code = -32603): Error {
 	return new Error(message, { cause: { code } });
+}
+
+function buildThreadLifecycleParams(input: {
+	cwd: string;
+	developerInstructions?: string;
+	autonomousModeEnabled: boolean;
+}): Record<string, unknown> {
+	return {
+		cwd: input.cwd,
+		approvalPolicy: input.autonomousModeEnabled ? "never" : undefined,
+		sandbox: input.autonomousModeEnabled ? "danger-full-access" : undefined,
+		developerInstructions: input.developerInstructions ?? undefined,
+	};
 }
 
 export class GlobalCodexHostService implements CodexHostService {
@@ -207,30 +229,35 @@ export class GlobalCodexHostService implements CodexHostService {
 
 	async startThread(request: StartCodexThreadRequest): Promise<{ threadId: string; cwd: string }> {
 		await this.start();
-		const result = asRecord(
+		const result = await this.parseThreadLifecycleResponse(
 			await this.request("thread/start", {
-				cwd: request.cwd,
-				approvalPolicy: request.autonomousModeEnabled ? "never" : undefined,
-				sandbox: request.autonomousModeEnabled ? "danger-full-access" : undefined,
-				serviceName: "kanban",
-				developerInstructions: request.developerInstructions ?? undefined,
-				experimentalRawEvents: false,
+				...buildThreadLifecycleParams(request),
 				persistExtendedHistory: true,
 			}),
+			request.cwd,
+			"thread/start",
 		);
-		const thread = asRecord(result?.thread);
-		const threadId = readString(thread?.id);
-		const cwd = readString(result?.cwd) ?? request.cwd;
-		if (!threadId) {
-			throw new Error("Codex app-server returned a thread/start response without a thread id.");
-		}
+		const threadId = result.threadId;
 		this.threadContexts.set(threadId, {
 			approvalMode: request.approvalMode,
 		});
-		return {
-			threadId,
-			cwd,
-		};
+		return result;
+	}
+
+	async resumeThread(request: ResumeCodexThreadRequest): Promise<{ threadId: string; cwd: string }> {
+		await this.start();
+		const result = await this.parseThreadLifecycleResponse(
+			await this.request("thread/resume", {
+				threadId: request.threadId,
+				...buildThreadLifecycleParams(request),
+			}),
+			request.cwd,
+			"thread/resume",
+		);
+		this.threadContexts.set(result.threadId, {
+			approvalMode: request.approvalMode,
+		});
+		return result;
 	}
 
 	async startTurn(request: StartCodexTurnRequest): Promise<{ turnId: string }> {
@@ -316,6 +343,24 @@ export class GlobalCodexHostService implements CodexHostService {
 			},
 		});
 		this.notify("initialized", {});
+	}
+
+	private async parseThreadLifecycleResponse(
+		payload: unknown,
+		fallbackCwd: string,
+		method: "thread/start" | "thread/resume",
+	): Promise<{ threadId: string; cwd: string }> {
+		const result = asRecord(payload);
+		const thread = asRecord(result?.thread);
+		const threadId = readString(thread?.id);
+		const cwd = readString(result?.cwd) ?? fallbackCwd;
+		if (!threadId) {
+			throw new Error(`Codex app-server returned a ${method} response without a thread id.`);
+		}
+		return {
+			threadId,
+			cwd,
+		};
 	}
 
 	private handleStdoutLine(line: string): void {
