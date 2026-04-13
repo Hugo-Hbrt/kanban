@@ -48,7 +48,7 @@ declare module "kanban" {
 		reason:
 			| "no-descriptor"
 			| "current-session"
-			| "terminal-owned"
+			| "cli-owned"
 			| "prior-desktop-session"
 			| "pid-dead";
 		descriptor: RuntimeDescriptor | null;

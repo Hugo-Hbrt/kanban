@@ -72,11 +72,11 @@ const RUNTIME_HEALTH_TIMEOUT_MS = 3_000;
 const desktopSessionId: string = randomUUID();
 
 /**
- * Set to `true` when a terminal-owned runtime descriptor is detected at boot.
+ * Set to `true` when a cli-owned runtime descriptor is detected at boot.
  * While true the desktop must NOT overwrite or clear the descriptor — the CLI
  * runtime owns it and agent tasks depend on it to discover the server.
  */
-let terminalOwnsDescriptor = false;
+let cliOwnsDescriptor = false;
 
 // ---------------------------------------------------------------------------
 // Runtime descriptor helpers
@@ -112,13 +112,13 @@ function startDescriptorWatcher(): void {
 				if (
 					descriptor &&
 					descriptor.source === "cli" &&
-					!terminalOwnsDescriptor &&
+					!cliOwnsDescriptor &&
 					descriptor.url !== runtimeUrl
 				) {
 					console.log(
 						`[desktop] CLI runtime appeared at ${descriptor.url} — attaching.`,
 					);
-					terminalOwnsDescriptor = true;
+					cliOwnsDescriptor = true;
 					runtimeUrl = descriptor.url;
 					authToken = descriptor.authToken;
 					if (connectionManager) {
@@ -134,7 +134,7 @@ function startDescriptorWatcher(): void {
 				// We were attached to CLI but the descriptor disappeared or
 				// is no longer CLI-owned.
 				if (
-					terminalOwnsDescriptor &&
+					cliOwnsDescriptor &&
 					(!descriptor || descriptor.source !== "cli")
 				) {
 					takeoverInProgress = true;
@@ -148,7 +148,7 @@ function startDescriptorWatcher(): void {
 							if (!connectionManager) {
 								throw new Error("ConnectionManager not initialized");
 							}
-							terminalOwnsDescriptor = false;
+							cliOwnsDescriptor = false;
 							await connectionManager.fallbackToOwnRuntime();
 							const url = connectionManager.getLocalUrl();
 							const token = connectionManager.getLocalAuthToken();
@@ -161,11 +161,11 @@ function startDescriptorWatcher(): void {
 								await connectionManager.initializeWithExternalRuntime(d.url, d.authToken);
 							}
 							if (d.source === "cli") {
-								terminalOwnsDescriptor = true;
+								cliOwnsDescriptor = true;
 								takeoverInProgress = false;
 								startDescriptorWatcher();
 							} else {
-								terminalOwnsDescriptor = false;
+								cliOwnsDescriptor = false;
 								takeoverInProgress = false;
 								startDescriptorWatcher();
 							}
@@ -737,7 +737,7 @@ function createRuntimeChildManager(): RuntimeChildManager {
 	manager.on("ready", (url: string) => {
 		runtimeUrl = url;
 		authToken = connectionManager?.getLocalAuthToken() ?? authToken;
-		if (!terminalOwnsDescriptor) {
+		if (!cliOwnsDescriptor) {
 			publishRuntimeDescriptor(url, authToken!);
 		}
 
@@ -1015,8 +1015,8 @@ if (gotTheLock) {
 					});
 				}
 				break;
-		case "terminal-owned":
-			terminalOwnsDescriptor = true;
+		case "cli-owned":
+			cliOwnsDescriptor = true;
 			console.log(
 				"[desktop] Found CLI-owned runtime at " +
 					`${trustResult.descriptor?.url} — attaching to it instead of ` +
@@ -1092,12 +1092,12 @@ if (gotTheLock) {
 		onLocalRuntimeReady: (url, token) => {
 			runtimeUrl = url;
 			authToken = token;
-			if (!terminalOwnsDescriptor) {
+			if (!cliOwnsDescriptor) {
 				void publishRuntimeDescriptor(url, token);
 			}
 		},
 		onLocalRuntimeStopped: () => {
-			if (!terminalOwnsDescriptor) {
+			if (!cliOwnsDescriptor) {
 				// Only clear if the descriptor still belongs to this desktop session.
 				void (async () => {
 					try {
@@ -1124,7 +1124,7 @@ if (gotTheLock) {
 		advanceBootPhase("initialize-connections");
 
 		try {
-			if (terminalOwnsDescriptor && trustResult.descriptor) {
+			if (cliOwnsDescriptor && trustResult.descriptor) {
 				// Attach to the existing CLI runtime instead of spawning a child.
 				runtimeUrl = trustResult.descriptor.url;
 				authToken = trustResult.descriptor.authToken;
@@ -1228,7 +1228,7 @@ if (gotTheLock) {
 
 		// Only clear the descriptor if it still belongs to THIS desktop session.
 		// Another process (CLI) may have overwritten it after we booted.
-		if (!terminalOwnsDescriptor) {
+		if (!cliOwnsDescriptor) {
 			try {
 				const current = await readRuntimeDescriptor();
 				if (
