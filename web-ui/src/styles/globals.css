@@ -960,6 +960,20 @@ body.kb-dependency-link-mode {
 	border-radius: var(--radius-sm);
 }
 
+@keyframes kb-banner-slide-in {
+	from { transform: translateY(-100%); opacity: 0; }
+	to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes kb-banner-slide-out {
+	from { transform: translateY(0); opacity: 1; }
+	to { transform: translateY(-100%); opacity: 0; }
+}
+
+.kb-reconnection-banner {
+	animation: kb-banner-slide-in 0.25s ease-out;
+}
+
 /* -- Chat markdown -- */
 
 .kb-markdown > * {

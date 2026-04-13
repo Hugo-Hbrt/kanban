@@ -688,6 +688,15 @@ function ProjectRowSkeleton(): React.ReactElement {
 	);
 }
 
+/** Whether the Electron desktop API is available (multi-window support). */
+function isDesktopApiAvailable(): boolean {
+	return (
+		typeof window !== "undefined" &&
+		"desktop" in window &&
+		typeof (window as Record<string, unknown>).desktop === "object"
+	);
+}
+
 function ProjectRow({
 	project,
 	isCurrent,
@@ -736,7 +745,7 @@ function ProjectRow({
 		},
 	].filter((item) => item.count > 0);
 
-	return (
+	const rowContent = (
 		<div
 			role="button"
 			tabIndex={0}
@@ -813,10 +822,10 @@ function ProjectRow({
 							side="bottom"
 							align="end"
 							sideOffset={4}
-							className="z-50 min-w-[140px] rounded-md border border-border-bright bg-surface-1 p-1 shadow-lg"
+							className="z-50 min-w-[160px] rounded-md border border-border-bright bg-surface-1 p-1 shadow-lg"
 							onCloseAutoFocus={(event) => event.preventDefault()}
 						>
-							<DropdownMenu.Item
+						<DropdownMenu.Item
 								className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-[13px] text-status-red cursor-pointer outline-none data-[highlighted]:bg-surface-3"
 								onSelect={() => onRemove(project.id)}
 							>
@@ -828,4 +837,6 @@ function ProjectRow({
 			</div>
 		</div>
 	);
+
+	return rowContent;
 }
