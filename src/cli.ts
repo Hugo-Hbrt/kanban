@@ -9,6 +9,7 @@ import packageJson from "../package.json" with { type: "json" };
 import { disposeCliTelemetryService } from "./cline-sdk/cline-telemetry-service.js";
 import { registerHooksCommand } from "./commands/hooks";
 import { registerTaskCommand } from "./commands/task";
+import { registerTokenCommand } from "./commands/token";
 import { loadGlobalRuntimeConfig, loadRuntimeConfig } from "./config/runtime-config";
 import type { RuntimeCommandRunResponse } from "./core/api-contract";
 import { createGitProcessEnv } from "./core/git-process-env";
@@ -417,6 +418,8 @@ async function startServer(): Promise<{
 	});
 	runtimeStateHub = createRuntimeStateHub({
 		workspaceRegistry,
+		isLocal: !isKanbanRemoteHost(),
+		runtimeVersion: KANBAN_VERSION,
 	});
 	const runtimeHub = runtimeStateHub;
 	for (const { workspaceId, terminalManager } of workspaceRegistry.listManagedWorkspaces()) {
@@ -451,6 +454,7 @@ async function startServer(): Promise<{
 		disposeWorkspace: disposeTrackedWorkspace,
 		collectProjectWorktreeTaskIdsForRemoval,
 		pickDirectoryPathFromSystemDialog,
+		version: KANBAN_VERSION,
 	});
 
 	const close = async () => {
@@ -653,6 +657,7 @@ function createProgram(invocationArgs: string[]): Command {
 
 	registerTaskCommand(program);
 	registerHooksCommand(program);
+	registerTokenCommand(program);
 
 	program
 		.command("mcp")
