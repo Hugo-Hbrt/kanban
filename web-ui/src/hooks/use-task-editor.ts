@@ -423,16 +423,17 @@ export function useTaskEditor({
 			const createdTaskIds: string[] = [];
 			let updatedBoard = board;
 			for (const prompt of validPrompts) {
-				const created = addTaskToColumnWithResult(updatedBoard, "backlog", {
-					prompt,
-					startInPlanMode: newTaskStartInPlanMode,
-					autoReviewEnabled: newTaskAutoReviewEnabled,
-					autoReviewMode: newTaskAutoReviewMode,
-					images: newTaskImages,
-					agentId: newTaskAgentId,
-					clineSettings: newTaskClineSettings,
-					baseRef,
-				});
+			const created = addTaskToColumnWithResult(updatedBoard, "backlog", {
+				prompt,
+				startInPlanMode: newTaskStartInPlanMode,
+				autoReviewEnabled: newTaskAutoReviewEnabled,
+				autoReviewMode: newTaskAutoReviewMode,
+				executionMode: newTaskExecutionMode,
+				images: newTaskImages,
+				agentId: newTaskAgentId,
+				clineSettings: newTaskClineSettings,
+				baseRef,
+			});
 				updatedBoard = created.board;
 				createdTaskIds.push(created.task.id);
 			}
@@ -469,6 +470,7 @@ export function useTaskEditor({
 			newTaskAutoReviewEnabled,
 			newTaskAutoReviewMode,
 			newTaskBranchRef,
+			newTaskExecutionMode,
 			newTaskClineSettings,
 			newTaskImages,
 			newTaskStartInPlanMode,

@@ -11,7 +11,6 @@ import { Button } from "@/components/ui/button";
 import type { TaskAutoReviewMode, TaskExecutionMode, TaskImage } from "@/types";
 import { NativeSelect } from "@/components/ui/native-select";
 import type { RuntimeAgentId, RuntimeClineReasoningEffort, RuntimeTaskClineSettings } from "@/runtime/types";
-import type { TaskAutoReviewMode, TaskImage } from "@/types";
 import { pasteShortcutLabel } from "@/utils/platform";
 import { useDocumentEvent, useMeasure } from "@/utils/react-use";
 
@@ -333,6 +332,20 @@ export function TaskInlineCreateCard({
 						providerDefaultModels={providerDefaultModels}
 						onPopoverOpenChange={setIsModelPickerPopoverOpen}
 					/>
+				) : null}
+				{onExecutionModeChange ? (
+					<div className="flex items-center gap-1.5 text-xs text-text-muted">
+						<span>Run on</span>
+						<NativeSelect
+							size="sm"
+							value={executionMode ?? "local_agent"}
+							onChange={(e) => onExecutionModeChange(e.currentTarget.value as TaskExecutionMode)}
+							style={{ width: "12ch", maxWidth: "100%" }}
+						>
+							<option value="local_agent">Local</option>
+							<option value="cloud_agent">Cloud</option>
+						</NativeSelect>
+					</div>
 				) : null}
 			</div>
 

@@ -126,6 +126,7 @@ export interface InvokeRunRequest {
 	readonly branchName?: string;
 	readonly baseBranch?: string;
 	readonly startingCommitSha?: string;
+	readonly worktreeIntent?: string;
 	readonly callbackUrl?: string;
 	readonly callbackSecret?: string;
 	readonly attemptNumber?: number;
@@ -790,6 +791,7 @@ export class CloudExecutionOrchestrator {
 					branchName: meta?.featureBranch,
 					baseBranch: meta?.baseBranch,
 					startingCommitSha: meta?.startingCommitSha ?? latest?.startingCommitSha,
+					worktreeIntent: latest?.worktreeIntent ?? meta?.worktreePath,
 					attemptNumber: latest?.attemptNumber,
 					reservationId,
 				},

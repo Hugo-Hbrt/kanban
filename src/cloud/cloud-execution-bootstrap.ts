@@ -129,13 +129,15 @@ export interface CloudExecutionRuntime {
 class HttpRunInvoker implements CloudRunInvoker {
 	private readonly callbackUrl: string;
 	private readonly callbackSecret: string;
+	private readonly bearerToken: string;
 	private readonly fetchFn: typeof globalThis.fetch;
 
 	private readonly store: CloudExecutionStore;
 
-	constructor(callbackUrl: string, callbackSecret: string, store: CloudExecutionStore, fetchFn?: typeof globalThis.fetch) {
+	constructor(callbackUrl: string, callbackSecret: string, store: CloudExecutionStore, bearerToken?: string, fetchFn?: typeof globalThis.fetch) {
 		this.callbackUrl = callbackUrl;
 		this.callbackSecret = callbackSecret;
+		this.bearerToken = bearerToken ?? "";
 		this.store = store;
 		this.fetchFn = fetchFn ?? globalThis.fetch;
 	}
@@ -162,13 +164,18 @@ class HttpRunInvoker implements CloudRunInvoker {
 			branch_name: request.branchName,
 			base_branch: request.baseBranch,
 			starting_commit_sha: request.startingCommitSha,
-			worktree_intent: request.startingCommitSha ? `${request.taskId}/attempt-${request.attemptNumber ?? 1}` : undefined,
+			worktree_intent: request.worktreeIntent ?? (request.startingCommitSha ? `${request.taskId}/attempt-${request.attemptNumber ?? 1}` : undefined),
 			reservation_id: request.reservationId,
 		};
 
+		const headers: Record<string, string> = { "Content-Type": "application/json" };
+		if (this.bearerToken) {
+			headers.Authorization = `Bearer ${this.bearerToken}`;
+		}
+
 		const response = await this.fetchFn(url, {
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
+			headers,
 			body: JSON.stringify(body),
 			signal,
 		});
@@ -228,6 +235,7 @@ export function bootstrapCloudExecution(
 		callbackUrl,
 		callbackSecret,
 		store,
+		apiKey,
 		overrides?.fetchFn,
 	);
 
