@@ -21,6 +21,11 @@ export const cloudRunRequestSchema = z.object({
 	callback_url: z.string().min(1),
 	task_id: z.string().optional(),
 	attempt_number: z.number().int().positive().optional(),
+	branch_name: z.string().optional(),
+	base_branch: z.string().optional(),
+	starting_commit_sha: z.string().optional(),
+	worktree_intent: z.string().optional(),
+	reservation_id: z.string().optional(),
 });
 export type CloudRunRequest = z.infer<typeof cloudRunRequestSchema>;
 

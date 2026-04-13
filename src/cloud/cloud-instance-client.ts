@@ -62,6 +62,8 @@ export const cloudInstanceCreateRequestSchema = z.object({
 	github_pat: z.string().nullable().optional(),
 	pr_base_branch: z.string().default("main"),
 	starting_commit_sha: z.string().optional(),
+	attempt_number: z.number().int().positive().optional(),
+	worktree_intent: z.string().optional(),
 });
 export type CloudInstanceCreateRequest = z.infer<typeof cloudInstanceCreateRequestSchema>;
 

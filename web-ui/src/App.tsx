@@ -737,6 +737,8 @@ export default function App(): ReactElement {
 			branchRef={editTaskBranchRef}
 			branchOptions={createTaskBranchOptions}
 			onBranchRefChange={setEditTaskBranchRef}
+			executionMode={editTaskExecutionMode}
+			onExecutionModeChange={setEditTaskExecutionMode}
 			mode="edit"
 			idPrefix={`inline-edit-task-${editingTaskId}`}
 		/>

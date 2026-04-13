@@ -217,6 +217,7 @@ export function useTaskEditor({
 			setEditTaskStartInPlanMode(task.startInPlanMode);
 			setEditTaskAutoReviewEnabled(task.autoReviewEnabled === true);
 			setEditTaskAutoReviewMode(resolveTaskAutoReviewMode(task.autoReviewMode));
+			setEditTaskExecutionMode(task.executionMode ?? "local_agent");
 			const fallbackBranch = task.baseRef || resolvedDefaultTaskBranchRef;
 			setEditTaskBranchRef(fallbackBranch);
 		},
@@ -254,6 +255,7 @@ export function useTaskEditor({
 				startInPlanMode: editTaskStartInPlanMode,
 				autoReviewEnabled: editTaskAutoReviewEnabled,
 				autoReviewMode: editTaskAutoReviewMode,
+				executionMode: editTaskExecutionMode,
 				images: editTaskImages,
 				baseRef,
 			});
@@ -269,6 +271,7 @@ export function useTaskEditor({
 		editTaskAutoReviewEnabled,
 		editTaskAutoReviewMode,
 		editTaskBranchRef,
+		editTaskExecutionMode,
 		editTaskPrompt,
 		editTaskImages,
 		editTaskStartInPlanMode,
