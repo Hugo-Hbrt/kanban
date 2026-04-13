@@ -2,6 +2,10 @@ import type {
 	RuntimeBoardColumnId,
 	RuntimeTaskAutoReviewMode,
 	RuntimeTaskExecutionMode,
+	RuntimeAgentId,
+	RuntimeBoardColumnId,
+	RuntimeTaskAutoReviewMode,
+	RuntimeTaskClineSettings,
 	RuntimeTaskImage,
 } from "@/runtime/types";
 
@@ -44,12 +48,15 @@ export function getTaskAutoReviewCancelButtonLabel(mode: TaskAutoReviewMode | nu
 
 export interface BoardCard {
 	id: string;
+	title: string;
 	prompt: string;
 	startInPlanMode: boolean;
 	autoReviewEnabled?: boolean;
 	autoReviewMode?: TaskAutoReviewMode;
 	executionMode?: TaskExecutionMode;
 	images?: TaskImage[];
+	agentId?: RuntimeAgentId;
+	clineSettings?: RuntimeTaskClineSettings;
 	baseRef: string;
 	createdAt: number;
 	updatedAt: number;

@@ -66,12 +66,13 @@ vi.mock("@/utils/task-prompt", async () => {
 	return {
 		...actual,
 		truncateTaskPromptLabel: (prompt: string) => prompt.split("||")[0]?.trim() ?? "",
-		splitPromptToTitleDescriptionByWidth: (prompt: string) => {
-			const [title, ...descriptionParts] = prompt.split("||");
-			return {
-				title: title?.trim() ?? "",
-				description: descriptionParts.join("||").trim(),
-			};
+		normalizePromptForDisplay: (value: string) => value.split("||")[0]?.trim() ?? value.trim(),
+		getTaskPromptDescription: (prompt: string, title: string) => {
+			const normalized = prompt.trim();
+			if (!normalized.startsWith(title)) {
+				return normalized;
+			}
+			return normalized.slice(title.length).replace(/^\|\|/, "").trim();
 		},
 	};
 });
@@ -79,6 +80,7 @@ vi.mock("@/utils/task-prompt", async () => {
 function createCard(overrides?: Partial<Parameters<typeof BoardCard>[0]["card"]>) {
 	return {
 		id: "task-1",
+		title: "Review API changes",
 		prompt: "Review API changes",
 		startInPlanMode: false,
 		autoReviewEnabled: false,
@@ -263,6 +265,135 @@ describe("BoardCard", () => {
 		expect(container.textContent).toContain("~/.cline/worktrees/trash-task-1/kanban");
 	});
 
+	it("shows formatted agent override details with model name and reasoning effort", async () => {
+		mockWorkspaceSnapshot = {
+			taskId: "task-1",
+			path: "/tmp/worktrees/task-1",
+			branch: "feature/override",
+			isDetached: false,
+			headCommit: "1234567890abcdef",
+			changedFiles: 2,
+			additions: 5,
+			deletions: 1,
+		};
+
+		await act(async () => {
+			root.render(
+				<BoardCard
+					card={createCard({
+						agentId: "cline",
+						clineSettings: {
+							modelId: "openai/gpt-5.4",
+							reasoningEffort: "low",
+						},
+					})}
+					index={0}
+					columnId="review"
+				/>,
+			);
+		});
+
+		expect(container.textContent).toContain("Cline");
+		expect(container.textContent).toContain("GPT-5.4 (Low)");
+		expect(container.textContent).not.toContain("openai/gpt-5.4");
+	});
+
+	it("shows the task-level indicator for reasoning-only overrides", async () => {
+		await act(async () => {
+			root.render(
+				<BoardCard
+					card={createCard({
+						clineSettings: {
+							reasoningEffort: "low",
+						},
+					})}
+					index={0}
+					columnId="backlog"
+					defaultClineModelId="openai/gpt-5.4"
+				/>,
+			);
+		});
+
+		expect(container.textContent).toContain("GPT-5.4 (Low)");
+	});
+
+	it("shows a fallback indicator for reasoning-only overrides without a resolved default model", async () => {
+		await act(async () => {
+			root.render(
+				<BoardCard
+					card={createCard({
+						clineSettings: {
+							reasoningEffort: "low",
+						},
+					})}
+					index={0}
+					columnId="backlog"
+				/>,
+			);
+		});
+
+		expect(container.textContent).toContain("Default model (Low)");
+	});
+
+	it("shows explicit default reasoning metadata for reasoning-only task overrides", async () => {
+		await act(async () => {
+			root.render(
+				<BoardCard
+					card={createCard({
+						agentId: "cline",
+						clineSettings: {},
+					})}
+					index={0}
+					columnId="backlog"
+					defaultClineModelId="openai/gpt-5.4"
+				/>,
+			);
+		});
+
+		expect(container.textContent).toContain("GPT-5.4 (Default)");
+		expect(container.textContent).not.toContain("GPT-5.4 (High)");
+	});
+
+	it("does not mislabel provider-only overrides as the global default model", async () => {
+		await act(async () => {
+			root.render(
+				<BoardCard
+					card={createCard({
+						clineSettings: {
+							providerId: "groq",
+						},
+					})}
+					index={0}
+					columnId="backlog"
+					defaultClineModelId="openai/gpt-5.4"
+				/>,
+			);
+		});
+
+		expect(container.textContent).toContain("Provider: groq");
+		expect(container.textContent).not.toContain("GPT-5.4");
+	});
+
+	it("does not show inherited global reasoning for explicit model overrides using default effort", async () => {
+		await act(async () => {
+			root.render(
+				<BoardCard
+					card={createCard({
+						agentId: "cline",
+						clineSettings: {
+							modelId: "openai/gpt-5.4",
+						},
+					})}
+					index={0}
+					columnId="backlog"
+				/>,
+			);
+		});
+
+		expect(container.textContent).toContain("GPT-5.4");
+		expect(container.textContent).not.toContain("GPT-5.4 (High)");
+	});
+
 	it("shows tool input details in the session preview text", async () => {
 		await act(async () => {
 			root.render(
@@ -329,6 +460,32 @@ describe("BoardCard", () => {
 		expect(container.textContent).not.toContain("Completed Read");
 	});
 
+	it("keeps canonical tool names in the session preview label", async () => {
+		await act(async () => {
+			root.render(
+				<BoardCard
+					card={createCard()}
+					index={0}
+					columnId="in_progress"
+					sessionSummary={createSummary("running", {
+						agentId: "kiro",
+						latestHookActivity: {
+							activityText: "Using fs_write: src/index.ts",
+							toolName: "fs_write",
+							toolInputSummary: null,
+							finalMessage: null,
+							hookEventName: "preToolUse",
+							notificationType: null,
+							source: "kiro",
+						},
+					})}
+				/>,
+			);
+		});
+
+		expect(container.textContent).toContain("fs_write(src/index.ts)");
+	});
+
 	it("parses codex tool activity into the compact tool label format", async () => {
 		await act(async () => {
 			root.render(
@@ -354,6 +511,33 @@ describe("BoardCard", () => {
 
 		expect(container.textContent).toContain("Read(src/index.ts)");
 		expect(container.textContent).not.toContain("Calling Read");
+	});
+
+	it("does not show a stale bare tool name for non-tool review updates", async () => {
+		await act(async () => {
+			root.render(
+				<BoardCard
+					card={createCard()}
+					index={0}
+					columnId="review"
+					sessionSummary={createSummary("awaiting_review", {
+						agentId: "kiro",
+						latestHookActivity: {
+							activityText: "Waiting for review",
+							toolName: "fs_write",
+							toolInputSummary: null,
+							finalMessage: null,
+							hookEventName: "stop",
+							notificationType: null,
+							source: "kiro",
+						},
+					})}
+				/>,
+			);
+		});
+
+		expect(container.textContent).toContain("Waiting for review");
+		expect(container.textContent).not.toContain("fs_write");
 	});
 
 	it("keeps showing the last cline tool label during assistant streaming", async () => {
@@ -412,7 +596,7 @@ describe("BoardCard", () => {
 	});
 
 	it("shows see more for trash card previews without using card click to expand", async () => {
-		mockMeasureWidths = [240, 240, 96];
+		mockMeasureWidths = [240, 96];
 		const preview =
 			"Reviewing the archived implementation details and collecting the final notes for the handoff before cleanup hidden tail";
 		const onCardClick = vi.fn();
@@ -469,7 +653,7 @@ describe("BoardCard", () => {
 	});
 
 	it("shows see more for active task previews without using card click to expand", async () => {
-		mockMeasureWidths = [240, 240, 96];
+		mockMeasureWidths = [240, 96];
 		const preview =
 			"Reviewing the archived implementation details and collecting the final notes for the handoff before cleanup hidden tail";
 		const onCardClick = vi.fn();

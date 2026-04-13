@@ -157,12 +157,15 @@ export function useTaskSessions({ currentProjectId, setSessions }: UseTaskSessio
 				const payload = await trpcClient.runtime.startTaskSession.mutate({
 					taskId: task.id,
 					prompt: kickoffPrompt,
+					taskTitle: task.title,
 					images: options?.resumeFromTrash ? undefined : task.images,
 					startInPlanMode: options?.resumeFromTrash ? undefined : task.startInPlanMode,
 					resumeFromTrash: options?.resumeFromTrash,
 					baseRef: task.baseRef,
 					cols: geometry.cols,
 					rows: geometry.rows,
+					agentId: task.agentId,
+					clineSettings: task.clineSettings,
 				});
 				if (!payload.ok || !payload.summary) {
 					return {

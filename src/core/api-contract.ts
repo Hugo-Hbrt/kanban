@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolveTaskTitle } from "./task-title.js";
 
 export const runtimeWorkspaceFileStatusSchema = z.enum([
 	"modified",
@@ -70,7 +71,7 @@ export const runtimeSlashCommandsResponseSchema = z.object({
 });
 export type RuntimeSlashCommandsResponse = z.infer<typeof runtimeSlashCommandsResponseSchema>;
 
-export const runtimeAgentIdSchema = z.enum(["claude", "codex", "gemini", "opencode", "droid", "cline"]);
+export const runtimeAgentIdSchema = z.enum(["claude", "codex", "gemini", "opencode", "droid", "kiro", "cline"]);
 export type RuntimeAgentId = z.infer<typeof runtimeAgentIdSchema>;
 
 export const runtimeBoardColumnIdSchema = z.enum(["backlog", "in_progress", "review", "trash"]);
@@ -79,6 +80,14 @@ export type RuntimeBoardColumnId = z.infer<typeof runtimeBoardColumnIdSchema>;
 export const runtimeTaskAutoReviewModeSchema = z.enum(["commit", "pr", "move_to_trash"]);
 export type RuntimeTaskAutoReviewMode = z.infer<typeof runtimeTaskAutoReviewModeSchema>;
 
+export const runtimeClineReasoningEffortSchema = z.enum(["low", "medium", "high", "xhigh"]);
+export type RuntimeClineReasoningEffort = z.infer<typeof runtimeClineReasoningEffortSchema>;
+export const runtimeTaskClineSettingsSchema = z.object({
+	providerId: z.string().optional(),
+	modelId: z.string().optional(),
+	reasoningEffort: runtimeClineReasoningEffortSchema.optional(),
+});
+export type RuntimeTaskClineSettings = z.infer<typeof runtimeTaskClineSettingsSchema>;
 export const runtimeTaskImageSchema = z.object({
 	id: z.string(),
 	data: z.string(),
@@ -90,18 +99,70 @@ export type RuntimeTaskImage = z.infer<typeof runtimeTaskImageSchema>;
 export const runtimeTaskExecutionModeSchema = z.enum(["local_agent", "cloud_agent"]);
 export type RuntimeTaskExecutionMode = z.infer<typeof runtimeTaskExecutionModeSchema>;
 
-export const runtimeBoardCardSchema = z.object({
-	id: z.string(),
-	prompt: z.string(),
-	startInPlanMode: z.boolean(),
-	autoReviewEnabled: z.boolean().optional(),
-	autoReviewMode: runtimeTaskAutoReviewModeSchema.optional(),
-	executionMode: runtimeTaskExecutionModeSchema.optional(),
-	images: z.array(runtimeTaskImageSchema).optional(),
-	baseRef: z.string(),
-	createdAt: z.number(),
-	updatedAt: z.number(),
-});
+const runtimeLegacyTaskClineReasoningEffortSchema = z.enum(["default", "low", "medium", "high", "xhigh"]);
+
+function normalizeRuntimeTaskClineSettings(input: {
+	clineSettings?: RuntimeTaskClineSettings;
+	clineProviderId?: string;
+	clineModelId?: string;
+	clineReasoningEffort?: z.infer<typeof runtimeLegacyTaskClineReasoningEffortSchema>;
+}): RuntimeTaskClineSettings | undefined {
+	if (input.clineSettings !== undefined) {
+		return input.clineSettings;
+	}
+	const providerId = input.clineProviderId?.trim();
+	const modelId = input.clineModelId?.trim();
+	if (!providerId && !modelId && input.clineReasoningEffort === undefined) {
+		return undefined;
+	}
+	return {
+		...(providerId ? { providerId } : {}),
+		...(modelId ? { modelId } : {}),
+		...(input.clineReasoningEffort && input.clineReasoningEffort !== "default"
+			? { reasoningEffort: input.clineReasoningEffort }
+			: {}),
+	};
+}
+
+export const runtimeBoardCardSchema = z
+	.object({
+		id: z.string(),
+		title: z.string().optional(),
+		prompt: z.string(),
+		startInPlanMode: z.boolean(),
+		autoReviewEnabled: z.boolean().optional(),
+		autoReviewMode: runtimeTaskAutoReviewModeSchema.optional(),
+		executionMode: runtimeTaskExecutionModeSchema.optional(),
+		images: z.array(runtimeTaskImageSchema).optional(),
+		agentId: runtimeAgentIdSchema.optional(),
+		clineSettings: runtimeTaskClineSettingsSchema.optional(),
+		clineProviderId: z.string().optional(),
+		clineModelId: z.string().optional(),
+		clineReasoningEffort: runtimeLegacyTaskClineReasoningEffortSchema.optional(),
+		baseRef: z.string(),
+		createdAt: z.number(),
+		updatedAt: z.number(),
+	})
+	.transform(
+		({
+			clineProviderId: _legacyProviderId,
+			clineModelId: _legacyModelId,
+			clineReasoningEffort: _legacyReasoningEffort,
+			...card
+		}) => {
+			const clineSettings = normalizeRuntimeTaskClineSettings({
+				clineSettings: card.clineSettings,
+				clineProviderId: _legacyProviderId,
+				clineModelId: _legacyModelId,
+				clineReasoningEffort: _legacyReasoningEffort,
+			});
+			return {
+				...card,
+				...(clineSettings !== undefined ? { clineSettings } : {}),
+				title: resolveTaskTitle(card.title, card.prompt),
+			};
+		},
+	);
 export type RuntimeBoardCard = z.infer<typeof runtimeBoardCardSchema>;
 
 export const runtimeBoardColumnSchema = z.object({
@@ -415,10 +476,13 @@ export const runtimeProjectsResponseSchema = z.object({
 });
 export type RuntimeProjectsResponse = z.infer<typeof runtimeProjectsResponseSchema>;
 
-export const runtimeProjectAddRequestSchema = z.object({
-	path: z.string(),
-	initializeGit: z.boolean().optional(),
-});
+export const runtimeProjectAddRequestSchema = z
+	.object({
+		path: z.string().optional(),
+		gitUrl: z.string().optional(),
+		initializeGit: z.boolean().optional(),
+	})
+	.refine((data) => data.path || data.gitUrl, { message: "Either path or gitUrl is required" });
 export type RuntimeProjectAddRequest = z.infer<typeof runtimeProjectAddRequestSchema>;
 
 export const runtimeProjectAddResponseSchema = z.object({
@@ -435,6 +499,28 @@ export const runtimeProjectDirectoryPickerResponseSchema = z.object({
 	error: z.string().optional(),
 });
 export type RuntimeProjectDirectoryPickerResponse = z.infer<typeof runtimeProjectDirectoryPickerResponseSchema>;
+
+export const runtimeDirectoryListEntrySchema = z.object({
+	name: z.string(),
+	path: z.string(),
+	isGitRepository: z.boolean(),
+});
+export type RuntimeDirectoryListEntry = z.infer<typeof runtimeDirectoryListEntrySchema>;
+
+export const runtimeDirectoryListRequestSchema = z.object({
+	path: z.string().optional(),
+});
+export type RuntimeDirectoryListRequest = z.infer<typeof runtimeDirectoryListRequestSchema>;
+
+export const runtimeDirectoryListResponseSchema = z.object({
+	ok: z.boolean(),
+	currentPath: z.string(),
+	parentPath: z.string().nullable(),
+	rootPath: z.string(),
+	entries: z.array(runtimeDirectoryListEntrySchema),
+	error: z.string().optional(),
+});
+export type RuntimeDirectoryListResponse = z.infer<typeof runtimeDirectoryListResponseSchema>;
 
 export const runtimeProjectRemoveRequestSchema = z.object({
 	projectId: z.string(),
@@ -510,9 +596,6 @@ export type RuntimeProjectShortcut = z.infer<typeof runtimeProjectShortcutSchema
 
 export const runtimeClineOauthProviderSchema = z.enum(["cline", "oca", "openai-codex"]);
 export type RuntimeClineOauthProvider = z.infer<typeof runtimeClineOauthProviderSchema>;
-
-export const runtimeClineReasoningEffortSchema = z.enum(["low", "medium", "high", "xhigh"]);
-export type RuntimeClineReasoningEffort = z.infer<typeof runtimeClineReasoningEffortSchema>;
 
 export const runtimeClineProviderSettingsSchema = z.object({
 	providerId: z.string().nullable(),
@@ -841,6 +924,8 @@ export type RuntimeConfigSaveRequest = z.infer<typeof runtimeConfigSaveRequestSc
 export const runtimeTaskSessionStartRequestSchema = z.object({
 	taskId: z.string(),
 	prompt: z.string(),
+	/** Display title from the Kanban task card. Propagated to SDK session metadata as a convenience copy. */
+	taskTitle: z.string().optional(),
 	images: z.array(runtimeTaskImageSchema).optional(),
 	startInPlanMode: z.boolean().optional(),
 	mode: runtimeTaskSessionModeSchema.optional(),
@@ -849,6 +934,8 @@ export const runtimeTaskSessionStartRequestSchema = z.object({
 	executionMode: runtimeTaskExecutionModeSchema.optional(),
 	cols: z.number().int().positive().optional(),
 	rows: z.number().int().positive().optional(),
+	agentId: runtimeAgentIdSchema.optional(),
+	clineSettings: runtimeTaskClineSettingsSchema.optional(),
 });
 export type RuntimeTaskSessionStartRequest = z.infer<typeof runtimeTaskSessionStartRequestSchema>;
 

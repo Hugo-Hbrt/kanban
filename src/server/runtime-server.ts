@@ -241,6 +241,7 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 				warn: deps.warn,
 				buildProjectsPayload: deps.workspaceRegistry.buildProjectsPayload,
 				pickDirectoryPathFromSystemDialog: deps.pickDirectoryPathFromSystemDialog,
+				serverCwd: process.cwd(),
 			}),
 			hooksApi: createHooksApi({
 				getWorkspacePathById: deps.workspaceRegistry.getWorkspacePathById,

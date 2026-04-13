@@ -1,6 +1,7 @@
 import * as RadixCheckbox from "@radix-ui/react-checkbox";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as RadixSwitch from "@radix-ui/react-switch";
+import { deriveTaskTitleFromPrompt } from "@runtime-task-title";
 import {
 	ArrowBigUp,
 	ArrowLeft,
@@ -20,9 +21,12 @@ import { useHotkeys } from "react-hotkeys-hook";
 
 import type { BranchSelectOption } from "@/components/branch-select-dropdown";
 import { BranchSelectDropdown } from "@/components/branch-select-dropdown";
+import { TaskAgentModelPicker, useTaskAgentModelPicker } from "@/components/task-agent-model-picker";
 import { TaskPromptComposer } from "@/components/task-prompt-composer";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogBody, DialogFooter, DialogHeader } from "@/components/ui/dialog";
+import { NativeSelect } from "@/components/ui/native-select";
+import type { RuntimeAgentId, RuntimeClineReasoningEffort, RuntimeTaskClineSettings } from "@/runtime/types";
 import { LocalStorageKey } from "@/storage/local-storage-store";
 import type { TaskAutoReviewMode, TaskExecutionMode, TaskImage } from "@/types";
 import { isMacPlatform, pasteShortcutLabel } from "@/utils/platform";
@@ -95,6 +99,8 @@ function parseListItems(text: string): string[] {
 export function TaskCreateDialog({
 	open,
 	onOpenChange,
+	title,
+	onTitleChange,
 	prompt,
 	onPromptChange,
 	images,
@@ -117,9 +123,19 @@ export function TaskCreateDialog({
 	onBranchRefChange,
 	executionMode,
 	onExecutionModeChange,
+	agentId,
+	onAgentIdChange,
+	clineSettings,
+	onClineSettingsChange,
+	defaultAgentId,
+	defaultProviderId,
+	defaultModelId,
+	defaultReasoningEffort,
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
+	title: string;
+	onTitleChange: (value: string) => void;
 	prompt: string;
 	onPromptChange: (value: string) => void;
 	images: TaskImage[];
@@ -142,6 +158,18 @@ export function TaskCreateDialog({
 	onBranchRefChange: (value: string) => void;
 	executionMode?: TaskExecutionMode;
 	onExecutionModeChange?: (value: TaskExecutionMode) => void;
+	agentId?: RuntimeAgentId | undefined;
+	onAgentIdChange?: (value: RuntimeAgentId | undefined) => void;
+	clineSettings?: RuntimeTaskClineSettings | undefined;
+	onClineSettingsChange?: (value: RuntimeTaskClineSettings | undefined) => void;
+	/** Default agent ID from runtimeConfig.selectedAgentId, used to show "Default (AgentName)" in picker */
+	defaultAgentId?: RuntimeAgentId | null;
+	/** Default Cline provider ID from runtimeConfig.clineProviderSettings.providerId */
+	defaultProviderId?: string | null;
+	/** Default Cline model ID from runtimeConfig.clineProviderSettings.modelId */
+	defaultModelId?: string | null;
+	/** Default Cline reasoning effort from runtimeConfig.clineProviderSettings.reasoningEffort */
+	defaultReasoningEffort?: RuntimeClineReasoningEffort | null;
 }): ReactElement {
 	const [mode, setMode] = useState<"single" | "multi">("single");
 	const [createMore, setCreateMore] = useState(false);
@@ -157,6 +185,25 @@ export function TaskCreateDialog({
 		DEFAULT_PRIMARY_START_ACTION,
 		normalizeStoredTaskCreateStartAction,
 	);
+
+	const {
+		agentOptions,
+		clineProviderOptions,
+		clineModelOptions,
+		effectiveDefaultModelId,
+		providerModels,
+		isLoadingProviders,
+		isLoadingModels,
+		providerDefaultModels,
+	} = useTaskAgentModelPicker({
+		active: open,
+		workspaceId,
+		agentId,
+		clineSettings,
+		defaultAgentId,
+		defaultProviderId,
+		defaultModelId,
+	});
 
 	const detectedItems = useMemo(() => parseListItems(prompt), [prompt]);
 	const validTaskCount = useMemo(() => taskPrompts.filter((p) => p.trim()).length, [taskPrompts]);
@@ -394,6 +441,18 @@ export function TaskCreateDialog({
 			<DialogBody>
 				{mode === "single" ? (
 					<div>
+						<div className="mb-3">
+							<label htmlFor="task-title-input" className="mb-1 block text-[12px] text-text-secondary">
+								Title
+							</label>
+							<input
+								id="task-title-input"
+								value={title}
+								onChange={(event) => onTitleChange(event.currentTarget.value)}
+								placeholder={deriveTaskTitleFromPrompt(prompt) || "Auto-generated from prompt"}
+								className="h-9 w-full rounded-md border border-border-bright bg-surface-2 px-3 text-[13px] text-text-primary placeholder:text-text-tertiary focus:border-border-focus focus:outline-none"
+							/>
+						</div>
 						<TaskPromptComposer
 							key={composerResetKey}
 							value={prompt}
@@ -524,24 +583,18 @@ export function TaskCreateDialog({
 							</RadixCheckbox.Root>
 							Automatically
 						</label>
-						<div className="relative inline-flex">
-							<select
-								value={autoReviewMode}
-								onChange={(e) => onAutoReviewModeChange(e.currentTarget.value as TaskAutoReviewMode)}
-								className="h-7 appearance-none rounded-md border border-border-bright bg-surface-2 pl-2 pr-7 text-[12px] text-text-primary cursor-pointer focus:border-border-focus focus:outline-none"
-								style={{ width: "16ch", maxWidth: "100%" }}
-							>
-								{AUTO_REVIEW_MODE_OPTIONS.map((option) => (
-									<option key={option.value} value={option.value}>
-										{option.label}
-									</option>
-								))}
-							</select>
-							<ChevronDown
-								size={14}
-								className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-text-secondary"
-							/>
-						</div>
+						<NativeSelect
+							size="sm"
+							value={autoReviewMode}
+							onChange={(e) => onAutoReviewModeChange(e.currentTarget.value as TaskAutoReviewMode)}
+							style={{ width: "16ch", maxWidth: "100%" }}
+						>
+							{AUTO_REVIEW_MODE_OPTIONS.map((option) => (
+								<option key={option.value} value={option.value}>
+									{option.label}
+								</option>
+							))}
+						</NativeSelect>
 					</div>
 
 					{onExecutionModeChange ? (
@@ -572,6 +625,24 @@ export function TaskCreateDialog({
 								</button>
 							</div>
 						</div>
+					{onAgentIdChange && onClineSettingsChange ? (
+						<TaskAgentModelPicker
+							agentId={agentId}
+							onAgentIdChange={onAgentIdChange}
+							clineSettings={clineSettings}
+							onClineSettingsChange={onClineSettingsChange}
+							agentOptions={agentOptions}
+							clineProviderOptions={clineProviderOptions}
+							clineModelOptions={clineModelOptions}
+							effectiveDefaultModelId={effectiveDefaultModelId}
+							providerModels={providerModels}
+							isLoadingProviders={isLoadingProviders}
+							isLoadingModels={isLoadingModels}
+							defaultAgentId={defaultAgentId}
+							defaultProviderId={defaultProviderId}
+							defaultReasoningEffort={defaultReasoningEffort}
+							providerDefaultModels={providerDefaultModels}
+						/>
 					) : null}
 				</div>
 			</DialogBody>

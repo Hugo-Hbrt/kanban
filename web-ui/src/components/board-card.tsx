@@ -1,10 +1,16 @@
 import { Draggable } from "@hello-pangea/dnd";
+import { getRuntimeAgentCatalogEntry } from "@runtime-agent-catalog";
 import { formatClineToolCallLabel } from "@runtime-cline-tool-call-display";
 import { buildTaskWorktreeDisplayPath } from "@runtime-task-worktree-path";
-import { AlertCircle, AlertTriangle, GitBranch, Play, RotateCcw, Trash2 } from "lucide-react";
-import type { MouseEvent } from "react";
+import { AlertCircle, AlertTriangle, Bot, GitBranch, Play, RotateCcw, Trash2 } from "lucide-react";
+import type { KeyboardEvent, MouseEvent } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import {
+	formatClineReasoningEffortLabel,
+	formatClineSelectedModelButtonText,
+	resolveClineModelDisplayName,
+} from "@/components/detail-panels/cline-model-picker-options";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/components/ui/cn";
 import { Spinner } from "@/components/ui/spinner";
@@ -17,7 +23,8 @@ import { formatPathForDisplay } from "@/utils/path-display";
 import { useMeasure } from "@/utils/react-use";
 import {
 	clampTextWithInlineSuffix,
-	splitPromptToTitleDescriptionByWidth,
+	getTaskPromptDescription,
+	normalizePromptForDisplay,
 	truncateTaskPromptLabel,
 } from "@/utils/task-prompt";
 import { DEFAULT_TEXT_MEASURE_FONT, measureTextWidth, readElementFontShorthand } from "@/utils/text-measure";
@@ -107,10 +114,11 @@ function resolveToolCallLabel(
 	toolInputSummary: string | null,
 ): string | null {
 	if (toolName) {
-		return formatClineToolCallLabel(
-			toolName,
-			toolInputSummary ?? extractToolInputSummaryFromActivityText(activityText ?? "", toolName),
-		);
+		const parsedSummary = extractToolInputSummaryFromActivityText(activityText ?? "", toolName);
+		if (!toolInputSummary && !parsedSummary) {
+			return null;
+		}
+		return formatClineToolCallLabel(toolName, toolInputSummary ?? parsedSummary);
 	}
 	if (!activityText) {
 		return null;
@@ -211,6 +219,7 @@ export function BoardCard({
 	onStart,
 	onMoveToTrash,
 	onRestoreFromTrash,
+	onSaveTitle,
 	onCommit,
 	onOpenPr,
 	onCancelAutomaticAction,
@@ -223,6 +232,7 @@ export function BoardCard({
 	isDependencyTarget = false,
 	isDependencyLinking = false,
 	workspacePath,
+	defaultClineModelId = null,
 }: {
 	card: BoardCardModel;
 	index: number;
@@ -233,6 +243,7 @@ export function BoardCard({
 	onStart?: (taskId: string) => void;
 	onMoveToTrash?: (taskId: string) => void;
 	onRestoreFromTrash?: (taskId: string) => void;
+	onSaveTitle?: (taskId: string, title: string) => void;
 	onCommit?: (taskId: string) => void;
 	onOpenPr?: (taskId: string) => void;
 	onCancelAutomaticAction?: (taskId: string) => void;
@@ -245,18 +256,19 @@ export function BoardCard({
 	isDependencyTarget?: boolean;
 	isDependencyLinking?: boolean;
 	workspacePath?: string | null;
+	defaultClineModelId?: string | null;
 }): React.ReactElement {
 	const [isHovered, setIsHovered] = useState(false);
-	const [titleContainerRef, titleRect] = useMeasure<HTMLDivElement>();
+	const [isEditingTitle, setIsEditingTitle] = useState(false);
+	const [draftTitle, setDraftTitle] = useState(card.title);
+	const titleInputRef = useRef<HTMLInputElement | null>(null);
+	const titleEditCancelledRef = useRef(false);
 	const [descriptionContainerRef, descriptionRect] = useMeasure<HTMLDivElement>();
 	const [sessionPreviewContainerRef, sessionPreviewRect] = useMeasure<HTMLDivElement>();
-	const titleRef = useRef<HTMLParagraphElement | null>(null);
 	const descriptionRef = useRef<HTMLParagraphElement | null>(null);
 	const sessionPreviewRef = useRef<HTMLParagraphElement | null>(null);
-	const [titleWidthFallback, setTitleWidthFallback] = useState(0);
 	const [descriptionWidthFallback, setDescriptionWidthFallback] = useState(0);
 	const [sessionPreviewWidthFallback, setSessionPreviewWidthFallback] = useState(0);
-	const [titleFont, setTitleFont] = useState(DEFAULT_TEXT_MEASURE_FONT);
 	const [descriptionFont, setDescriptionFont] = useState(DEFAULT_TEXT_MEASURE_FONT);
 	const [sessionPreviewFont, setSessionPreviewFont] = useState(DEFAULT_TEXT_MEASURE_FONT);
 	const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
@@ -264,12 +276,8 @@ export function BoardCard({
 	const reviewWorkspaceSnapshot = useTaskWorkspaceSnapshotValue(card.id);
 	const isTrashCard = columnId === "trash";
 	const isCardInteractive = !isTrashCard;
-	const titleWidth = titleRect.width > 0 ? titleRect.width : titleWidthFallback;
 	const descriptionWidth = descriptionRect.width > 0 ? descriptionRect.width : descriptionWidthFallback;
 	const sessionPreviewWidth = sessionPreviewRect.width > 0 ? sessionPreviewRect.width : sessionPreviewWidthFallback;
-	const displayPrompt = useMemo(() => {
-		return card.prompt.trim();
-	}, [card.prompt]);
 	const rawSessionActivity = useMemo(() => getCardSessionActivity(sessionSummary), [sessionSummary]);
 	const lastSessionActivityRef = useRef<CardSessionActivity | null>(null);
 	const lastSessionActivityCardIdRef = useRef<string | null>(null);
@@ -281,49 +289,24 @@ export function BoardCard({
 		lastSessionActivityRef.current = rawSessionActivity;
 	}
 	const sessionActivity = rawSessionActivity ?? lastSessionActivityRef.current;
-	const displayPromptSplit = useMemo(() => {
-		const fallbackTitle = truncateTaskPromptLabel(card.prompt);
-		if (!displayPrompt) {
-			return {
-				title: fallbackTitle,
-				description: "",
-			};
-		}
-		if (titleWidth <= 0) {
-			return {
-				title: fallbackTitle,
-				description: "",
-			};
-		}
-		const split = splitPromptToTitleDescriptionByWidth(displayPrompt, {
-			maxTitleWidthPx: titleWidth,
-			measureText: (value) => measureTextWidth(value, titleFont),
-		});
-		return {
-			title: split.title || fallbackTitle,
-			description: split.description,
-		};
-	}, [card.prompt, displayPrompt, titleFont, titleWidth]);
+	const displayTitle = useMemo(
+		() => normalizePromptForDisplay(card.title) || truncateTaskPromptLabel(card.prompt),
+		[card.prompt, card.title],
+	);
+	const displayDescription = useMemo(
+		() => getTaskPromptDescription(card.prompt, displayTitle),
+		[card.prompt, displayTitle],
+	);
 
 	useLayoutEffect(() => {
-		if (titleRect.width > 0) {
-			return;
-		}
-		const nextWidth = titleRef.current?.parentElement?.getBoundingClientRect().width ?? 0;
-		if (nextWidth > 0 && nextWidth !== titleWidthFallback) {
-			setTitleWidthFallback(nextWidth);
-		}
-	}, [titleRect.width, titleWidthFallback]);
-
-	useLayoutEffect(() => {
-		if (descriptionRect.width > 0 || !displayPromptSplit.description) {
+		if (descriptionRect.width > 0 || !displayDescription) {
 			return;
 		}
 		const nextWidth = descriptionRef.current?.parentElement?.getBoundingClientRect().width ?? 0;
 		if (nextWidth > 0 && nextWidth !== descriptionWidthFallback) {
 			setDescriptionWidthFallback(nextWidth);
 		}
-	}, [descriptionRect.width, descriptionWidthFallback, displayPromptSplit.description]);
+	}, [descriptionRect.width, descriptionWidthFallback, displayDescription]);
 
 	useLayoutEffect(() => {
 		if (sessionPreviewRect.width > 0 || !isTrashCard || !sessionActivity?.text) {
@@ -336,12 +319,8 @@ export function BoardCard({
 	}, [isTrashCard, sessionActivity?.text, sessionPreviewRect.width, sessionPreviewWidthFallback]);
 
 	useLayoutEffect(() => {
-		setTitleFont(readElementFontShorthand(titleRef.current, DEFAULT_TEXT_MEASURE_FONT));
-	}, [titleWidth]);
-
-	useLayoutEffect(() => {
 		setDescriptionFont(readElementFontShorthand(descriptionRef.current, DEFAULT_TEXT_MEASURE_FONT));
-	}, [descriptionWidth, displayPromptSplit.description]);
+	}, [descriptionWidth, displayDescription]);
 
 	useLayoutEffect(() => {
 		setSessionPreviewFont(readElementFontShorthand(sessionPreviewRef.current, DEFAULT_TEXT_MEASURE_FONT));
@@ -349,22 +328,70 @@ export function BoardCard({
 
 	useEffect(() => {
 		setIsDescriptionExpanded(false);
-	}, [card.id, displayPromptSplit.description]);
+	}, [card.id, displayDescription]);
 
 	useEffect(() => {
 		setIsSessionPreviewExpanded(false);
 	}, [card.id, sessionActivity?.text]);
+
+	useEffect(() => {
+		setDraftTitle(card.title);
+		setIsEditingTitle(false);
+	}, [card.id, card.title]);
+
+	useEffect(() => {
+		if (!isEditingTitle) {
+			return;
+		}
+		window.requestAnimationFrame(() => {
+			titleInputRef.current?.focus();
+			titleInputRef.current?.select();
+		});
+	}, [isEditingTitle]);
 
 	const stopEvent = (event: MouseEvent<HTMLElement>) => {
 		event.preventDefault();
 		event.stopPropagation();
 	};
 
+	const submitTitle = () => {
+		if (titleEditCancelledRef.current) {
+			titleEditCancelledRef.current = false;
+			return;
+		}
+		setIsEditingTitle(false);
+		if (!onSaveTitle) {
+			return;
+		}
+		const trimmed = draftTitle.trim();
+		if (trimmed === card.title) {
+			return;
+		}
+		onSaveTitle(card.id, trimmed);
+	};
+
+	const handleTitleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+		if (event.key === "Enter") {
+			event.preventDefault();
+			event.stopPropagation();
+			titleInputRef.current?.blur();
+			return;
+		}
+		if (event.key === "Escape") {
+			event.preventDefault();
+			event.stopPropagation();
+			titleEditCancelledRef.current = true;
+			setDraftTitle(card.title);
+			setIsEditingTitle(false);
+			titleInputRef.current?.blur();
+		}
+	};
+
 	const isDescriptionMeasured = descriptionRect.width > 0;
 	const isSessionPreviewMeasured = sessionPreviewRect.width > 0;
 
 	const descriptionDisplay = useMemo(() => {
-		if (!displayPromptSplit.description) {
+		if (!displayDescription) {
 			return {
 				text: "",
 				isTruncated: false,
@@ -372,17 +399,17 @@ export function BoardCard({
 		}
 		if (descriptionWidth <= 0) {
 			return {
-				text: displayPromptSplit.description,
+				text: displayDescription,
 				isTruncated: false,
 			};
 		}
-		return clampTextWithInlineSuffix(displayPromptSplit.description, {
+		return clampTextWithInlineSuffix(displayDescription, {
 			maxWidthPx: descriptionWidth,
 			maxLines: DESCRIPTION_COLLAPSE_LINES,
 			suffix: DESCRIPTION_COLLAPSE_SUFFIX,
 			measureText: (value) => measureTextWidth(value, descriptionFont),
 		});
-	}, [descriptionFont, descriptionWidth, displayPromptSplit.description]);
+	}, [descriptionFont, descriptionWidth, displayDescription]);
 
 	const sessionPreviewDisplay = useMemo(() => {
 		if (!sessionActivity?.text) {
@@ -439,6 +466,42 @@ export function BoardCard({
 	const isAnyGitActionLoading = isCommitLoading || isOpenPrLoading;
 	const cancelAutomaticActionLabel =
 		!isTrashCard && card.autoReviewEnabled ? getTaskAutoReviewCancelButtonLabel(card.autoReviewMode) : null;
+	const agentOverrideLabel = useMemo(
+		() => (card.agentId ? (getRuntimeAgentCatalogEntry(card.agentId)?.label ?? card.agentId) : null),
+		[card.agentId],
+	);
+	const modelOverrideLabel = useMemo(() => {
+		if (card.clineSettings === undefined) {
+			return null;
+		}
+		const explicitReasoningLabel = card.clineSettings.reasoningEffort
+			? formatClineReasoningEffortLabel(card.clineSettings.reasoningEffort)
+			: !card.clineSettings.providerId && !card.clineSettings.modelId
+				? "Default"
+				: null;
+		if (card.clineSettings.providerId && !card.clineSettings.modelId) {
+			const providerLabel = `Provider: ${card.clineSettings.providerId}`;
+			return explicitReasoningLabel ? `${providerLabel} (${explicitReasoningLabel})` : providerLabel;
+		}
+		const effectiveModelId = card.clineSettings.modelId ?? defaultClineModelId;
+		if (!effectiveModelId) {
+			return explicitReasoningLabel ? `Default model (${explicitReasoningLabel})` : null;
+		}
+		const modelName = resolveClineModelDisplayName(effectiveModelId);
+		if (explicitReasoningLabel) {
+			return `${modelName} (${explicitReasoningLabel})`;
+		}
+		const inheritedReasoningEffort = "";
+		return formatClineSelectedModelButtonText({
+			modelName,
+			reasoningEffort: inheritedReasoningEffort,
+			showReasoningEffort: Boolean(inheritedReasoningEffort),
+		});
+	}, [card.clineSettings, defaultClineModelId]);
+	const taskAgentSettingsLabel = useMemo(() => {
+		const parts = [agentOverrideLabel, modelOverrideLabel].filter((value): value is string => Boolean(value));
+		return parts.length > 0 ? parts.join(" · ") : null;
+	}, [agentOverrideLabel, modelOverrideLabel]);
 
 	return (
 		<Draggable draggableId={card.id} index={index} isDragDisabled={false}>
@@ -518,16 +581,46 @@ export function BoardCard({
 						>
 							<div className="flex items-center gap-2" style={{ minHeight: 24 }}>
 								{statusMarker ? <div className="inline-flex items-center">{statusMarker}</div> : null}
-								<div ref={titleContainerRef} className="flex-1 min-w-0">
-									<p
-										ref={titleRef}
-										className={cn(
-											"kb-line-clamp-1 m-0 font-medium text-sm",
-											isTrashCard && "line-through text-text-tertiary",
-										)}
-									>
-										{displayPromptSplit.title}
-									</p>
+								<div className="flex-1 min-w-0">
+									{isEditingTitle ? (
+										<input
+											ref={titleInputRef}
+											value={draftTitle}
+											onChange={(event) => setDraftTitle(event.currentTarget.value)}
+											onBlur={submitTitle}
+											onKeyDown={handleTitleKeyDown}
+											onMouseDown={(event) => {
+												event.stopPropagation();
+											}}
+											className="h-7 w-full rounded-md border border-border-focus bg-surface-2 px-2 text-sm font-medium text-text-primary focus:outline-none"
+										/>
+									) : onSaveTitle ? (
+										<button
+											type="button"
+											aria-label="Edit task title"
+											onMouseDown={stopEvent}
+											onClick={(event) => {
+												stopEvent(event);
+												setDraftTitle(card.title);
+												setIsEditingTitle(true);
+											}}
+											className={cn(
+												"kb-line-clamp-1 m-0 w-full cursor-text rounded-sm text-left font-medium text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+												isTrashCard && "line-through text-text-tertiary",
+											)}
+										>
+											{displayTitle}
+										</button>
+									) : (
+										<p
+											className={cn(
+												"kb-line-clamp-1 m-0 font-medium text-sm",
+												isTrashCard && "line-through text-text-tertiary",
+											)}
+										>
+											{displayTitle}
+										</p>
+									)}
 								</div>
 								{columnId === "backlog" ? (
 									<Button
@@ -579,7 +672,7 @@ export function BoardCard({
 									</Tooltip>
 								) : null}
 							</div>
-							{displayPromptSplit.description ? (
+							{displayDescription ? (
 								<div ref={descriptionContainerRef}>
 									<p
 										ref={descriptionRef}
@@ -593,7 +686,7 @@ export function BoardCard({
 										}}
 									>
 										{isDescriptionExpanded || !descriptionDisplay.isTruncated
-											? displayPromptSplit.description
+											? displayDescription
 											: descriptionDisplay.text}
 										{descriptionDisplay.isTruncated ? (
 											isDescriptionExpanded ? (
@@ -633,6 +726,21 @@ export function BoardCard({
 											)
 										) : null}
 									</p>
+								</div>
+							) : null}
+							{taskAgentSettingsLabel ? (
+								<div className="mt-1">
+									<span
+										className={cn(
+											"inline-flex max-w-full items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs",
+											isTrashCard
+												? "border-border text-text-tertiary bg-surface-1"
+												: "border-status-blue/30 bg-status-blue/10 text-status-blue",
+										)}
+									>
+										<Bot size={12} className="shrink-0" />
+										<span className="truncate">{taskAgentSettingsLabel}</span>
+									</span>
 								</div>
 							) : null}
 							{sessionActivity ? (
