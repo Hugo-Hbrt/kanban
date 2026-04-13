@@ -52,6 +52,7 @@ import { WindowRegistry } from "./window-registry.js";
 import {
 	clearRuntimeDescriptor,
 	evaluateDescriptorTrust,
+	handleRuntimeDisconnect,
 	readRuntimeDescriptor,
 	writeRuntimeDescriptor,
 } from "kanban";
@@ -85,30 +86,100 @@ let terminalOwnsDescriptor = false;
 let descriptorWatcherInterval: ReturnType<typeof setInterval> | null = null;
 
 /**
- * Poll the runtime descriptor every few seconds. When a terminal-owned
- * descriptor disappears (CLI shuts down), the desktop takes over by
- * publishing its own descriptor so agents can discover it.
+ * Poll the runtime descriptor every few seconds. Handles two transitions:
+ *
+ * 1. Desktop is authority → CLI writes descriptor → Desktop attaches to CLI
+ * 2. CLI is authority → CLI dies → Desktop takes over via grace + lock
+ *
+ * This watcher always runs so that the desktop can react to CLI start/stop
+ * regardless of which app started first.
  */
 function startDescriptorWatcher(): void {
 	if (descriptorWatcherInterval) return; // already running
+	let takeoverInProgress = false;
 
 	descriptorWatcherInterval = setInterval(() => {
+		if (takeoverInProgress) return;
+
 		void (async () => {
 			try {
 				const descriptor = await readRuntimeDescriptor();
 
-		if (!descriptor || descriptor.source !== "terminal") {
-			// CLI's descriptor is gone — desktop takes over.
-					terminalOwnsDescriptor = false;
+				// ── Case 1: CLI appeared — attach to it ──────────────────
+				// Desktop is the current authority but a CLI just published
+				// a new descriptor. Switch to the CLI runtime so both apps
+				// share the same server.
+				if (
+					descriptor &&
+					descriptor.source === "cli" &&
+					!terminalOwnsDescriptor &&
+					descriptor.url !== runtimeUrl
+				) {
+					console.log(
+						`[desktop] CLI runtime appeared at ${descriptor.url} — attaching.`,
+					);
+					terminalOwnsDescriptor = true;
+					runtimeUrl = descriptor.url;
+					authToken = descriptor.authToken;
+					if (connectionManager) {
+						await connectionManager.initializeWithExternalRuntime(
+							descriptor.url,
+							descriptor.authToken,
+						);
+					}
+					return; // stay watching for CLI death
+				}
+
+				// ── Case 2: CLI died — take over ─────────────────────────
+				// We were attached to CLI but the descriptor disappeared or
+				// is no longer CLI-owned.
+				if (
+					terminalOwnsDescriptor &&
+					(!descriptor || descriptor.source !== "cli")
+				) {
+					takeoverInProgress = true;
 					stopDescriptorWatcher();
 
-					if (runtimeUrl && authToken) {
-						console.log(
-							"[desktop] Terminal descriptor disappeared — " +
-								"publishing desktop descriptor.",
-						);
-						await publishRuntimeDescriptor(runtimeUrl, authToken);
-					}
+					const failedUrl = runtimeUrl ?? "";
+					const failedToken = authToken ?? "";
+
+					await handleRuntimeDisconnect(failedUrl, failedToken, {
+						startRuntime: async () => {
+							if (!connectionManager) {
+								throw new Error("ConnectionManager not initialized");
+							}
+							terminalOwnsDescriptor = false;
+							await connectionManager.fallbackToOwnRuntime();
+							const url = connectionManager.getLocalUrl();
+							const token = connectionManager.getLocalAuthToken();
+							return { url, authToken: token };
+						},
+						onAttach: async (d) => {
+							runtimeUrl = d.url;
+							authToken = d.authToken;
+							if (connectionManager) {
+								await connectionManager.initializeWithExternalRuntime(d.url, d.authToken);
+							}
+							if (d.source === "cli") {
+								terminalOwnsDescriptor = true;
+								takeoverInProgress = false;
+								startDescriptorWatcher();
+							} else {
+								terminalOwnsDescriptor = false;
+								takeoverInProgress = false;
+								startDescriptorWatcher();
+							}
+						},
+						onTakeoverStarting: () => {
+							console.log("[desktop] Takeover: starting own runtime...");
+						},
+						onReconnected: () => {
+							console.log("[desktop] Takeover: runtime recovered during grace window.");
+							takeoverInProgress = false;
+							startDescriptorWatcher();
+						},
+						warn: (msg) => console.log(msg),
+					});
 				}
 			} catch {
 				// Best effort — don't crash on read errors.
@@ -947,9 +1018,9 @@ if (gotTheLock) {
 		case "terminal-owned":
 			terminalOwnsDescriptor = true;
 			console.log(
-				"[desktop] Found terminal-owned descriptor — " +
-					"desktop will start its own runtime on a separate port " +
-					"(descriptor writes suppressed).",
+				"[desktop] Found CLI-owned runtime at " +
+					`${trustResult.descriptor?.url} — attaching to it instead of ` +
+					"starting a separate runtime.",
 			);
 			break;
 			case "current-session":
@@ -1053,17 +1124,27 @@ if (gotTheLock) {
 		advanceBootPhase("initialize-connections");
 
 		try {
-			await connectionManager.initialize();
+			if (terminalOwnsDescriptor && trustResult.descriptor) {
+				// Attach to the existing CLI runtime instead of spawning a child.
+				runtimeUrl = trustResult.descriptor.url;
+				authToken = trustResult.descriptor.authToken;
+				await connectionManager.initializeWithExternalRuntime(
+					trustResult.descriptor.url,
+					trustResult.descriptor.authToken,
+				);
+			} else {
+				await connectionManager.initialize();
+			}
 
 			if (!getBootState().failureCode) {
 				advanceBootPhase("ready");
 				rebuildMenu();
 				showInterruptedTasksToast();
 
-				// Watch for CLI descriptor disappearing so desktop can take over.
-				if (terminalOwnsDescriptor) {
-					startDescriptorWatcher();
-				}
+				// Always watch the descriptor so the desktop can:
+				// 1. Attach to a CLI runtime that appears after desktop started
+				// 2. Take over when a CLI runtime it was attached to dies
+				startDescriptorWatcher();
 			} else {
 				rebuildMenu();
 			}
