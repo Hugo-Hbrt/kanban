@@ -91,6 +91,21 @@ describe.skipIf(SKIP)("Layer 4: Staging E2E against real provisioning API", () =
 	});
 
 	// -----------------------------------------------------------------------
+	// Validation: task-runner without github_pat returns 422 (not 500)
+	// Requires fix/github-pat-validation to be deployed.
+	// -----------------------------------------------------------------------
+	it("POST /instances rejects task-runner without github_pat with 422", async () => {
+		const res = await apiPost("/instances/", {
+			user_id: TEST_USER_ID,
+			repo_url: "https://github.com/octocat/Hello-World.git",
+			api_key: "test-key",
+			instance_type: "task-runner",
+		});
+		expect(res.status).toBe(422);
+		expect(res.data?.detail).toBeDefined();
+	});
+
+	// -----------------------------------------------------------------------
 	// Create a REAL instance
 	// -----------------------------------------------------------------------
 	it("POST /instances/ creates a real task-runner instance", async () => {
