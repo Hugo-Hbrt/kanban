@@ -56,9 +56,15 @@ import type { CloudExecutionLogStreamClient, LogStreamClientFactory } from "./cl
 import { defaultLogStreamClientFactory } from "./cloud-execution-log-stream";
 import type { EventTriggerSource, PersistedTaskEvent, PersistedTaskExecution } from "./cloud-execution-persistence";
 import type { GovernanceClient } from "./cloud-governance-client";
-import type { CloudInstanceResponse } from "./cloud-instance-client";
-import type { ReadinessPollerConfig } from "./cloud-readiness-poller";
-import { DEFAULT_READINESS_POLLER_CONFIG, pollForReadiness } from "./cloud-readiness-poller";
+import { buildExecutionCreateRequest } from "./cloud-execution-contracts";
+import type { ExecutionStatusResponse } from "./cloud-execution-contracts";
+import type { CloudPlatformExecutionClient } from "./cloud-platform-execution-client";
+import {
+	type ExecutionPollingConfig,
+	DEFAULT_EXECUTION_POLLING_CONFIG,
+	isTerminalExecutionStatus,
+	pollExecutionStatus,
+} from "./cloud-platform-execution-client";
 
 // ---------------------------------------------------------------------------
 // Store Interface (structural typing for testability)
@@ -86,83 +92,10 @@ export interface CloudExecutionStoreInterface {
 }
 
 // ---------------------------------------------------------------------------
-// Extended Cloud Client Interface (B1 full contract)
+// (Legacy interfaces removed — KB-AUTH-3)
+// Direct runner invocation, instance provisioning, and callback interfaces
+// have been replaced by CloudPlatformExecutionClient.
 // ---------------------------------------------------------------------------
-
-export interface CreateInstanceRequest {
-	readonly taskId: string;
-	readonly repoUrl: string;
-	readonly baseBranch: string;
-	readonly featureBranch?: string;
-	readonly attemptNumber?: number;
-	readonly worktreeIntent?: string;
-	readonly startingCommitSha?: string;
-}
-
-/**
- * Orchestrator-level cloud client interface.
- *
- * This is a simplified interface used internally by the orchestrator.
- * It is structurally compatible with, but intentionally does not extend,
- * {@link CloudInstanceClient} because the orchestrator uses its own
- * {@link CreateInstanceRequest} shape for provisioning.
- */
-export interface CloudInstanceFullClient {
-	createInstance(request: CreateInstanceRequest, signal?: AbortSignal): Promise<CloudInstanceResponse>;
-	getInstance(instanceId: string, signal?: AbortSignal): Promise<CloudInstanceResponse>;
-	deleteInstance(instanceId: string, signal?: AbortSignal): Promise<void>;
-}
-
-// ---------------------------------------------------------------------------
-// Run Invocation Interface (B3 contract)
-// ---------------------------------------------------------------------------
-
-export interface InvokeRunRequest {
-	readonly taskId: string;
-	readonly executionId: string;
-	readonly instanceId: string;
-	readonly hostname: string;
-	readonly prompt: string;
-	readonly branchName?: string;
-	readonly baseBranch?: string;
-	readonly startingCommitSha?: string;
-	readonly worktreeIntent?: string;
-	readonly callbackUrl?: string;
-	readonly callbackSecret?: string;
-	readonly attemptNumber?: number;
-	readonly reservationId?: string;
-}
-
-export interface InvokeRunResponse {
-	readonly accepted: boolean;
-	readonly runId?: string;
-}
-
-export interface CloudRunInvoker {
-	composePrompt(taskId: string): Promise<string>;
-	invokeRun(request: InvokeRunRequest, signal?: AbortSignal): Promise<InvokeRunResponse>;
-}
-
-// ---------------------------------------------------------------------------
-// Teardown Configuration (PRD Section 15.6 + Section 15.11)
-// ---------------------------------------------------------------------------
-
-export interface TeardownConfig {
-	/** Maximum number of retry attempts for instance deletion. @default 3 */
-	readonly maxRetries: number;
-	/** Base delay in milliseconds for exponential backoff. @default 1000 */
-	readonly baseDelayMs: number;
-	/** Maximum delay in milliseconds between retries. @default 15_000 */
-	readonly maxDelayMs: number;
-	/** Custom delay function for dependency injection / testing. */
-	readonly delay?: (ms: number) => Promise<void>;
-}
-
-export const DEFAULT_TEARDOWN_CONFIG: Readonly<TeardownConfig> = {
-	maxRetries: 3,
-	baseDelayMs: 1_000,
-	maxDelayMs: 15_000,
-};
 
 // ---------------------------------------------------------------------------
 // Orchestrator Configuration
@@ -170,8 +103,7 @@ export const DEFAULT_TEARDOWN_CONFIG: Readonly<TeardownConfig> = {
 
 export interface OrchestratorConfig {
 	readonly tickIntervalMs: number;
-	readonly pollerConfig: ReadinessPollerConfig;
-	readonly teardownConfig: TeardownConfig;
+	readonly pollingConfig: ExecutionPollingConfig;
 	readonly projectId?: string;
 	readonly orgId?: string;
 	readonly userId?: string;
@@ -182,8 +114,7 @@ export interface OrchestratorConfig {
 
 export const DEFAULT_ORCHESTRATOR_CONFIG: Readonly<OrchestratorConfig> = {
 	tickIntervalMs: 5_000,
-	pollerConfig: DEFAULT_READINESS_POLLER_CONFIG,
-	teardownConfig: DEFAULT_TEARDOWN_CONFIG,
+	pollingConfig: DEFAULT_EXECUTION_POLLING_CONFIG,
 };
 
 // ---------------------------------------------------------------------------
@@ -193,12 +124,12 @@ export const DEFAULT_ORCHESTRATOR_CONFIG: Readonly<OrchestratorConfig> = {
 interface TaskContext {
 	readonly taskId: string;
 	executionId: string;
-	instanceId?: string;
-	hostname?: string;
+	/** Cloud-platform execution ID (returned by POST /api/v1/executions). */
+	cloudExecutionId?: string;
 	cancelRequested: boolean;
 	abortController: AbortController;
-	/** Tracks whether /run has been invoked to prevent duplicate invocations. */
-	runInvoked?: boolean;
+	/** Tracks whether execution has been created on cloud-platform. */
+	executionCreated?: boolean;
 	/** @phase Phase2 — SSE log stream client for this task (when running). */
 	logStreamClient?: CloudExecutionLogStreamClient;
 }
@@ -387,8 +318,7 @@ export interface TaskStepResult {
  */
 export class CloudExecutionOrchestrator {
 	private readonly store: CloudExecutionStoreInterface;
-	private readonly client: CloudInstanceFullClient;
-	private readonly runInvoker: CloudRunInvoker;
+	private readonly executionClient: CloudPlatformExecutionClient;
 	private readonly config: OrchestratorConfig;
 	private readonly logger: OrchestratorLogger;
 	private readonly concurrencyLimiter: ConcurrencyLimiterExtension | null;
@@ -404,8 +334,7 @@ export class CloudExecutionOrchestrator {
 
 	constructor(
 		store: CloudExecutionStoreInterface,
-		client: CloudInstanceFullClient,
-		runInvoker: CloudRunInvoker,
+		executionClient: CloudPlatformExecutionClient,
 		config: OrchestratorConfig = DEFAULT_ORCHESTRATOR_CONFIG,
 		logger: OrchestratorLogger = noopLogger,
 		concurrencyLimiter?: ConcurrencyLimiterExtension | null,
@@ -414,8 +343,7 @@ export class CloudExecutionOrchestrator {
 		logStreamFactory?: LogStreamClientFactory | null,
 	) {
 		this.store = store;
-		this.client = client;
-		this.runInvoker = runInvoker;
+		this.executionClient = executionClient;
 		this.config = config;
 		this.logger = logger;
 		this.concurrencyLimiter = concurrencyLimiter ?? null;
@@ -533,7 +461,10 @@ export class CloudExecutionOrchestrator {
 			case "policy_check":
 				return this.handlePolicyCheck(taskId);
 			case "provisioning":
-				return this.handleProvisioning(taskId);
+				// KB-AUTH-3: provisioning is now handled by cloud-platform.
+				// If we see this state (e.g. from a persisted event), transition
+				// directly to running by creating the execution on cloud-platform.
+				return this.handleCreateExecution(taskId);
 			case "running":
 				return this.handleRunning(taskId);
 			case "completed":
@@ -659,101 +590,95 @@ export class CloudExecutionOrchestrator {
 		}
 	}
 
-	// -- provisioning -> running ---------------------------------------------
+	// -- provisioning -> running (create execution on cloud-platform) --------
+	// KB-AUTH-3: Kanban no longer provisions instances directly.
+	// Instead, we create an execution on cloud-platform which handles
+	// provisioning, runner setup, and /run invocation internally.
 
-	private async handleProvisioning(taskId: string): Promise<TaskStepResult> {
+	private async handleCreateExecution(taskId: string): Promise<TaskStepResult> {
 		const ctx = this.getOrCreateCtx(taskId);
-		if (ctx.cancelRequested) return this.cancelProvision(taskId);
+		if (ctx.cancelRequested) {
+			this.cleanupCtx(taskId);
+			this.pendingCancellations.delete(taskId);
+			return this.applyTransition(taskId, "provisioning", "user_cancel", "user", {
+				cancelledDuringProvisioning: true,
+			});
+		}
 
 		try {
-			if (!ctx.instanceId) {
-				const execs = await this.store.readExecutionsForTask(taskId);
-				const latest = execs[execs.length - 1];
-				const meta = latest?.remoteMetadata;
+			const execs = await this.store.readExecutionsForTask(taskId);
+			const latest = execs[execs.length - 1];
+			const meta = latest?.remoteMetadata;
 
-				// Fallback: read repoUrl/baseRef from the submit event when no execution record exists
-				let eventRepoUrl = "";
-				let eventBaseRef = "main";
-				if (!meta?.repoUrl) {
-					const events = await this.store.readEventsForTask(taskId);
-					for (let i = events.length - 1; i >= 0; i--) {
-						const evt = events[i];
-						if (evt?.trigger === "submit" && evt.metadata) {
-							eventRepoUrl = (evt.metadata.repoUrl as string) ?? "";
-							eventBaseRef = (evt.metadata.baseRef as string) ?? "main";
-							break;
-						}
+			// Fallback: read repoUrl/baseRef from the submit event
+			let eventRepoUrl = "";
+			let eventBaseRef = "main";
+			if (!meta?.repoUrl) {
+				const events = await this.store.readEventsForTask(taskId);
+				for (let i = events.length - 1; i >= 0; i--) {
+					const evt = events[i];
+					if (evt?.trigger === "submit" && evt.metadata) {
+						eventRepoUrl = (evt.metadata.repoUrl as string) ?? "";
+						eventBaseRef = (evt.metadata.baseRef as string) ?? "main";
+						break;
 					}
 				}
+			}
 
-				const req: CreateInstanceRequest = {
-					taskId,
-					repoUrl: meta?.repoUrl ?? eventRepoUrl,
-					baseBranch: meta?.baseBranch ?? eventBaseRef,
-					featureBranch: meta?.featureBranch,
-					attemptNumber: latest?.attemptNumber,
-					worktreeIntent: latest?.worktreeIntent ?? meta?.worktreePath,
-					startingCommitSha: meta?.startingCommitSha ?? latest?.startingCommitSha,
-				};
+			const attemptNumber = latest?.attemptNumber ?? 1;
+			const worktreeIntent = latest?.worktreeIntent ?? meta?.worktreePath ?? `${taskId}/attempt-${attemptNumber}`;
 
-				const inst = await this.client.createInstance(req, ctx.abortController.signal);
-				ctx.instanceId = inst.instance_id;
-				ctx.hostname = inst.hostname;
+			const request = buildExecutionCreateRequest({
+				taskId,
+				attemptNumber,
+				orgId: this.config.orgId ?? "",
+				projectId: this.config.projectId ?? "default",
+				userId: this.config.userId ?? "",
+				repoUrl: meta?.repoUrl ?? eventRepoUrl,
+				baseBranch: meta?.baseBranch ?? eventBaseRef,
+				featureBranchIntent: meta?.featureBranch ?? "",
+				worktreeIntent,
+			});
 
-				if (latest) {
-					await this.store.updateExecution(latest.executionId, {
-						instanceId: inst.instance_id,
-						remoteMetadata: {
-							...(meta ?? {
-								instanceId: inst.instance_id,
-								repoUrl: req.repoUrl,
-								baseBranch: req.baseBranch,
-							}),
-							instanceId: inst.instance_id,
-							instanceHostname: inst.hostname,
-							instanceStatus: inst.state,
-						},
-					});
-				}
-				this.logger.info("Instance created", {
-					taskId,
-					instanceId: inst.instance_id,
+			const createResponse = await this.executionClient.createExecution(request, ctx.abortController.signal);
+			ctx.cloudExecutionId = createResponse.executionId;
+			ctx.executionCreated = true;
+
+			if (latest) {
+				await this.store.updateExecution(latest.executionId, {
+					instanceId: createResponse.executionId,
+					startedAt: new Date().toISOString(),
+					remoteMetadata: {
+						...(meta ?? {
+							instanceId: createResponse.executionId,
+							repoUrl: request.repoUrl,
+							baseBranch: request.baseBranch,
+						}),
+						instanceId: createResponse.executionId,
+					},
 				});
 			}
 
-			if (ctx.cancelRequested) return this.cancelProvision(taskId);
+			this.logger.info("Execution created on cloud-platform", {
+				taskId,
+				cloudExecutionId: createResponse.executionId,
+				status: createResponse.status,
+			});
 
-			// Cast is safe: pollForReadiness only uses getInstance(), which
-			// CloudInstanceFullClient provides with a compatible signature.
-			const poll = await pollForReadiness(
-				this.client as unknown as Parameters<typeof pollForReadiness>[0],
-				ctx.instanceId,
-				this.config.pollerConfig,
-				ctx.abortController.signal,
-			);
-
-			if (ctx.cancelRequested) return this.cancelProvision(taskId);
-
-			if (poll.status === "ready") {
-				ctx.hostname = poll.hostname;
-				this.logger.info("Instance ready", {
-					taskId,
-					instanceId: ctx.instanceId,
-				});
-				return this.applyTransition(taskId, "provisioning", "sandbox_ready", "system", {
-					instanceId: ctx.instanceId,
-					hostname: ctx.hostname,
-				});
-			}
-
-			this.cleanupCtx(taskId);
-			return this.applyTransition(taskId, "provisioning", "provision_timeout", "system", { reason: poll.reason });
+			return this.applyTransition(taskId, "provisioning", "sandbox_ready", "system", {
+				cloudExecutionId: createResponse.executionId,
+			});
 		} catch (e) {
-			if (ctx.cancelRequested) return this.cancelProvision(taskId);
-			this.logger.error("Provisioning failed", {
+			if (ctx.cancelRequested) {
+				this.cleanupCtx(taskId);
+				this.pendingCancellations.delete(taskId);
+				return this.applyTransition(taskId, "provisioning", "user_cancel", "user", {
+					cancelledDuringProvisioning: true,
+				});
+			}
+			this.logger.error("Execution creation failed", {
 				taskId,
 				error: e instanceof Error ? e.message : String(e),
-				stack: e instanceof Error ? e.stack : undefined,
 			});
 			this.cleanupCtx(taskId);
 			return this.applyTransition(taskId, "provisioning", "provision_timeout", "system", {
@@ -762,169 +687,92 @@ export class CloudExecutionOrchestrator {
 		}
 	}
 
-	private cancelProvision(taskId: string): Promise<TaskStepResult> {
-		this.cleanupCtx(taskId);
-		this.pendingCancellations.delete(taskId);
-		return this.applyTransition(taskId, "provisioning", "user_cancel", "user", {
-			cancelledDuringProvisioning: true,
-		});
-	}
-
-	// -- running -> wait for terminal callback (invoke /run first) -----------
+	// -- running -> poll cloud-platform for terminal state -------------------
+	// KB-AUTH-3: Instead of invoking /run on the runner and waiting for
+	// callbacks, we poll cloud-platform's GET /api/v1/executions/{id} endpoint.
 
 	private async handleRunning(taskId: string): Promise<TaskStepResult | null> {
 		const ctx = this.getOrCreateCtx(taskId);
-		const execs = await this.store.readExecutionsForTask(taskId);
-		const latest = execs[execs.length - 1];
-
-		// If /run already invoked, poll the sandbox for completion
-		if (latest?.startedAt || ctx.runInvoked) {
-			return this.pollRunStatus(taskId, ctx);
-		}
 
 		if (ctx.cancelRequested) {
+			// Cancel the execution on cloud-platform
+			if (ctx.cloudExecutionId) {
+				try {
+					await this.executionClient.cancelExecution(ctx.cloudExecutionId, ctx.abortController.signal);
+				} catch (e) {
+					this.logger.warn("Cancel execution failed (best-effort)", {
+						taskId,
+						error: e instanceof Error ? e.message : String(e),
+					});
+				}
+			}
 			return this.applyTransition(taskId, "running", "user_cancel", "user");
 		}
 
+		// Resolve cloudExecutionId from persisted execution metadata if not in context
+		if (!ctx.cloudExecutionId) {
+			const execs = await this.store.readExecutionsForTask(taskId);
+			const latest = execs[execs.length - 1];
+			ctx.cloudExecutionId = latest?.instanceId ?? latest?.remoteMetadata?.instanceId;
+		}
+
+		if (!ctx.cloudExecutionId) {
+			this.logger.error("No cloud execution ID found for running task", { taskId });
+			this.cleanupCtx(taskId);
+			return this.applyTransition(taskId, "running", "execution_error", "system", {
+				error: "No cloud execution ID — cannot poll status",
+			});
+		}
+
 		try {
-			const prompt = await this.runInvoker.composePrompt(taskId);
-			if (ctx.cancelRequested) {
-				return this.applyTransition(taskId, "running", "user_cancel", "user");
-			}
-
-			const hostname = ctx.hostname ?? latest?.remoteMetadata?.instanceHostname;
-			const instanceId = ctx.instanceId ?? latest?.remoteMetadata?.instanceId ?? latest?.instanceId;
-
-			if (!hostname || !instanceId) {
-				this.cleanupCtx(taskId);
-				return this.applyTransition(taskId, "running", "execution_error", "system", {
-					error: "Missing hostname or instanceId",
-				});
-			}
-
-			const meta = latest?.remoteMetadata;
-			const reservationId = await this.findReservationId(taskId);
-
-			const resp = await this.runInvoker.invokeRun(
-				{
-					taskId,
-					executionId: latest?.executionId ?? ctx.executionId,
-					instanceId,
-					hostname,
-					prompt,
-					branchName: meta?.featureBranch,
-					baseBranch: meta?.baseBranch,
-					startingCommitSha: meta?.startingCommitSha ?? latest?.startingCommitSha,
-					worktreeIntent: latest?.worktreeIntent ?? meta?.worktreePath,
-					attemptNumber: latest?.attemptNumber,
-					reservationId,
-				},
+			const statusResponse = await this.executionClient.getExecutionStatus(
+				ctx.cloudExecutionId,
 				ctx.abortController.signal,
 			);
 
-			if (!resp.accepted) {
-				this.cleanupCtx(taskId);
-				return this.applyTransition(taskId, "running", "execution_error", "system", { error: "/run rejected" });
+			this.logger.info("Execution status polled", {
+				taskId,
+				cloudExecutionId: ctx.cloudExecutionId,
+				status: statusResponse.status,
+			});
+
+			if (!isTerminalExecutionStatus(statusResponse.status)) {
+				return null; // Still running — no state change
 			}
 
-			ctx.runInvoked = true;
-			if (latest) {
-				await this.store.updateExecution(latest.executionId, {
-					startedAt: new Date().toISOString(),
+			// Map cloud-platform terminal status to lifecycle triggers
+			if (statusResponse.status === "succeeded") {
+				const result = statusResponse.result;
+				return this.applyTransition(taskId, "running", "task_complete", "system", {
+					cloudExecutionId: ctx.cloudExecutionId,
+					resultStatus: "success",
+					summary: result?.summary,
+					exitCode: result?.exitCode,
 				});
 			}
-			this.logger.info("/run accepted", { taskId, instanceId });
 
-			// Phase 2: Start SSE log stream for real-time log consumption
-			this.startLogStream(ctx, taskId, instanceId, hostname, latest?.executionId ?? ctx.executionId);
+			if (statusResponse.status === "canceled") {
+				return this.applyTransition(taskId, "running", "user_cancel", "system", {
+					cloudExecutionId: ctx.cloudExecutionId,
+					cancelledByPlatform: true,
+				});
+			}
 
-			return null;
+			// failed
+			const error = statusResponse.error;
+			return this.applyTransition(taskId, "running", "execution_error", "system", {
+				cloudExecutionId: ctx.cloudExecutionId,
+				errorCode: error?.code,
+				error: error?.message ?? "Execution failed",
+			});
 		} catch (e) {
 			if (ctx.cancelRequested) {
 				return this.applyTransition(taskId, "running", "user_cancel", "user");
 			}
-			this.cleanupCtx(taskId);
-			return this.applyTransition(taskId, "running", "execution_error", "system", {
-				error: e instanceof Error ? e.message : String(e),
-			});
-		}
-	}
-
-	// -- running: poll sandbox /run/status for completion --------------------
-
-	/**
-	 * Poll the sandbox's GET /run/status endpoint to detect task completion.
-	 * Called on each tick when /run has been invoked and we're waiting for results.
-	 *
-	 * Returns null if the task is still running (no state change).
-	 * Returns a TaskStepResult if the task completed or failed.
-	 */
-	private async pollRunStatus(taskId: string, ctx: TaskContext): Promise<TaskStepResult | null> {
-		const hostname = ctx.hostname;
-		if (!hostname) return null;
-
-		try {
-			const url = `https://${hostname}/run/status`;
-			const headers: Record<string, string> = {};
-			// Reuse the API key for auth if available
-			const apiKey = (this.config as Record<string, unknown>).apiKey as string | undefined;
-			if (apiKey) {
-				headers.Authorization = `Bearer ${apiKey}`;
-			}
-
-			const response = await fetch(url, {
-				method: "GET",
-				headers,
-				signal: AbortSignal.timeout(10_000),
-			});
-
-			if (!response.ok) {
-				this.logger.warn("Poll /run/status failed", { taskId, status: response.status });
-				return null;
-			}
-
-			const body = await response.json() as {
-				state: "idle" | "running" | "completed";
-				result?: {
-					status: string;
-					pr_url?: string;
-					task_output?: string;
-					error?: string;
-				};
-			};
-
-			if (body.state === "running") {
-				return null;
-			}
-
-			if (body.state === "completed" && body.result) {
-				const isSuccess = body.result.status === "success";
-				this.logger.info("Task completed (polled)", {
-					taskId,
-					status: body.result.status,
-					prUrl: body.result.pr_url,
-				});
-
-				if (isSuccess) {
-					return this.applyTransition(taskId, "running", "task_complete", "system", {
-						resultStatus: body.result.status,
-						prUrl: body.result.pr_url,
-						taskOutput: body.result.task_output?.slice(0, 500),
-					});
-				}
-
-				return this.applyTransition(taskId, "running", "execution_error", "system", {
-					resultStatus: body.result.status,
-					error: body.result.error,
-					taskOutput: body.result.task_output?.slice(0, 500),
-				});
-			}
-
-			return null;
-		} catch (e) {
-			// Network errors during polling are expected (sandbox might be shutting down)
-			this.logger.warn("Poll /run/status error (will retry)", {
+			// Transient polling errors — will retry on next tick
+			this.logger.warn("Execution status poll error (will retry)", {
 				taskId,
+				cloudExecutionId: ctx.cloudExecutionId,
 				error: e instanceof Error ? e.message : String(e),
 			});
 			return null;
@@ -976,132 +824,16 @@ export class CloudExecutionOrchestrator {
 	}
 
 	// -- teardown -> archived (A4) -------------------------------------------
+	// KB-AUTH-3: Cloud-platform handles instance lifecycle and cleanup.
+	// Kanban teardown is now lightweight — just transition to archived.
 
-	/**
-	 * Handle teardown state:
-	 * - Look up the instance ID from execution metadata
-	 * - If debug-preserve is enabled on a failed task, skip deletion
-	 * - Otherwise, delete the cloud instance with retry/backoff
-	 * - Transition to archived via sandbox_terminated
-	 *
-	 * PRD Section 15.11: Failure preservation rule — when debug-preserve is
-	 * enabled, teardown intentionally skips instance deletion so the sandbox
-	 * remains available for inspection.
-	 */
 	private async handleTeardown(taskId: string): Promise<TaskStepResult> {
-		const execs = await this.store.readExecutionsForTask(taskId);
-		const latest = execs[execs.length - 1];
-		const instanceId = latest?.instanceId ?? latest?.remoteMetadata?.instanceId;
-		const debugPreserve = latest?.remoteMetadata?.debugPreserve === true;
-		const terminalState = latest?.terminalState;
-
-		// Check debug-preserve mode: only applies to failed tasks
-		if (debugPreserve && terminalState === "failed") {
-			this.logger.info("Debug-preserve enabled, skipping instance deletion", {
-				taskId,
-				instanceId,
-			});
-
-			// Record that teardown was intentionally skipped
-			return this.applyTransition(taskId, "teardown", "sandbox_terminated", "system", {
-				teardownSkipped: true,
-				debugPreserve: true,
-				reason: "Debug-preserve mode: sandbox preserved for inspection",
-				instanceId,
-			});
-		}
-
-		// Delete the cloud instance
-		if (instanceId) {
-			try {
-				await this.deleteInstanceWithRetry(instanceId, taskId);
-				this.logger.info("Instance deleted during teardown", { taskId, instanceId });
-			} catch (e) {
-				// Even if all retries fail, we still transition to archived
-				// to avoid leaving the task stuck in teardown forever.
-				// Cloud-platform has TTL auto-cleanup as a safety net.
-				this.logger.error("Teardown deletion failed after retries, proceeding to archived", {
-					taskId,
-					instanceId,
-					error: e instanceof Error ? e.message : String(e),
-				});
-			}
-		} else {
-			this.logger.warn("No instance ID found during teardown, proceeding to archived", { taskId });
-		}
-
+		this.logger.info("Teardown: transitioning to archived (cloud-platform handles cleanup)", { taskId });
 		this.cleanupCtx(taskId);
 		return this.applyTransition(taskId, "teardown", "sandbox_terminated", "system", {
-			instanceId,
-			instanceDeleted: !!instanceId,
+			cloudPlatformManagedCleanup: true,
 		});
 	}
-
-	/**
-	 * Delete a cloud instance with retry and exponential backoff.
-	 *
-	 * Handles special cases:
-	 * - If instance is already terminated (404/410), treat as success
-	 * - If cloud-platform is unreachable, retry with backoff
-	 * - After maxRetries, throw to let the caller handle gracefully
-	 */
-	private async deleteInstanceWithRetry(instanceId: string, taskId: string): Promise<void> {
-		const { maxRetries, baseDelayMs, maxDelayMs } = this.config.teardownConfig;
-		const delayFn = this.config.teardownConfig.delay ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-
-		let lastError: Error | null = null;
-
-		for (let attempt = 0; attempt <= maxRetries; attempt++) {
-			try {
-				await this.client.deleteInstance(instanceId);
-				return; // Success
-			} catch (e) {
-				lastError = e instanceof Error ? e : new Error(String(e));
-
-				// If instance is already terminated, treat as success.
-				// Cloud-platform returns 404 or 410 for terminated instances.
-				if (this.isAlreadyTerminatedError(lastError)) {
-					this.logger.info("Instance already terminated, treating as successful teardown", {
-						taskId,
-						instanceId,
-						attempt,
-					});
-					return;
-				}
-
-				if (attempt < maxRetries) {
-					const delay = Math.min(baseDelayMs * 2 ** attempt, maxDelayMs);
-					this.logger.warn("Teardown delete failed, retrying", {
-						taskId,
-						instanceId,
-						attempt: attempt + 1,
-						maxRetries,
-						nextRetryMs: delay,
-						error: lastError.message,
-					});
-					await delayFn(delay);
-				}
-			}
-		}
-
-		throw lastError ?? new Error("Teardown delete failed after retries");
-	}
-
-	/**
-	 * Determines if an error indicates the instance is already terminated.
-	 * Cloud-platform returns 404 or 410 for non-existent/terminated instances.
-	 */
-	private isAlreadyTerminatedError(error: Error): boolean {
-		// Check for CloudInstanceClientError with 404 or 410 status codes
-		const errWithStatus = error as Error & { statusCode?: number };
-		if (errWithStatus.statusCode === 404 || errWithStatus.statusCode === 410) {
-			return true;
-		}
-		// Heuristic: check message for common indicators
-		const msg = error.message.toLowerCase();
-		return msg.includes("not found") || msg.includes("already terminated") || msg.includes("gone");
-	}
-
 	// -- cancellation --------------------------------------------------------
 
 	/**
@@ -1123,18 +855,19 @@ export class CloudExecutionOrchestrator {
 			return null;
 		}
 
-		// Delete instance if one exists (fire-and-forget best-effort)
+		// Cancel execution on cloud-platform (fire-and-forget best-effort)
+		const ctx = this.activeTasks.get(taskId);
 		const execs = await this.store.readExecutionsForTask(taskId);
 		const latest = execs[execs.length - 1];
-		const instanceId = latest?.instanceId ?? latest?.remoteMetadata?.instanceId;
-		if (instanceId) {
+		const cloudExecutionId = ctx?.cloudExecutionId ?? latest?.instanceId ?? latest?.remoteMetadata?.instanceId;
+		if (cloudExecutionId) {
 			try {
-				await this.client.deleteInstance(instanceId);
-				this.logger.info("Instance deleted on cancel", { taskId, instanceId });
+				await this.executionClient.cancelExecution(cloudExecutionId);
+				this.logger.info("Execution cancelled on cloud-platform", { taskId, cloudExecutionId });
 			} catch (e) {
-				this.logger.warn("Instance deletion failed on cancel (best-effort)", {
+				this.logger.warn("Execution cancellation failed (best-effort)", {
 					taskId,
-					instanceId,
+					cloudExecutionId,
 					error: e instanceof Error ? e.message : String(e),
 				});
 			}
