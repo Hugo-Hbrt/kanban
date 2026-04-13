@@ -250,11 +250,12 @@ export function bootstrapCloudExecution(
 		: null;
 
 	// Orchestrator config
-	const config: OrchestratorConfig = {
+	const config: OrchestratorConfig & { apiKey?: string } = {
 		...DEFAULT_ORCHESTRATOR_CONFIG,
 		orgId: env[ENV.ORG_ID],
 		userId: env[ENV.USER_ID],
 		projectId: env[ENV.PROJECT_ID],
+		apiKey,
 		...overrides?.orchestratorConfig,
 	};
 

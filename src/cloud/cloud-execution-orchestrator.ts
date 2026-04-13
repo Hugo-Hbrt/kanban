@@ -777,8 +777,10 @@ export class CloudExecutionOrchestrator {
 		const execs = await this.store.readExecutionsForTask(taskId);
 		const latest = execs[execs.length - 1];
 
-		// Idempotency: if /run already invoked, wait for callback
-		if (latest?.startedAt || ctx.runInvoked) return null;
+		// If /run already invoked, poll the sandbox for completion
+		if (latest?.startedAt || ctx.runInvoked) {
+			return this.pollRunStatus(taskId, ctx);
+		}
 
 		if (ctx.cancelRequested) {
 			return this.applyTransition(taskId, "running", "user_cancel", "user");
@@ -845,6 +847,87 @@ export class CloudExecutionOrchestrator {
 			return this.applyTransition(taskId, "running", "execution_error", "system", {
 				error: e instanceof Error ? e.message : String(e),
 			});
+		}
+	}
+
+	// -- running: poll sandbox /run/status for completion --------------------
+
+	/**
+	 * Poll the sandbox's GET /run/status endpoint to detect task completion.
+	 * Called on each tick when /run has been invoked and we're waiting for results.
+	 *
+	 * Returns null if the task is still running (no state change).
+	 * Returns a TaskStepResult if the task completed or failed.
+	 */
+	private async pollRunStatus(taskId: string, ctx: TaskContext): Promise<TaskStepResult | null> {
+		const hostname = ctx.hostname;
+		if (!hostname) return null;
+
+		try {
+			const url = `https://${hostname}/run/status`;
+			const headers: Record<string, string> = {};
+			// Reuse the API key for auth if available
+			const apiKey = (this.config as Record<string, unknown>).apiKey as string | undefined;
+			if (apiKey) {
+				headers.Authorization = `Bearer ${apiKey}`;
+			}
+
+			const response = await fetch(url, {
+				method: "GET",
+				headers,
+				signal: AbortSignal.timeout(10_000),
+			});
+
+			if (!response.ok) {
+				this.logger.warn("Poll /run/status failed", { taskId, status: response.status });
+				return null;
+			}
+
+			const body = await response.json() as {
+				state: "idle" | "running" | "completed";
+				result?: {
+					status: string;
+					pr_url?: string;
+					task_output?: string;
+					error?: string;
+				};
+			};
+
+			if (body.state === "running") {
+				return null;
+			}
+
+			if (body.state === "completed" && body.result) {
+				const isSuccess = body.result.status === "success";
+				this.logger.info("Task completed (polled)", {
+					taskId,
+					status: body.result.status,
+					prUrl: body.result.pr_url,
+				});
+
+				if (isSuccess) {
+					return this.applyTransition(taskId, "running", "task_complete", "system", {
+						resultStatus: body.result.status,
+						prUrl: body.result.pr_url,
+						taskOutput: body.result.task_output?.slice(0, 500),
+					});
+				}
+
+				return this.applyTransition(taskId, "running", "execution_error", "system", {
+					resultStatus: body.result.status,
+					error: body.result.error,
+					taskOutput: body.result.task_output?.slice(0, 500),
+				});
+			}
+
+			return null;
+		} catch (e) {
+			// Network errors during polling are expected (sandbox might be shutting down)
+			this.logger.warn("Poll /run/status error (will retry)", {
+				taskId,
+				error: e instanceof Error ? e.message : String(e),
+			});
+			return null;
 		}
 	}
 
