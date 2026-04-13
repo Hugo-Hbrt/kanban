@@ -196,7 +196,11 @@ export function createAuthMiddleware(deps: AuthMiddlewareDependencies): AuthMidd
 			return true;
 		}
 
-		const token = extractBearerToken(req);
+		// Primary: Bearer token from Authorization header.
+		// Fallback: kanban-auth session cookie — allows browser tabs opened
+		// by the CLI to authenticate against a desktop-owned runtime using
+		// the cookie set during the initial ?auth= handshake.
+		const token = extractBearerToken(req) ?? extractTokenFromCookie(req);
 		if (!token || !constantTimeEqual(token, authToken)) {
 			res.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });
 			res.end('{"error":"Unauthorized"}');
