@@ -147,6 +147,35 @@ export class ConnectionManager {
 	}
 
 	/**
+	 * Initialize with an external runtime that was already running
+	 * (e.g. a CLI runtime discovered via runtime descriptor).
+	 *
+	 * Skips starting the local child entirely — the renderer points at
+	 * the external runtime's URL using its auth token. If the external
+	 * runtime later dies, the caller should call `fallbackToOwnRuntime()`
+	 * to start a local child and reconnect.
+	 */
+	async initializeWithExternalRuntime(url: string, authToken: string): Promise<void> {
+		this.localUrl = url;
+		this.localAuthToken = authToken;
+		// Do NOT start a child — we're attaching to an external runtime.
+		this.childRunning = false;
+		await this.installAuthInterceptor(url, authToken);
+		await this.onLoadUrl(url);
+	}
+
+	/**
+	 * Fallback: start our own local runtime child and reconnect all
+	 * windows to it. Called when an external runtime we were attached
+	 * to has died.
+	 */
+	async fallbackToOwnRuntime(): Promise<void> {
+		await this.ensureLocalChildRunning();
+		if (!this.childRunning) return;
+		await this.loadLocal();
+	}
+
+	/**
 	 * Initialize — always start the local child, then restore the
 	 * persisted active connection.
 	 *
