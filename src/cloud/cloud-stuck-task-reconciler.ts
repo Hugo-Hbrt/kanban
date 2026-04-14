@@ -14,8 +14,8 @@ import {
 	validateCloudExecutionTransition,
 } from "./cloud-execution-lifecycle";
 import type { EventTriggerSource, PersistedTaskEvent, PersistedTaskExecution } from "./cloud-execution-persistence";
-import type { CloudInstanceStatusResponse } from "./cloud-instance-client";
-import { isInstanceFailed } from "./cloud-instance-state-mapping";
+import type { CloudPlatformExecutionClient } from "./cloud-platform-execution-client";
+import { isTerminalExecutionStatus } from "./cloud-platform-execution-client";
 
 // ---------------------------------------------------------------------------
 // Reconciler Store Interface
@@ -43,9 +43,15 @@ export interface ReconcilerStoreInterface {
 // Reconciler Cloud Client Interface
 // ---------------------------------------------------------------------------
 
+/**
+ * Cloud client interface for the reconciler.
+ * KB-AUTH-4: Now uses cloud-platform execution status instead of direct instance queries.
+ * The `executionId` parameter maps to the cloud-platform execution ID stored
+ * in the task's remoteMetadata.instanceId field.
+ */
 export interface ReconcilerCloudClient {
-	getInstance(instanceId: string, signal?: AbortSignal): Promise<CloudInstanceStatusResponse>;
-	deleteInstance(instanceId: string, signal?: AbortSignal): Promise<void>;
+	getExecutionStatus(executionId: string, signal?: AbortSignal): Promise<{ status: string }>;
+	cancelExecution(executionId: string, signal?: AbortSignal): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -262,27 +268,27 @@ export class StuckTaskReconciler {
 			if (state === "running" || state === "completing") {
 				if (!instId) {
 					const trigger: CloudExecutionTrigger = state === "running" ? "execution_error" : "finalize_error";
-					const a = await this.failTask(taskId, state, trigger, "No instance ID during restart recovery");
+					const a = await this.failTask(taskId, state, trigger, "No execution ID during restart recovery");
 					if (a) actions.push(a);
 					continue;
 				}
 				try {
-					const inst = await this.client.getInstance(instId);
-					if (isInstanceFailed(inst.state) || inst.state === "terminated" || inst.state === "stopping") {
+					const statusResp = await this.client.getExecutionStatus(instId);
+					if (isTerminalExecutionStatus(statusResp.status) && statusResp.status !== "succeeded") {
 						const trigger: CloudExecutionTrigger = state === "running" ? "execution_error" : "finalize_error";
 						const a = await this.failTask(
 							taskId,
 							state,
 							trigger,
-							`Instance ${instId} is ${inst.state} during restart recovery`,
+							`Execution ${instId} is ${statusResp.status} during restart recovery`,
 						);
 						if (a) actions.push(a);
-					} else {
+					} else if (!isTerminalExecutionStatus(statusResp.status)) {
 						this.registerTask(taskId, exec?.executionId ?? "", instId);
 						actions.push({
 							taskId,
 							action: "resumed_monitoring",
-							reason: `Instance ${instId} still active (${inst.state})`,
+							reason: `Execution ${instId} still active (${statusResp.status})`,
 							instanceId: instId,
 							previousState: state,
 						});
@@ -293,7 +299,7 @@ export class StuckTaskReconciler {
 						taskId,
 						state,
 						trigger,
-						`Instance ${instId} unreachable during restart recovery`,
+						`Execution ${instId} unreachable during restart recovery`,
 					);
 					if (a) actions.push(a);
 				}
@@ -448,25 +454,25 @@ export class StuckTaskReconciler {
 			return actions;
 		}
 		try {
-			const inst = await this.client.getInstance(instanceId);
+			const statusResp = await this.client.getExecutionStatus(instanceId);
 			currentLease.reconnectAttempts += 1;
-			if (inst.state === "executing" || inst.state === "ready") {
+			if (!isTerminalExecutionStatus(statusResp.status)) {
 				currentLease.expiresAt = now + this.config.staleThresholdMs;
 				currentLease.markedStale = false;
 				currentLease.reconnectAttempts = 0;
 				actions.push({
 					taskId,
 					action: "lease_extended",
-					reason: `Instance ${instanceId} still active (${inst.state})`,
+					reason: `Execution ${instanceId} still active (${statusResp.status})`,
 					instanceId,
 					previousState: "running",
 				});
-			} else if (isInstanceFailed(inst.state) || inst.state === "terminated" || inst.state === "stopping") {
+			} else if (statusResp.status === "failed" || statusResp.status === "canceled") {
 				const a = await this.failTask(
 					taskId,
 					"running",
 					"execution_error",
-					`Instance ${instanceId} is ${inst.state}`,
+					`Execution ${instanceId} is ${statusResp.status}`,
 				);
 				if (a) actions.push({ ...a, action: "failed_timeout" });
 				this.removeLease(taskId);

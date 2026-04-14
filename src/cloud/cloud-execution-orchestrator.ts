@@ -743,7 +743,7 @@ export class CloudExecutionOrchestrator {
 			// Map cloud-platform terminal status to lifecycle triggers
 			if (statusResponse.status === "succeeded") {
 				const result = statusResponse.result;
-				return this.applyTransition(taskId, "running", "task_complete", "system", {
+				return this.applyTransition(taskId, "running", "execution_done", "system", {
 					cloudExecutionId: ctx.cloudExecutionId,
 					resultStatus: "success",
 					summary: result?.summary,

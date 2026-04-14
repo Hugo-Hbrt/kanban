@@ -553,30 +553,15 @@ describe("Orchestrator integration — concurrency gate in handleQueued", () => 
 		store.readExecutionsForTask = async () => [];
 		store.updateExecution = async () => false;
 
-		const client = {
-			createInstance: async () => ({
-				instance_id: "",
-				user_id: "",
-				namespace: "",
-				state: "ready" as const,
-				hostname: "",
-			}),
-			getInstance: async () => ({
-				instance_id: "",
-				user_id: "",
-				namespace: "",
-				state: "ready" as const,
-				hostname: "",
-			}),
-			deleteInstance: async () => {},
-		};
-		const invoker = {
-			composePrompt: async () => "",
-			invokeRun: async () => ({ accepted: true }),
+		const executionClient = {
+			createExecution: async () => ({ executionId: "e1", status: "queued" as const, taskId: "t1", attemptNumber: 1, createdAt: new Date().toISOString() }),
+			getExecutionStatus: async () => ({ executionId: "e1", status: "running" as const, taskId: "t1", attemptNumber: 1, requestedByUserId: "u1", orgId: "o1", projectId: "p1", startedAt: null, finishedAt: null, result: null, error: null }),
+			getExecutionLogs: async () => ({ executionId: "e1", lines: [], nextCursor: null }),
+			cancelExecution: async () => {},
 		};
 		const limiter = new OrgConcurrencyLimiter(store, () => "org-A", { maxConcurrentPerOrg: 2 });
 
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, undefined, undefined, limiter);
+		const orch = new CloudExecutionOrchestrator(store, executionClient, undefined, undefined, limiter);
 		expect(orch).toBeDefined();
 	});
 
@@ -595,30 +580,15 @@ describe("Orchestrator integration — concurrency gate in handleQueued", () => 
 		store.readExecutionsForTask = async () => [];
 		store.updateExecution = async () => false;
 
-		const client = {
-			createInstance: async () => ({
-				instance_id: "inst-1",
-				user_id: "",
-				namespace: "",
-				state: "ready" as const,
-				hostname: "h",
-			}),
-			getInstance: async () => ({
-				instance_id: "inst-1",
-				user_id: "",
-				namespace: "",
-				state: "ready" as const,
-				hostname: "h",
-			}),
-			deleteInstance: async () => {},
-		};
-		const invoker = {
-			composePrompt: async () => "prompt",
-			invokeRun: async () => ({ accepted: true }),
+		const executionClient = {
+			createExecution: async () => ({ executionId: "e1", status: "queued" as const, taskId: "t1", attemptNumber: 1, createdAt: new Date().toISOString() }),
+			getExecutionStatus: async () => ({ executionId: "e1", status: "running" as const, taskId: "t1", attemptNumber: 1, requestedByUserId: "u1", orgId: "o1", projectId: "p1", startedAt: null, finishedAt: null, result: null, error: null }),
+			getExecutionLogs: async () => ({ executionId: "e1", lines: [], nextCursor: null }),
+			cancelExecution: async () => {},
 		};
 
 		// No limiter argument — backward compatible
-		const orch = new CloudExecutionOrchestrator(store, client, invoker);
+		const orch = new CloudExecutionOrchestrator(store, executionClient);
 		seedTaskToState(store, "task-1", "queued");
 
 		const result = await orch.processTask("task-1");

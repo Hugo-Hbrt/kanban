@@ -17,11 +17,11 @@ export const executionCreateRequestSchema = z.object({
 	taskId: z.string().min(1),
 	attemptNumber: z.number().int().positive(),
 	executionMode: z.literal("cloud"),
-	orgId: z.string().min(1),
-	projectId: z.string().min(1),
-	requestedByUserId: z.string().min(1),
-	repoUrl: z.string().min(1),
-	baseBranch: z.string().min(1),
+	orgId: z.string(),
+	projectId: z.string(),
+	requestedByUserId: z.string(),
+	repoUrl: z.string(),
+	baseBranch: z.string(),
 	featureBranchIntent: z.string(),
 	worktreeIntent: z.string(),
 });
@@ -102,13 +102,13 @@ export type ExecutionLogsResponse = z.infer<typeof executionLogsResponseSchema>;
 // ---------------------------------------------------------------------------
 
 export const governanceAuthorizeRequestSchema = z.object({
-	requestedByUserId: z.string().min(1),
-	orgId: z.string().min(1),
-	projectId: z.string().min(1),
+	requestedByUserId: z.string(),
+	orgId: z.string(),
+	projectId: z.string(),
 	taskId: z.string().min(1),
 	executionMode: z.literal("cloud"),
-	repoUrl: z.string().min(1),
-	baseBranch: z.string().min(1),
+	repoUrl: z.string(),
+	baseBranch: z.string(),
 	featureBranchIntent: z.string(),
 	worktreeIntent: z.string(),
 });

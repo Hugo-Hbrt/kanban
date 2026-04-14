@@ -261,9 +261,10 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 				if (!retryable) {
 					let message = `Cloud platform API error: HTTP ${response.status}`;
 					try {
-						const errBody = await response.json();
-						if (errBody?.error?.message) message = errBody.error.message;
-						else if (errBody?.message) message = errBody.message;
+						const errBody = await response.json() as Record<string, unknown>;
+						const errObj = errBody?.error as Record<string, unknown> | undefined;
+						if (errObj?.message) message = String(errObj.message);
+						else if (errBody?.message) message = String(errBody.message);
 					} catch { /* use default message */ }
 					throw new CloudPlatformExecutionError({
 						message,

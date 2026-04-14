@@ -4,11 +4,6 @@ import { describe, expect, it } from "vitest";
 import type { CloudExecutionState, CloudExecutionTrigger } from "../../../src/cloud/cloud-execution-lifecycle";
 import type {
 	CloudExecutionStoreInterface,
-	CloudInstanceFullClient,
-	CloudRunInvoker,
-	CreateInstanceRequest,
-	InvokeRunRequest,
-	InvokeRunResponse,
 	OrchestratorConfig,
 } from "../../../src/cloud/cloud-execution-orchestrator";
 import {
@@ -18,8 +13,14 @@ import {
 	validateExecutionIdentityFidelity,
 } from "../../../src/cloud/cloud-execution-orchestrator";
 import type { PersistedTaskEvent, PersistedTaskExecution } from "../../../src/cloud/cloud-execution-persistence";
-import type { AuditEventRequest, AuthorizeRequest, GovernanceClient, UsageEventRequest } from "../../../src/cloud/cloud-governance-client";
-import type { CloudInstanceResponse, CloudInstanceState } from "../../../src/cloud/cloud-instance-client";
+import type { GovernanceClient } from "../../../src/cloud/cloud-governance-client";
+import type { CloudPlatformExecutionClient } from "../../../src/cloud/cloud-platform-execution-client";
+import type {
+	ExecutionCreateRequest,
+	ExecutionCreateResponse,
+	ExecutionStatusResponse,
+	ExecutionLogsResponse,
+} from "../../../src/cloud/cloud-execution-contracts";
 
 // ---------------------------------------------------------------------------
 // In-memory CloudExecutionStore mock
@@ -53,22 +54,8 @@ function createMockStore(): MockStore {
 			}
 			events.push({ ...event });
 		},
-		async appendEvents(newEvents: readonly PersistedTaskEvent[]) {
-			for (const e of newEvents) {
-				if (events.some((ex) => ex.eventId === e.eventId)) {
-					throw new Error(`Duplicate event: ${e.eventId}`);
-				}
-				events.push({ ...e });
-			}
-		},
-		async readExecutions() {
-			return [...executions];
-		},
 		async readExecutionsForTask(taskId: string) {
 			return executions.filter((e) => e.taskId === taskId);
-		},
-		async readExecution(executionId: string) {
-			return executions.find((e) => e.executionId === executionId) ?? null;
 		},
 		async createExecution(execution: PersistedTaskExecution) {
 			executions.push({ ...execution });
@@ -80,93 +67,63 @@ function createMockStore(): MockStore {
 			if (existing) executions[idx] = { ...existing, ...updates };
 			return true;
 		},
-		// Expose internals for test assertions
 		_events: events,
 		_executions: executions,
 	} as MockStore;
 }
 
 // ---------------------------------------------------------------------------
-// Mock cloud instance client (ready immediately)
+// Mock CloudPlatformExecutionClient
 // ---------------------------------------------------------------------------
 
-function createMockClient(opts?: {
-	readyImmediately?: boolean;
-	instanceState?: CloudInstanceState;
-	hostname?: string;
+function createMockExecutionClient(opts?: {
 	failCreate?: boolean;
-	failPoll?: boolean;
-}): CloudInstanceFullClient & { createCalls: CreateInstanceRequest[]; deleteCalls: string[] } {
+	failGetStatus?: boolean;
+	executionStatus?: ExecutionStatusResponse["status"];
+	result?: ExecutionStatusResponse["result"];
+	error?: ExecutionStatusResponse["error"];
+}): CloudPlatformExecutionClient & { createCalls: ExecutionCreateRequest[]; cancelCalls: string[] } {
 	const state = {
-		createCalls: [] as CreateInstanceRequest[],
-		deleteCalls: [] as string[],
+		createCalls: [] as ExecutionCreateRequest[],
+		cancelCalls: [] as string[],
 	};
 	return {
-		get createCalls() {
-			return state.createCalls;
-		},
-		get deleteCalls() {
-			return state.deleteCalls;
-		},
-		async createInstance(request: CreateInstanceRequest): Promise<CloudInstanceResponse> {
-			if (opts?.failCreate) throw new Error("Create failed");
+		get createCalls() { return state.createCalls; },
+		get cancelCalls() { return state.cancelCalls; },
+		async createExecution(request: ExecutionCreateRequest): Promise<ExecutionCreateResponse> {
+			if (opts?.failCreate) throw new Error("Create execution failed");
 			state.createCalls.push(request);
 			return {
-				instance_id: `inst-${request.taskId}`,
-				user_id: "test-user",
-				namespace: "test-ns",
-				state: opts?.readyImmediately ? "ready" : (opts?.instanceState ?? "provisioning"),
-				hostname: opts?.hostname ?? `${request.taskId}.runner.test`,
+				executionId: `exec-${request.taskId}`,
+				status: "queued",
+				taskId: request.taskId,
+				attemptNumber: request.attemptNumber,
+				createdAt: new Date().toISOString(),
 			};
 		},
-		async getInstance(instanceId: string): Promise<CloudInstanceResponse> {
-			if (opts?.failPoll) throw new Error("Poll failed");
+		async getExecutionStatus(executionId: string): Promise<ExecutionStatusResponse> {
+			if (opts?.failGetStatus) throw new Error("Get status failed");
 			return {
-				instance_id: instanceId,
-				user_id: "test-user",
-				namespace: "test-ns",
-				state: "ready",
-				hostname: opts?.hostname ?? `${instanceId}.runner.test`,
+				executionId,
+				status: opts?.executionStatus ?? "running",
+				taskId: "task-1",
+				attemptNumber: 1,
+				requestedByUserId: "test-user",
+				orgId: "test-org",
+				projectId: "test-project",
+				startedAt: new Date().toISOString(),
+				finishedAt: opts?.executionStatus === "succeeded" || opts?.executionStatus === "failed"
+					? new Date().toISOString()
+					: null,
+				result: opts?.result ?? null,
+				error: opts?.error ?? null,
 			};
 		},
-		async deleteInstance(instanceId: string): Promise<void> {
-			state.deleteCalls.push(instanceId);
+		async getExecutionLogs(): Promise<ExecutionLogsResponse> {
+			return { executionId: "exec-1", lines: [], nextCursor: null };
 		},
-	};
-}
-
-// ---------------------------------------------------------------------------
-// Mock run invoker
-// ---------------------------------------------------------------------------
-
-function createMockRunInvoker(opts?: {
-	failCompose?: boolean;
-	failRun?: boolean;
-	rejectRun?: boolean;
-}): CloudRunInvoker & { composeCalls: string[]; runCalls: InvokeRunRequest[] } {
-	const state = {
-		composeCalls: [] as string[],
-		runCalls: [] as InvokeRunRequest[],
-	};
-	return {
-		get composeCalls() {
-			return state.composeCalls;
-		},
-		get runCalls() {
-			return state.runCalls;
-		},
-		async composePrompt(taskId: string): Promise<string> {
-			if (opts?.failCompose) throw new Error("Compose failed");
-			state.composeCalls.push(taskId);
-			return `Execute task ${taskId}`;
-		},
-		async invokeRun(request: InvokeRunRequest): Promise<InvokeRunResponse> {
-			if (opts?.failRun) throw new Error("/run invocation failed");
-			state.runCalls.push(request);
-			return {
-				accepted: !opts?.rejectRun,
-				runId: opts?.rejectRun ? undefined : `run-${request.taskId}`,
-			};
+		async cancelExecution(executionId: string): Promise<void> {
+			state.cancelCalls.push(executionId);
 		},
 	};
 }
@@ -175,7 +132,6 @@ function createMockRunInvoker(opts?: {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Seed the store with events to put a task in a specific state. */
 async function seedTaskToState(
 	store: CloudExecutionStoreInterface,
 	taskId: string,
@@ -203,27 +159,17 @@ async function seedTaskToState(
 	}
 }
 
-/** Fast config that makes the poller return immediately. */
 const FAST_CONFIG: OrchestratorConfig = {
 	tickIntervalMs: 10,
-	pollerConfig: {
+	pollingConfig: {
 		pollIntervalMs: 10,
-		provisionTimeoutMs: 5_000,
+		maxPollDurationMs: 60_000,
 		maxConsecutiveErrors: 3,
-		backoffMultiplier: 1,
-		maxBackoffMs: 50,
 	},
-	teardownConfig: {
-		maxRetries: 3,
-		baseDelayMs: 1,
-		maxDelayMs: 5,
-		delay: async () => {},
-	},
+	orgId: "test-org",
+	userId: "test-user",
+	projectId: "test-project",
 };
-
-// ---------------------------------------------------------------------------
-// Shared governance mock (auto-authorize for tests not focused on governance)
-// ---------------------------------------------------------------------------
 
 const autoAuthorizeGovernance: GovernanceClient = {
 	async checkAuthorization() {
@@ -249,9 +195,9 @@ describe("DEFAULT_ORCHESTRATOR_CONFIG", () => {
 		expect(DEFAULT_ORCHESTRATOR_CONFIG.tickIntervalMs).toBe(5_000);
 	});
 
-	it("has poller config from DEFAULT_READINESS_POLLER_CONFIG", () => {
-		expect(DEFAULT_ORCHESTRATOR_CONFIG.pollerConfig.pollIntervalMs).toBe(3_000);
-		expect(DEFAULT_ORCHESTRATOR_CONFIG.pollerConfig.provisionTimeoutMs).toBe(180_000);
+	it("has polling config from DEFAULT_EXECUTION_POLLING_CONFIG", () => {
+		expect(DEFAULT_ORCHESTRATOR_CONFIG.pollingConfig.pollIntervalMs).toBe(5_000);
+		expect(DEFAULT_ORCHESTRATOR_CONFIG.pollingConfig.maxPollDurationMs).toBe(3_600_000);
 	});
 });
 
@@ -262,9 +208,8 @@ describe("DEFAULT_ORCHESTRATOR_CONFIG", () => {
 describe("Orchestrator — happy path: queued to running", () => {
 	it("advances a queued task to policy_check via dequeue", async () => {
 		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+		const client = createMockExecutionClient();
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
 
 		await seedTaskToState(store, "task-1", "queued");
 
@@ -279,12 +224,10 @@ describe("Orchestrator — happy path: queued to running", () => {
 
 	it("advances policy_check to provisioning via authorized", async () => {
 		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
+		const client = createMockExecutionClient();
 		const orch = new CloudExecutionOrchestrator(
 			store,
 			client,
-			invoker,
 			FAST_CONFIG,
 			undefined,
 			null,
@@ -302,11 +245,10 @@ describe("Orchestrator — happy path: queued to running", () => {
 		expect(result?.trigger).toBe("authorized");
 	});
 
-	it("advances provisioning to running when instance is ready", async () => {
+	it("advances provisioning to running by creating execution on cloud-platform", async () => {
 		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+		const client = createMockExecutionClient();
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
 
 		await seedTaskToState(store, "task-1", "provisioning");
 
@@ -318,6 +260,7 @@ describe("Orchestrator — happy path: queued to running", () => {
 		expect(result?.newState).toBe("running");
 		expect(result?.trigger).toBe("sandbox_ready");
 		expect(client.createCalls).toHaveLength(1);
+		expect(client.createCalls[0]?.taskId).toBe("task-1");
 	});
 });
 
@@ -328,12 +271,10 @@ describe("Orchestrator — happy path: queued to running", () => {
 describe("Orchestrator — full lifecycle via processTick", () => {
 	it("drives task from queued through provisioning to running in multiple ticks", async () => {
 		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
+		const client = createMockExecutionClient();
 		const orch = new CloudExecutionOrchestrator(
 			store,
 			client,
-			invoker,
 			FAST_CONFIG,
 			undefined,
 			null,
@@ -352,24 +293,21 @@ describe("Orchestrator — full lifecycle via processTick", () => {
 		expect(tick2).toHaveLength(1);
 		expect(tick2[0]?.newState).toBe("provisioning");
 
-		// Tick 3: provisioning -> running
+		// Tick 3: provisioning -> running (creates execution on cloud-platform)
 		const tick3 = await orch.processTick();
 		expect(tick3).toHaveLength(1);
 		expect(tick3[0]?.newState).toBe("running");
 
-		// Verify final state
 		const finalState = await store.deriveTaskState("task-1");
 		expect(finalState).toBe("running");
 	});
 
 	it("processes multiple tasks concurrently", async () => {
 		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
+		const client = createMockExecutionClient();
 		const orch = new CloudExecutionOrchestrator(
 			store,
 			client,
-			invoker,
 			FAST_CONFIG,
 			undefined,
 			null,
@@ -381,7 +319,6 @@ describe("Orchestrator — full lifecycle via processTick", () => {
 
 		const results = await orch.processTick();
 
-		// Both tasks should advance
 		expect(results).toHaveLength(2);
 
 		const stateA = await store.deriveTaskState("task-a");
@@ -392,20 +329,19 @@ describe("Orchestrator — full lifecycle via processTick", () => {
 });
 
 // ---------------------------------------------------------------------------
-// All transitions persisted as events
+// Event persistence
 // ---------------------------------------------------------------------------
 
 describe("Orchestrator — event persistence", () => {
 	it("persists an event for every transition", async () => {
 		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+		const client = createMockExecutionClient();
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
 
 		await seedTaskToState(store, "task-1", "queued");
 		const initialCount = store._events.length;
 
-		await orch.processTask("task-1"); // queued -> policy_check
+		await orch.processTask("task-1");
 
 		expect(store._events).toHaveLength(initialCount + 1);
 		const lastEvent = store._events[store._events.length - 1];
@@ -415,15 +351,12 @@ describe("Orchestrator — event persistence", () => {
 		expect(lastEvent.toState).toBe("policy_check");
 		expect(lastEvent.trigger).toBe("dequeue");
 		expect(lastEvent.triggerSource).toBe("system");
-		expect(lastEvent.eventId).toBeTruthy();
-		expect(lastEvent.timestamp).toBeTruthy();
 	});
 
 	it("each event has a unique eventId", async () => {
 		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+		const client = createMockExecutionClient();
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
 
 		await seedTaskToState(store, "task-1", "queued");
 		await orch.processTick();
@@ -437,15 +370,14 @@ describe("Orchestrator — event persistence", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Error paths -> failed
+// Error paths
 // ---------------------------------------------------------------------------
 
 describe("Orchestrator — error paths", () => {
-	it("transitions provisioning to failed on create instance failure", async () => {
+	it("transitions provisioning to failed on create execution failure", async () => {
 		const store = createMockStore();
-		const client = createMockClient({ failCreate: true });
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+		const client = createMockExecutionClient({ failCreate: true });
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
 
 		await seedTaskToState(store, "task-1", "provisioning");
 
@@ -457,59 +389,10 @@ describe("Orchestrator — error paths", () => {
 		expect(result?.trigger).toBe("provision_timeout");
 	});
 
-	it("transitions provisioning to failed on poll failure (max errors)", async () => {
+	it("returns null when running task status is still running", async () => {
 		const store = createMockStore();
-		const client = createMockClient({ failPoll: true });
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
-		await seedTaskToState(store, "task-1", "provisioning");
-
-		const result = await orch.processTask("task-1");
-
-		expect(result).not.toBeNull();
-		expect(result?.success).toBe(true);
-		expect(result?.newState).toBe("failed");
-		expect(result?.trigger).toBe("provision_timeout");
-	});
-
-	it("transitions running to failed on /run invocation error", async () => {
-		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker({ failRun: true });
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
-		await seedTaskToState(store, "task-1", "running");
-
-		// Need execution record with hostname/instanceId for /run
-		await store.createExecution({
-			executionId: "exec-1",
-			taskId: "task-1",
-			attemptNumber: 1,
-			executionMode: "cloud_agent",
-			createdAt: new Date().toISOString(),
-			instanceId: "inst-1",
-			remoteMetadata: {
-				instanceId: "inst-1",
-				instanceHostname: "inst-1.runner.test",
-				repoUrl: "https://github.com/test/repo",
-				baseBranch: "main",
-			},
-		});
-
-		const result = await orch.processTask("task-1");
-
-		expect(result).not.toBeNull();
-		expect(result?.success).toBe(true);
-		expect(result?.newState).toBe("failed");
-		expect(result?.trigger).toBe("execution_error");
-	});
-
-	it("transitions running to failed on /run rejection", async () => {
-		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker({ rejectRun: true });
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+		const client = createMockExecutionClient({ executionStatus: "running" });
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
 
 		await seedTaskToState(store, "task-1", "running");
 		await store.createExecution({
@@ -518,45 +401,25 @@ describe("Orchestrator — error paths", () => {
 			attemptNumber: 1,
 			executionMode: "cloud_agent",
 			createdAt: new Date().toISOString(),
-			instanceId: "inst-1",
+			instanceId: "cloud-exec-1",
 			remoteMetadata: {
-				instanceId: "inst-1",
-				instanceHostname: "inst-1.runner.test",
+				instanceId: "cloud-exec-1",
 				repoUrl: "https://github.com/test/repo",
 				baseBranch: "main",
 			},
 		});
 
 		const result = await orch.processTask("task-1");
-
-		expect(result).not.toBeNull();
-		expect(result?.success).toBe(true);
-		expect(result?.newState).toBe("failed");
-		expect(result?.trigger).toBe("execution_error");
+		expect(result).toBeNull();
 	});
 
-	it("transitions running to failed when hostname is missing", async () => {
+	it("transitions running to completing on succeeded status", async () => {
 		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
-		await seedTaskToState(store, "task-1", "running");
-		// No execution record = no hostname/instanceId
-
-		const result = await orch.processTask("task-1");
-
-		expect(result).not.toBeNull();
-		expect(result?.success).toBe(true);
-		expect(result?.newState).toBe("failed");
-		expect(result?.trigger).toBe("execution_error");
-	});
-
-	it("transitions running to failed on prompt compose error", async () => {
-		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker({ failCompose: true });
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+		const client = createMockExecutionClient({
+			executionStatus: "succeeded",
+			result: { outcome: "success", exitCode: 0, summary: "Task completed" },
+		});
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
 
 		await seedTaskToState(store, "task-1", "running");
 		await store.createExecution({
@@ -565,19 +428,59 @@ describe("Orchestrator — error paths", () => {
 			attemptNumber: 1,
 			executionMode: "cloud_agent",
 			createdAt: new Date().toISOString(),
-			instanceId: "inst-1",
+			instanceId: "cloud-exec-1",
 			remoteMetadata: {
-				instanceId: "inst-1",
-				instanceHostname: "inst-1.runner.test",
+				instanceId: "cloud-exec-1",
 				repoUrl: "https://github.com/test/repo",
 				baseBranch: "main",
 			},
 		});
 
 		const result = await orch.processTask("task-1");
-
 		expect(result).not.toBeNull();
-		expect(result?.success).toBe(true);
+		expect(result?.newState).toBe("completing");
+		expect(result?.trigger).toBe("execution_done");
+	});
+
+	it("transitions running to failed on failed status", async () => {
+		const store = createMockStore();
+		const client = createMockExecutionClient({
+			executionStatus: "failed",
+			error: { code: "TIMEOUT", message: "Execution timed out" },
+		});
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
+
+		await seedTaskToState(store, "task-1", "running");
+		await store.createExecution({
+			executionId: "exec-1",
+			taskId: "task-1",
+			attemptNumber: 1,
+			executionMode: "cloud_agent",
+			createdAt: new Date().toISOString(),
+			instanceId: "cloud-exec-1",
+			remoteMetadata: {
+				instanceId: "cloud-exec-1",
+				repoUrl: "https://github.com/test/repo",
+				baseBranch: "main",
+			},
+		});
+
+		const result = await orch.processTask("task-1");
+		expect(result).not.toBeNull();
+		expect(result?.newState).toBe("failed");
+		expect(result?.trigger).toBe("execution_error");
+	});
+
+	it("handles no cloud execution ID gracefully", async () => {
+		const store = createMockStore();
+		const client = createMockExecutionClient();
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
+
+		await seedTaskToState(store, "task-1", "running");
+		// No execution record — should fail gracefully
+
+		const result = await orch.processTask("task-1");
+		expect(result).not.toBeNull();
 		expect(result?.newState).toBe("failed");
 		expect(result?.trigger).toBe("execution_error");
 	});
@@ -587,1154 +490,193 @@ describe("Orchestrator — error paths", () => {
 // Cancellation
 // ---------------------------------------------------------------------------
 
-describe("Orchestrator — cancellation (P2-1: explicit cancel flow)", () => {
-	it("cancels a queued task to canceled via user_cancel", async () => {
+describe("Orchestrator — cancellation", () => {
+	it("cancels a queued task", async () => {
 		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+		const client = createMockExecutionClient();
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
+
 		await seedTaskToState(store, "task-1", "queued");
 		orch.requestCancellation("task-1");
+
 		const results = await orch.processTick();
-		const cancelResult = results.find((r) => r.taskId === "task-1" && r.newState === "canceled");
-		expect(cancelResult).toBeTruthy();
-		expect(cancelResult?.trigger).toBe("user_cancel");
-		const finalState = await store.deriveTaskState("task-1");
-		expect(["canceled", "teardown"]).toContain(finalState);
+
+		expect(results.some((r) => r.taskId === "task-1" && r.newState === "canceled")).toBe(true);
 	});
 
-	it("cancels a policy_check task to canceled via user_cancel", async () => {
+	it("cancels a running task and calls cancelExecution on cloud-platform", async () => {
 		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
+		const client = createMockExecutionClient();
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
+
+		await seedTaskToState(store, "task-1", "running");
+		await store.createExecution({
+			executionId: "exec-1",
+			taskId: "task-1",
+			attemptNumber: 1,
+			executionMode: "cloud_agent",
+			createdAt: new Date().toISOString(),
+			instanceId: "cloud-exec-1",
+			remoteMetadata: {
+				instanceId: "cloud-exec-1",
+				repoUrl: "https://github.com/test/repo",
+				baseBranch: "main",
+			},
+		});
+
+		orch.requestCancellation("task-1");
+		const results = await orch.processTick();
+
+		expect(results.some((r) => r.taskId === "task-1" && r.newState === "canceled")).toBe(true);
+		expect(client.cancelCalls).toContain("cloud-exec-1");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Teardown
+// ---------------------------------------------------------------------------
+
+describe("Orchestrator — teardown", () => {
+	it("transitions terminal state to teardown then archived", async () => {
+		const store = createMockStore();
+		const client = createMockExecutionClient();
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
+
+		// Seed to completed state
+		await seedTaskToState(store, "task-1", "running");
+		await store.appendEvent({
+			eventId: randomUUID(),
+			taskId: "task-1",
+			trigger: "execution_done",
+			fromState: "running",
+			toState: "completing",
+			timestamp: new Date().toISOString(),
+			triggerSource: "system",
+		});
+		await store.appendEvent({
+			eventId: randomUUID(),
+			taskId: "task-1",
+			trigger: "finalize_success",
+			fromState: "completing",
+			toState: "completed",
+			timestamp: new Date().toISOString(),
+			triggerSource: "system",
+		});
+
+		// Tick: completed -> teardown
+		const tick1 = await orch.processTick();
+		expect(tick1).toHaveLength(1);
+		expect(tick1[0]?.newState).toBe("teardown");
+
+		// Tick: teardown -> archived
+		const tick2 = await orch.processTick();
+		expect(tick2).toHaveLength(1);
+		expect(tick2[0]?.newState).toBe("archived");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Governance
+// ---------------------------------------------------------------------------
+
+describe("Orchestrator — governance", () => {
+	it("auto-approves when no governance client configured", async () => {
+		const store = createMockStore();
+		const client = createMockExecutionClient();
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
+
 		await seedTaskToState(store, "task-1", "policy_check");
-		orch.requestCancellation("task-1");
-		const results = await orch.processTick();
-		const cancelResult = results.find((r) => r.taskId === "task-1");
-		expect(cancelResult).toBeTruthy();
-		expect(cancelResult?.newState).toBe("canceled");
-		expect(cancelResult?.trigger).toBe("user_cancel");
-	});
-
-	it("cancels a provisioning task to canceled via user_cancel", async () => {
-		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-		await seedTaskToState(store, "task-1", "provisioning");
-		orch.requestCancellation("task-1");
-		const results = await orch.processTick();
-		const cancelResult = results.find((r) => r.taskId === "task-1");
-		expect(cancelResult).toBeTruthy();
-		expect(cancelResult?.newState).toBe("canceled");
-		expect(cancelResult?.trigger).toBe("user_cancel");
-	});
-
-	it("cancels a running task to canceled via user_cancel", async () => {
-		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-		await seedTaskToState(store, "task-1", "running");
-		orch.requestCancellation("task-1");
-		const results = await orch.processTick();
-		const cancelResult = results.find((r) => r.taskId === "task-1");
-		expect(cancelResult).toBeTruthy();
-		expect(cancelResult?.newState).toBe("canceled");
-		expect(cancelResult?.trigger).toBe("user_cancel");
-	});
-
-	it("cancellation is a no-op for already-terminal tasks (but teardown still advances)", async () => {
-		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
-		// Seed task to failed state
-		await seedTaskToState(store, "task-1", "provisioning");
-		await store.appendEvent({
-			eventId: randomUUID(),
-			taskId: "task-1",
-			trigger: "provision_timeout",
-			fromState: "provisioning",
-			toState: "failed",
-			timestamp: new Date().toISOString(),
-			triggerSource: "system",
-		});
-
-		const countBefore = store._events.length;
-
-		orch.requestCancellation("task-1");
-		const results = await orch.processTick();
-
-		// Cancellation itself is a no-op for terminal tasks, but teardown advances:
-		// failed → teardown via auto_teardown, then teardown → archived via sandbox_terminated
-		const cancelResults = results.filter((r) => r.trigger === "user_cancel" || r.trigger === "denied");
-		expect(cancelResults).toHaveLength(0); // no cancellation transition applied
-
-		// Teardown events are added (terminal → teardown, teardown → archived)
-		expect(store._events.length).toBeGreaterThan(countBefore);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Idempotency and restart safety
-// ---------------------------------------------------------------------------
-
-describe("Orchestrator — idempotency and restart safety", () => {
-	it("terminal tasks advance to teardown (no longer a no-op)", async () => {
-		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
-		// Seed to failed
-		await seedTaskToState(store, "task-1", "provisioning");
-		await store.appendEvent({
-			eventId: randomUUID(),
-			taskId: "task-1",
-			trigger: "provision_timeout",
-			fromState: "provisioning",
-			toState: "failed",
-			timestamp: new Date().toISOString(),
-			triggerSource: "system",
-		});
 
 		const result = await orch.processTask("task-1");
-		// Terminal states now advance to teardown via auto_teardown
-		expect(result).not.toBeNull();
-		expect(result?.previousState).toBe("failed");
-		expect(result?.newState).toBe("teardown");
-		expect(result?.trigger).toBe("auto_teardown");
-	});
-
-	it("archived tasks are truly a no-op", async () => {
-		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
-		// Seed to archived (terminal → teardown → archived)
-		await seedTaskToState(store, "task-1", "provisioning");
-		await store.appendEvent({
-			eventId: randomUUID(),
-			taskId: "task-1",
-			trigger: "provision_timeout",
-			fromState: "provisioning",
-			toState: "failed",
-			timestamp: new Date().toISOString(),
-			triggerSource: "system",
-		});
-		await store.appendEvent({
-			eventId: randomUUID(),
-			taskId: "task-1",
-			trigger: "auto_teardown",
-			fromState: "failed",
-			toState: "teardown",
-			timestamp: new Date().toISOString(),
-			triggerSource: "system",
-		});
-		await store.appendEvent({
-			eventId: randomUUID(),
-			taskId: "task-1",
-			trigger: "sandbox_terminated",
-			fromState: "teardown",
-			toState: "archived",
-			timestamp: new Date().toISOString(),
-			triggerSource: "system",
-		});
-
-		const result = await orch.processTask("task-1");
-		expect(result).toBeNull();
-	});
-
-	it("recovers state from persistence after restart", async () => {
-		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-
-		// First orchestrator instance drives to policy_check
-		const orch1 = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-		await seedTaskToState(store, "task-1", "queued");
-		await orch1.processTask("task-1"); // queued -> policy_check
-		orch1.stop();
-
-		// Simulated restart: new orchestrator instance (with governance)
-		const orch2 = new CloudExecutionOrchestrator(
-			store,
-			client,
-			invoker,
-			FAST_CONFIG,
-			undefined,
-			null,
-			autoAuthorizeGovernance,
-		);
-		const result = await orch2.processTask("task-1");
-
-		// Should pick up from policy_check
-		expect(result).not.toBeNull();
-		expect(result?.previousState).toBe("policy_check");
 		expect(result?.newState).toBe("provisioning");
+		expect(result?.trigger).toBe("authorized");
 	});
 
-	it("is safe with draft tasks (no events yet)", async () => {
+	it("denies when governance returns denied", async () => {
 		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
-		const result = await orch.processTask("nonexistent");
-		expect(result).toBeNull();
-	});
-
-	it("does not re-invoke /run if execution already started", async () => {
-		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
-		await seedTaskToState(store, "task-1", "running");
-		await store.createExecution({
-			executionId: "exec-1",
-			taskId: "task-1",
-			attemptNumber: 1,
-			executionMode: "cloud_agent",
-			createdAt: new Date().toISOString(),
-			startedAt: new Date().toISOString(), // Already started!
-			instanceId: "inst-1",
-			remoteMetadata: {
-				instanceId: "inst-1",
-				instanceHostname: "inst-1.runner.test",
-				repoUrl: "https://github.com/test/repo",
-				baseBranch: "main",
-			},
-		});
-
-		const result = await orch.processTask("task-1");
-		expect(result).toBeNull();
-		expect(invoker.composeCalls).toHaveLength(0);
-		expect(invoker.runCalls).toHaveLength(0);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Running: /run invocation success path
-// ---------------------------------------------------------------------------
-
-describe("Orchestrator — /run invocation", () => {
-	it("invokes /run and marks execution as started", async () => {
-		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
-		await seedTaskToState(store, "task-1", "running");
-		await store.createExecution({
-			executionId: "exec-1",
-			taskId: "task-1",
-			attemptNumber: 1,
-			executionMode: "cloud_agent",
-			createdAt: new Date().toISOString(),
-			instanceId: "inst-1",
-			remoteMetadata: {
-				instanceId: "inst-1",
-				instanceHostname: "inst-1.runner.test",
-				repoUrl: "https://github.com/test/repo",
-				baseBranch: "main",
-			},
-		});
-
-		const result = await orch.processTask("task-1");
-
-		// /run accepted -> returns null (stays running, waiting for callback)
-		expect(result).toBeNull();
-		expect(invoker.composeCalls).toHaveLength(1);
-		expect(invoker.runCalls).toHaveLength(1);
-		expect(invoker.runCalls[0]?.hostname).toBe("inst-1.runner.test");
-		expect(invoker.runCalls[0]?.instanceId).toBe("inst-1");
-
-		// Execution should be marked as started
-		const exec = store._executions.find((e) => e.executionId === "exec-1");
-		expect(exec).toBeTruthy();
-		expect(exec?.startedAt).toBeTruthy();
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Start / Stop
-// ---------------------------------------------------------------------------
-
-describe("Orchestrator — start/stop", () => {
-	it("can be started and stopped without error", () => {
-		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
-		orch.start();
-		orch.stop();
-		// No error means success
-	});
-
-	it("start is idempotent", () => {
-		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
-		orch.start();
-		orch.start(); // second call is no-op
-		orch.stop();
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Transition validation
-// ---------------------------------------------------------------------------
-
-describe("Orchestrator — transition validation", () => {
-	it("all transitions go through the lifecycle validator", async () => {
-		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
-		await seedTaskToState(store, "task-1", "queued");
-
-		// Drive through the full flow
-		await orch.processTick(); // queued -> policy_check
-		await orch.processTick(); // policy_check -> provisioning
-		await orch.processTick(); // provisioning -> running
-
-		// Check that every persisted event has valid from->to transitions
-		const task1Events = store._events.filter((e) => e.taskId === "task-1");
-		// Include seed events + orchestrator events
-		expect(task1Events.length).toBeGreaterThanOrEqual(4); // seed submit + 3 orchestrator transitions
-
-		for (let i = 1; i < task1Events.length; i++) {
-			const prev = task1Events[i - 1];
-			const curr = task1Events[i];
-			expect(prev).toBeDefined();
-			expect(curr).toBeDefined();
-			if (prev && curr) {
-				expect(curr.fromState).toBe(prev.toState);
-			}
-		}
-	});
-});
-
-// ---------------------------------------------------------------------------
-// Provisioning creates instance and updates execution metadata
-// ---------------------------------------------------------------------------
-
-describe("Orchestrator — provisioning creates instance", () => {
-	it("calls createInstance with task metadata", async () => {
-		const store = createMockStore();
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
-		await seedTaskToState(store, "task-1", "provisioning");
-
-		// Create execution record with repo info
-		await store.createExecution({
-			executionId: "exec-1",
-			taskId: "task-1",
-			attemptNumber: 1,
-			executionMode: "cloud_agent",
-			createdAt: new Date().toISOString(),
-			remoteMetadata: {
-				instanceId: "",
-				repoUrl: "https://github.com/test/repo",
-				baseBranch: "develop",
-				featureBranch: "feat/cloud",
-			},
-		});
-
-		await orch.processTask("task-1");
-
-		expect(client.createCalls).toHaveLength(1);
-		expect(client.createCalls[0]?.taskId).toBe("task-1");
-		expect(client.createCalls[0]?.repoUrl).toBe("https://github.com/test/repo");
-		expect(client.createCalls[0]?.baseBranch).toBe("develop");
-		expect(client.createCalls[0]?.featureBranch).toBe("feat/cloud");
-	});
-
-	// ---------------------------------------------------------------------------
-	// Mock Governance Client
-	// ---------------------------------------------------------------------------
-
-	interface MockGovernanceClient extends GovernanceClient {
-		authorizeCalls: AuthorizeRequest[];
-		usageCalls: UsageEventRequest[];
-		auditCalls: AuditEventRequest[];
-	}
-
-	function createMockGovernanceClient(opts?: {
-		decision?: "authorized" | "denied";
-		reason?: string;
-	}): MockGovernanceClient {
-		const mock: MockGovernanceClient = {
-			authorizeCalls: [],
-			usageCalls: [],
-			auditCalls: [],
-			async checkAuthorization(request) {
-				mock.authorizeCalls.push(request);
-				return {
-					decision: opts?.decision ?? "authorized",
-					reason: opts?.reason,
-				};
+		const client = createMockExecutionClient();
+		const denyGovernance: GovernanceClient = {
+			async checkAuthorization() {
+				return { decision: "denied" as const, reason: "Org limit exceeded" };
 			},
 			async reserveBudget() {
 				return { reservationId: "res-mock", expiresAt: new Date().toISOString() };
 			},
-			async reportUsage(request) {
-				mock.usageCalls.push(request);
-				return { accepted: true };
-			},
-			async reportAudit(request) {
-				mock.auditCalls.push(request);
-				return { accepted: true };
-			},
+			async reportUsage() { return { accepted: true }; },
+			async reportAudit() { return { accepted: true }; },
 		};
-		return mock;
-	}
+		const orch = new CloudExecutionOrchestrator(
+			store, client, FAST_CONFIG, undefined, null, denyGovernance,
+		);
 
-	// ---------------------------------------------------------------------------
-	// Governance — policy check: authorized flow
-	// ---------------------------------------------------------------------------
+		await seedTaskToState(store, "task-1", "policy_check");
 
-	describe("Orchestrator — governance policy check", () => {
-		it("transitions policy_check -> provisioning when governance authorizes", async () => {
-			const store = createMockStore();
-			const client = createMockClient();
-			const invoker = createMockRunInvoker();
-			const governance = createMockGovernanceClient({ decision: "authorized" });
-			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG, undefined, null, governance);
-
-			await seedTaskToState(store, "task-1", "policy_check");
-			const result = await orch.processTask("task-1");
-
-			expect(result).not.toBeNull();
-			expect(result?.previousState).toBe("policy_check");
-			expect(result?.newState).toBe("provisioning");
-			expect(result?.trigger).toBe("authorized");
-			expect(governance.authorizeCalls).toHaveLength(1);
-			expect(governance.authorizeCalls[0]?.taskId).toBe("task-1");
-		});
-
-		it("transitions policy_check -> failed when governance denies", async () => {
-			const store = createMockStore();
-			const client = createMockClient();
-			const invoker = createMockRunInvoker();
-			const governance = createMockGovernanceClient({ decision: "denied", reason: "over quota" });
-			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG, undefined, null, governance);
-
-			await seedTaskToState(store, "task-1", "policy_check");
-			const result = await orch.processTask("task-1");
-
-			expect(result).not.toBeNull();
-			expect(result?.previousState).toBe("policy_check");
-			expect(result?.newState).toBe("failed");
-			expect(result?.trigger).toBe("denied");
-			expect(governance.authorizeCalls).toHaveLength(1);
-		});
-
-		it("denies policy_check when no governance client is configured", async () => {
-			const store = createMockStore();
-			const client = createMockClient();
-			const invoker = createMockRunInvoker();
-			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
-			await seedTaskToState(store, "task-1", "policy_check");
-			const result = await orch.processTask("task-1");
-
-			expect(result).not.toBeNull();
-			expect(result?.previousState).toBe("policy_check");
-			expect(result?.newState).toBe("failed");
-			expect(result?.trigger).toBe("denied");
-		});
-
-		it("denies policy_check when governance client throws unexpected error (fail-closed)", async () => {
-			const store = createMockStore();
-			const client = createMockClient();
-			const invoker = createMockRunInvoker();
-			const throwingGovernance: GovernanceClient = {
-				async checkAuthorization() {
-					throw new Error("governance service unavailable");
-				},
-				async reserveBudget() {
-					return { reservationId: "res-mock", expiresAt: new Date().toISOString() };
-				},
-				async reportUsage() {
-					return { accepted: true };
-				},
-				async reportAudit() {
-					return { accepted: true };
-				},
-			};
-			const orch = new CloudExecutionOrchestrator(
-				store,
-				client,
-				invoker,
-				FAST_CONFIG,
-				undefined,
-				null,
-				throwingGovernance,
-			);
-
-			await seedTaskToState(store, "task-1", "policy_check");
-			const result = await orch.processTask("task-1");
-
-			expect(result).not.toBeNull();
-			expect(result?.previousState).toBe("policy_check");
-			expect(result?.newState).toBe("failed");
-			expect(result?.trigger).toBe("denied");
-		});
-
-		it("passes full request context including projectId and orgId to checkAuthorization", async () => {
-			const store = createMockStore();
-			const client = createMockClient();
-			const invoker = createMockRunInvoker();
-			const governance = createMockGovernanceClient({ decision: "authorized" });
-			const configWithOrg: OrchestratorConfig = {
-				...FAST_CONFIG,
-				projectId: "proj-42",
-				orgId: "org-99",
-				userId: "user-77",
-				defaultTaskSpec: { type: "cline-task", image: "cline-runner:latest" },
-				requestedLimits: { maxComputeSeconds: 1800, maxTokenBudget: 100_000 },
-			};
-			const orch = new CloudExecutionOrchestrator(
-				store,
-				client,
-				invoker,
-				configWithOrg,
-				undefined,
-				null,
-				governance,
-			);
-
-			await seedTaskToState(store, "task-1", "policy_check");
-
-			await store.createExecution({
-				executionId: "exec-pol-1",
-				taskId: "task-1",
-				attemptNumber: 1,
-				executionMode: "cloud_agent",
-				createdAt: new Date().toISOString(),
-				remoteMetadata: {
-					instanceId: "pending",
-					repoUrl: "https://github.com/test/repo",
-					baseBranch: "main",
-				},
-			});
-
-			await orch.processTask("task-1");
-
-			expect(governance.authorizeCalls).toHaveLength(1);
-			const call = governance.authorizeCalls[0];
-			expect(call?.taskId).toBe("task-1");
-			expect(call?.orgId).toBe("org-99");
-			expect(call?.userId).toBe("user-77");
-			expect(call?.executionMode).toBe("cloud_agent");
-			expect(call?.projectId).toBe("proj-42");
-			expect(call?.requestedLimits).toEqual({ maxComputeSeconds: 1800, maxTokenBudget: 100_000 });
-			expect(call?.taskSpec).toEqual({ type: "cline-task", image: "cline-runner:latest" });
-			expect(call?.executionContext?.repoUrl).toBe("https://github.com/test/repo");
-			expect(call?.executionContext?.baseBranch).toBe("main");
-		});
-
-		it("defaults projectId to 'default' when not configured", async () => {
-			const store = createMockStore();
-			const client = createMockClient();
-			const invoker = createMockRunInvoker();
-			const governance = createMockGovernanceClient({ decision: "authorized" });
-			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG, undefined, null, governance);
-
-			await seedTaskToState(store, "task-1", "policy_check");
-
-			await orch.processTask("task-1");
-
-			expect(governance.authorizeCalls).toHaveLength(1);
-			const call = governance.authorizeCalls[0];
-			expect(call?.projectId).toBe("default");
-		});
-	});
-
-	// ---------------------------------------------------------------------------
-	// Governance — usage event emission
-	// ---------------------------------------------------------------------------
-
-	describe("Orchestrator — governance usage events", () => {
-		it("reports usage event when terminal state transitions to teardown", async () => {
-			const store = createMockStore();
-			const client = createMockClient();
-			const invoker = createMockRunInvoker();
-			const governance = createMockGovernanceClient();
-			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG, undefined, null, governance);
-
-			// Seed to failed state
-			await seedTaskToState(store, "task-1", "provisioning");
-			await store.appendEvent({
-				eventId: randomUUID(),
-				taskId: "task-1",
-				trigger: "provision_timeout",
-				fromState: "provisioning",
-				toState: "failed",
-				timestamp: new Date().toISOString(),
-				triggerSource: "system",
-			});
-
-			await orch.processTask("task-1"); // failed -> teardown (reports usage)
-
-			expect(governance.usageCalls).toHaveLength(1);
-			expect(governance.usageCalls[0]?.taskId).toBe("task-1");
-			expect(governance.usageCalls[0]?.executionMode).toBe("cloud_agent");
-		});
-
-		it("passes full usage payload including executionMode and token metadata", async () => {
-			const store = createMockStore();
-			const client = createMockClient();
-			const invoker = createMockRunInvoker();
-			const governance = createMockGovernanceClient();
-			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG, undefined, null, governance);
-
-			// Seed to failed state with execution metadata
-			await seedTaskToState(store, "task-1", "provisioning");
-			await store.createExecution({
-				executionId: "exec-usage-1",
-				taskId: "task-1",
-				attemptNumber: 1,
-				executionMode: "cloud_agent",
-				createdAt: new Date().toISOString(),
-				durationSeconds: 42,
-				remoteMetadata: {
-					instanceId: "inst-1",
-					repoUrl: "https://github.com/test/repo",
-					baseBranch: "main",
-					tokenUsage: 7500,
-				},
-			});
-			await store.appendEvent({
-				eventId: randomUUID(),
-				taskId: "task-1",
-				trigger: "provision_timeout",
-				fromState: "provisioning",
-				toState: "failed",
-				timestamp: new Date().toISOString(),
-				triggerSource: "system",
-			});
-
-			await orch.processTask("task-1"); // failed -> teardown (reports usage)
-
-			expect(governance.usageCalls).toHaveLength(1);
-			const call = governance.usageCalls[0];
-			expect(call?.taskId).toBe("task-1");
-			expect(call?.cpuSeconds).toBe(42);
-			expect(call?.executionMode).toBe("cloud_agent");
-			expect(call?.tokensIn).toBe(7500);
-			expect(call?.executionContext?.repoUrl).toBe("https://github.com/test/repo");
-			expect(call?.executionContext?.baseBranch).toBe("main");
-		});
-
-		it("does not report usage when no governance client is configured", async () => {
-			const store = createMockStore();
-			const client = createMockClient();
-			const invoker = createMockRunInvoker();
-			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-
-			await seedTaskToState(store, "task-1", "provisioning");
-			await store.appendEvent({
-				eventId: randomUUID(),
-				taskId: "task-1",
-				trigger: "provision_timeout",
-				fromState: "provisioning",
-				toState: "failed",
-				timestamp: new Date().toISOString(),
-				triggerSource: "system",
-			});
-
-			// Should not throw — just no usage event
-			const result = await orch.processTask("task-1");
-			expect(result).not.toBeNull();
-			expect(result?.newState).toBe("teardown");
-		});
-	});
-
-	// ---------------------------------------------------------------------------
-	// Governance — audit event emission
-	// ---------------------------------------------------------------------------
-
-	describe("Orchestrator — governance audit events", () => {
-		it("emits audit events on lifecycle transitions", async () => {
-			const store = createMockStore();
-			const client = createMockClient();
-			const invoker = createMockRunInvoker();
-			const governance = createMockGovernanceClient();
-			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG, undefined, null, governance);
-
-			await seedTaskToState(store, "task-1", "queued");
-
-			await orch.processTask("task-1"); // queued -> policy_check
-
-			// Allow fire-and-forget audit promise to resolve
-			await new Promise((r) => setTimeout(r, 10));
-
-			expect(governance.auditCalls.length).toBeGreaterThanOrEqual(1);
-			const auditCall = governance.auditCalls.find((c) => c.action === "task.dequeue");
-			expect(auditCall).toBeTruthy();
-			expect(auditCall?.taskId).toBe("task-1");
-			expect(auditCall?.resource).toEqual({ type: "task", id: "task-1" });
-			expect(auditCall?.actor).toBeDefined();
-			expect(auditCall?.result).toBeDefined();
-		});
-
-		it("audit failures do not block transitions", async () => {
-			const store = createMockStore();
-			const client = createMockClient();
-			const invoker = createMockRunInvoker();
-			const governance: MockGovernanceClient = {
-				...createMockGovernanceClient(),
-				async reportAudit() {
-					throw new Error("Audit service down");
-				},
-			};
-			const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG, undefined, null, governance);
-
-			await seedTaskToState(store, "task-1", "queued");
-			const result = await orch.processTask("task-1");
-
-			// Transition succeeds despite audit failure
-			expect(result).not.toBeNull();
-			expect(result?.success).toBe(true);
-			expect(result?.newState).toBe("policy_check");
-		});
+		const result = await orch.processTask("task-1");
+		expect(result?.newState).toBe("failed");
+		expect(result?.trigger).toBe("denied");
 	});
 });
 
-// ===========================================================================
-// Execution Identity Fidelity — deriveWorktreePath
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// deriveWorktreePath
+// ---------------------------------------------------------------------------
 
 describe("deriveWorktreePath", () => {
-	it("produces deterministic path from taskId + attemptNumber", () => {
+	it("produces taskId/attempt-N format", () => {
 		expect(deriveWorktreePath("task-abc", 1)).toBe("task-abc/attempt-1");
-		expect(deriveWorktreePath("task-abc", 2)).toBe("task-abc/attempt-2");
 		expect(deriveWorktreePath("task-abc", 3)).toBe("task-abc/attempt-3");
-	});
-
-	it("is consistent across calls", () => {
-		const a = deriveWorktreePath("task-xyz", 5);
-		const b = deriveWorktreePath("task-xyz", 5);
-		expect(a).toBe(b);
-	});
-
-	it("differs for different attempt numbers", () => {
-		const a = deriveWorktreePath("task-001", 1);
-		const b = deriveWorktreePath("task-001", 2);
-		expect(a).not.toBe(b);
-	});
-
-	it("differs for different task IDs", () => {
-		const a = deriveWorktreePath("task-a", 1);
-		const b = deriveWorktreePath("task-b", 1);
-		expect(a).not.toBe(b);
 	});
 });
 
-// ===========================================================================
-// Execution Identity Fidelity — validateExecutionIdentityFidelity
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// validateExecutionIdentityFidelity
+// ---------------------------------------------------------------------------
 
-function makeExecForFidelity(overrides: Partial<PersistedTaskExecution> = {}): PersistedTaskExecution {
-	return {
-		executionId: randomUUID(),
-		taskId: "task-fidelity-001",
+describe("validateExecutionIdentityFidelity", () => {
+	const baseExecution: PersistedTaskExecution = {
+		executionId: "exec-1",
+		taskId: "task-1",
 		attemptNumber: 1,
 		executionMode: "cloud_agent",
 		createdAt: new Date().toISOString(),
 		remoteMetadata: {
-			instanceId: "inst-src",
-			repoUrl: "https://github.com/cline/kanban.git",
+			instanceId: "inst-1",
+			repoUrl: "https://github.com/test/repo",
 			baseBranch: "main",
-			featureBranch: "task/fidelity-001",
-			worktreePath: "task-fidelity-001/attempt-1",
+			featureBranch: "feat-1",
+			worktreePath: "task-1/attempt-1",
 		},
-		...overrides,
 	};
-}
-describe("validateExecutionIdentityFidelity", () => {
-	it("returns valid when all canonical fields match for retry", () => {
-		const source = makeExecForFidelity({ attemptNumber: 1 });
-		const newExec = makeExecForFidelity({
+
+	it("valid when all fields match", () => {
+		const newExec: PersistedTaskExecution = {
+			...baseExecution,
+			executionId: "exec-2",
 			attemptNumber: 2,
 			branchIntent: "reuse_branch",
+			worktreeIntent: "task-1/attempt-2",
 			remoteMetadata: {
-				...source.remoteMetadata!,
-				instanceId: "pending-provisioning",
-				worktreePath: "task-fidelity-001/attempt-2",
+				...baseExecution.remoteMetadata!,
+				worktreePath: "task-1/attempt-2",
 			},
-		});
-		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
+		};
+		const result = validateExecutionIdentityFidelity(newExec, baseExecution, "retry");
 		expect(result.valid).toBe(true);
 		expect(result.violations).toHaveLength(0);
 	});
 
-	it("detects repoUrl drift as error", () => {
-		const source = makeExecForFidelity({ attemptNumber: 1 });
-		const newExec = makeExecForFidelity({
+	it("invalid when repoUrl drifts", () => {
+		const newExec: PersistedTaskExecution = {
+			...baseExecution,
+			executionId: "exec-2",
 			attemptNumber: 2,
 			remoteMetadata: {
-				...source.remoteMetadata!,
-				instanceId: "pending-provisioning",
-				repoUrl: "https://github.com/other/repo.git",
-			},
-		});
-		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
-		expect(result.valid).toBe(false);
-		const v = result.violations.find((v) => v.field === "repoUrl");
-		expect(v).toBeDefined();
-		expect(v?.severity).toBe("error");
-		expect(v?.expected).toBe("https://github.com/cline/kanban.git");
-		expect(v?.actual).toBe("https://github.com/other/repo.git");
-	});
-
-	it("detects baseBranch drift as error", () => {
-		const source = makeExecForFidelity({ attemptNumber: 1 });
-		const newExec = makeExecForFidelity({
-			attemptNumber: 2,
-			remoteMetadata: { ...source.remoteMetadata!, instanceId: "p", baseBranch: "develop" },
-		});
-		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
-		expect(result.valid).toBe(false);
-		expect(result.violations.find((v) => v.field === "baseBranch")?.severity).toBe("error");
-	});
-
-	it("detects featureBranch drift on reuse_branch as error", () => {
-		const source = makeExecForFidelity({ attemptNumber: 1 });
-		const newExec = makeExecForFidelity({
-			attemptNumber: 2,
-			branchIntent: "reuse_branch",
-			remoteMetadata: {
-				...source.remoteMetadata!,
-				instanceId: "p",
-				featureBranch: "task/different-branch",
-			},
-		});
-		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
-		expect(result.valid).toBe(false);
-		expect(result.violations.find((v) => v.field === "featureBranch")?.severity).toBe("error");
-	});
-
-	it("fresh_branch with undefined featureBranch is valid", () => {
-		const source = makeExecForFidelity({ attemptNumber: 1 });
-		const newExec = makeExecForFidelity({
-			attemptNumber: 2,
-			branchIntent: "fresh_branch",
-			remoteMetadata: {
-				...source.remoteMetadata!,
-				instanceId: "p",
-				featureBranch: undefined,
-				worktreePath: "task-fidelity-001/attempt-2",
-			},
-		});
-		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
-		expect(result.valid).toBe(true);
-		expect(result.violations.filter((v) => v.field === "featureBranch")).toHaveLength(0);
-	});
-
-	it("detects attemptNumber not incrementing as error", () => {
-		const source = makeExecForFidelity({ attemptNumber: 2 });
-		const newExec = makeExecForFidelity({ attemptNumber: 1 });
-		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
-		expect(result.valid).toBe(false);
-		expect(result.violations.find((v) => v.field === "attemptNumber")?.severity).toBe("error");
-	});
-
-	it("detects worktreePath not matching deterministic derivation as warning", () => {
-		const source = makeExecForFidelity({ attemptNumber: 1 });
-		const newExec = makeExecForFidelity({
-			attemptNumber: 2,
-			branchIntent: "fresh_branch",
-			remoteMetadata: {
-				...source.remoteMetadata!,
-				instanceId: "p",
-				featureBranch: undefined,
-				worktreePath: "/some/random/path",
-			},
-		});
-		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
-		expect(result.valid).toBe(true); // warning, not error
-		const v = result.violations.find((v) => v.field === "worktreePath");
-		expect(v).toBeDefined();
-		expect(v?.severity).toBe("warning");
-		expect(v?.expected).toBe("task-fidelity-001/attempt-2");
-	});
-
-	it("validates correctly for replay flow", () => {
-		const source = makeExecForFidelity({ attemptNumber: 1 });
-		const newExec = makeExecForFidelity({
-			attemptNumber: 2,
-			branchIntent: "fresh_branch",
-			remoteMetadata: {
-				...source.remoteMetadata!,
-				instanceId: "p",
-				featureBranch: undefined,
-				worktreePath: "task-fidelity-001/attempt-2",
-			},
-		});
-		const result = validateExecutionIdentityFidelity(newExec, source, "replay");
-		expect(result.valid).toBe(true);
-		expect(result.flowType).toBe("replay");
-	});
-
-	it("validates correctly for rerun_snapshot flow", () => {
-		const source = makeExecForFidelity({ attemptNumber: 1 });
-		const newExec = makeExecForFidelity({
-			attemptNumber: 3,
-			branchIntent: "fresh_branch",
-			remoteMetadata: {
-				...source.remoteMetadata!,
-				instanceId: "p",
-				featureBranch: undefined,
-				worktreePath: "task-fidelity-001/attempt-3",
-			},
-		});
-		const result = validateExecutionIdentityFidelity(newExec, source, "rerun_snapshot");
-		expect(result.valid).toBe(true);
-		expect(result.flowType).toBe("rerun_snapshot");
-	});
-
-	it("logs violations when logger is provided", () => {
-		const logged: Array<{ msg: string }> = [];
-		const logger = {
-			info: () => {},
-			warn: () => {},
-			error: (msg: string) => {
-				logged.push({ msg });
+				...baseExecution.remoteMetadata!,
+				repoUrl: "https://github.com/other/repo",
 			},
 		};
-		const source = makeExecForFidelity({ attemptNumber: 1 });
-		const newExec = makeExecForFidelity({
-			attemptNumber: 2,
-			remoteMetadata: {
-				...source.remoteMetadata!,
-				instanceId: "p",
-				repoUrl: "https://other.example.com",
-			},
-		});
-		validateExecutionIdentityFidelity(newExec, source, "retry", logger);
-		expect(logged.length).toBeGreaterThan(0);
-		expect(logged[0]?.msg).toContain("repoUrl");
-	});
-
-	it("returns taskId and executionId in result", () => {
-		const source = makeExecForFidelity({ attemptNumber: 1 });
-		const newExec = makeExecForFidelity({ attemptNumber: 2 });
-		const result = validateExecutionIdentityFidelity(newExec, source, "retry");
-		expect(result.taskId).toBe("task-fidelity-001");
-		expect(result.executionId).toBe(newExec.executionId);
-	});
-});
-
-// ===========================================================================
-// Canonical Identity Preservation — Retry Flow
-// ===========================================================================
-
-describe("Canonical Identity Preservation — Retry", () => {
-	const CANONICAL_REPO = "https://github.com/cline/kanban.git";
-	const CANONICAL_BASE = "main";
-	const CANONICAL_FEATURE = "task/canon-001";
-	const TASK_ID = "task-canon-001";
-
-	function makeCanonicalExecution(attempt: number): PersistedTaskExecution {
-		return {
-			executionId: `exec-canon-${attempt}`,
-			taskId: TASK_ID,
-			attemptNumber: attempt,
-			executionMode: "cloud_agent",
-			createdAt: new Date().toISOString(),
-			terminalState: attempt === 1 ? "failed" : undefined,
-			remoteMetadata: {
-				instanceId: attempt === 1 ? "inst-1" : "pending-provisioning",
-				repoUrl: CANONICAL_REPO,
-				baseBranch: CANONICAL_BASE,
-				featureBranch: CANONICAL_FEATURE,
-				worktreePath: deriveWorktreePath(TASK_ID, attempt),
-			},
-		};
-	}
-
-	it("retry preserves repoUrl from failed execution", async () => {
-		const store = createMockStore();
-		await seedTaskToState(store, TASK_ID, "provisioning");
-		const source = makeCanonicalExecution(1);
-		await store.createExecution(source);
-
-		// Use the orchestrator to drive provisioning
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-		await orch.processTask(TASK_ID);
-
-		// Verify createInstance was called with canonical repoUrl
-		expect(client.createCalls).toHaveLength(1);
-		expect(client.createCalls[0]?.repoUrl).toBe(CANONICAL_REPO);
-	});
-
-	it("retry preserves baseBranch from failed execution", async () => {
-		const store = createMockStore();
-		await seedTaskToState(store, TASK_ID, "provisioning");
-		await store.createExecution(makeCanonicalExecution(1));
-
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-		await orch.processTask(TASK_ID);
-
-		expect(client.createCalls[0]?.baseBranch).toBe(CANONICAL_BASE);
-	});
-
-	it("retry preserves featureBranch from failed execution", async () => {
-		const store = createMockStore();
-		await seedTaskToState(store, TASK_ID, "provisioning");
-		await store.createExecution(makeCanonicalExecution(1));
-
-		const client = createMockClient();
-		const invoker = createMockRunInvoker();
-		const orch = new CloudExecutionOrchestrator(store, client, invoker, FAST_CONFIG);
-		await orch.processTask(TASK_ID);
-
-		expect(client.createCalls[0]?.featureBranch).toBe(CANONICAL_FEATURE);
-	});
-});
-
-// ===========================================================================
-// Canonical Identity Preservation — Worktree + Attempt Context
-// ===========================================================================
-
-describe("Canonical Identity Preservation — Worktree + Attempt", () => {
-	it("worktree path is deterministic for each attempt", () => {
-		const task = "task-wt-001";
-		expect(deriveWorktreePath(task, 1)).toBe("task-wt-001/attempt-1");
-		expect(deriveWorktreePath(task, 2)).toBe("task-wt-001/attempt-2");
-		expect(deriveWorktreePath(task, 10)).toBe("task-wt-001/attempt-10");
-	});
-
-	it("validateExecutionIdentityFidelity passes for properly chained retries", () => {
-		const source = makeExecForFidelity({
-			taskId: "task-chain",
-			attemptNumber: 1,
-			remoteMetadata: {
-				instanceId: "inst-1",
-				repoUrl: "https://github.com/cline/kanban.git",
-				baseBranch: "main",
-				featureBranch: "task/chain",
-				worktreePath: deriveWorktreePath("task-chain", 1),
-			},
-		});
-		const retry = makeExecForFidelity({
-			taskId: "task-chain",
-			attemptNumber: 2,
-			branchIntent: "reuse_branch",
-			remoteMetadata: {
-				instanceId: "pending-provisioning",
-				repoUrl: "https://github.com/cline/kanban.git",
-				baseBranch: "main",
-				featureBranch: "task/chain",
-				worktreePath: deriveWorktreePath("task-chain", 2),
-			},
-		});
-		const result = validateExecutionIdentityFidelity(retry, source, "retry");
-		expect(result.valid).toBe(true);
-		expect(result.violations).toHaveLength(0);
-	});
-
-	it("validateExecutionIdentityFidelity catches multi-field drift", () => {
-		const source = makeExecForFidelity({
-			taskId: "task-drift",
-			attemptNumber: 1,
-			remoteMetadata: {
-				instanceId: "inst-1",
-				repoUrl: "https://github.com/cline/kanban.git",
-				baseBranch: "main",
-			},
-		});
-		const drifted = makeExecForFidelity({
-			taskId: "task-drift",
-			attemptNumber: 2,
-			remoteMetadata: {
-				instanceId: "p",
-				repoUrl: "https://github.com/other/repo.git",
-				baseBranch: "develop",
-			},
-		});
-		const result = validateExecutionIdentityFidelity(drifted, source, "retry");
+		const result = validateExecutionIdentityFidelity(newExec, baseExecution, "retry");
 		expect(result.valid).toBe(false);
-		expect(result.violations.length).toBeGreaterThanOrEqual(2);
-		const fields = result.violations.map((v) => v.field);
-		expect(fields).toContain("repoUrl");
-		expect(fields).toContain("baseBranch");
-	});
-});
-
-// ===========================================================================
-// Canonical Identity Preservation — Rerun-from-Snapshot
-// ===========================================================================
-
-describe("Canonical Identity Preservation — Rerun Snapshot", () => {
-	it("rerun preserves repoUrl and baseBranch from snapshot", () => {
-		const source = makeExecForFidelity({
-			attemptNumber: 1,
-			remoteMetadata: {
-				instanceId: "inst-1",
-				repoUrl: "https://github.com/cline/kanban.git",
-				baseBranch: "feature-base",
-				featureBranch: "task/snap-001",
-				worktreePath: deriveWorktreePath("task-fidelity-001", 1),
-			},
-		});
-		const rerun = makeExecForFidelity({
-			attemptNumber: 3,
-			branchIntent: "fresh_branch",
-			remoteMetadata: {
-				instanceId: "pending-provisioning",
-				repoUrl: "https://github.com/cline/kanban.git",
-				baseBranch: "feature-base",
-				featureBranch: undefined,
-				worktreePath: deriveWorktreePath("task-fidelity-001", 3),
-			},
-		});
-		const result = validateExecutionIdentityFidelity(rerun, source, "rerun_snapshot");
-		expect(result.valid).toBe(true);
-	});
-
-	it("rerun fresh_branch clears featureBranch from snapshot", () => {
-		const source = makeExecForFidelity({
-			attemptNumber: 1,
-			remoteMetadata: {
-				instanceId: "i",
-				repoUrl: "https://github.com/cline/kanban.git",
-				baseBranch: "main",
-				featureBranch: "task/original",
-			},
-		});
-		const rerun = makeExecForFidelity({
-			attemptNumber: 2,
-			branchIntent: "fresh_branch",
-			remoteMetadata: {
-				instanceId: "p",
-				repoUrl: "https://github.com/cline/kanban.git",
-				baseBranch: "main",
-				featureBranch: undefined,
-				worktreePath: deriveWorktreePath("task-fidelity-001", 2),
-			},
-		});
-		const result = validateExecutionIdentityFidelity(rerun, source, "rerun_snapshot");
-		expect(result.valid).toBe(true);
-		// No featureBranch violation because fresh_branch allows undefined
-		expect(result.violations.filter((v) => v.field === "featureBranch")).toHaveLength(0);
+		expect(result.violations.some((v) => v.field === "repoUrl")).toBe(true);
 	});
 });

@@ -11,15 +11,9 @@ import {
 } from "../cline-sdk/cline-task-session-service";
 import { createClineWatcherRegistry } from "../cline-sdk/cline-watcher-registry";
 import { isCloudAgentEnabled } from "../cloud/cloud-agent-feature-flag";
-import {
-	CLOUD_CALLBACK_PATH,
-	type CloudCallbackAcceptedHook,
-	handleCloudCallback,
-} from "../cloud/cloud-callback-handler";
-import { type CallbackIngestionContext, InMemoryCallbackDedupeStore } from "../cloud/cloud-callback-ingestion";
+// KB-AUTH-4: Callback handler and ingestion removed — cloud-platform polling replaces callbacks
 import { CloudExecutionLogStore } from "../cloud/cloud-execution-log-store";
 import { CloudExecutionStore } from "../cloud/cloud-execution-persistence";
-import { reconcileTerminalCallback } from "../cloud/cloud-terminal-reconciliation";
 import type { RuntimeCommandRunResponse, RuntimeWorkspaceStateResponse } from "../core/api-contract";
 import {
 	buildKanbanRuntimeUrl,
@@ -258,104 +252,12 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 		createContext: async ({ req }) => await createTrpcContext(req),
 	});
 
-	// ── Cloud callback signing secret ─────────────────────────────────────
-	const CLOUD_CALLBACK_SECRET_ENV = "KANBAN_CLOUD_CALLBACK_SECRET";
-	const cloudCallbackSigningSecret: string | null = process.env[CLOUD_CALLBACK_SECRET_ENV]?.trim() || null;
-
-	// Config validation: warn when cloud execution is enabled but no signing secret.
-	if (isCloudAgentEnabled() && !cloudCallbackSigningSecret) {
-		deps.warn(
-			`Cloud execution is enabled but ${CLOUD_CALLBACK_SECRET_ENV} is not set. ` +
-				"All callback signature verification will be bypassed. " +
-				"Set the environment variable to enable HMAC-SHA256 signature checks.",
-		);
-	}
-
 	// ── Phase 2: Cloud execution log store (in-memory, shared) ───────────
 	const cloudExecutionLogStore = new CloudExecutionLogStore();
 
-	// ── Cloud callback ingestion context ───────────────────────────────────
-	const cloudCallbackDedupeStore = new InMemoryCallbackDedupeStore();
-
-	/**
-	 * Resolve the CloudExecutionStore for a given taskId by scanning all
-	 * managed workspaces. Returns the first store that has events for the
-	 * task (i.e. has a non-draft derived state), or the active workspace
-	 * store as fallback.
-	 *
-	 * For the single-workspace MVP this is effectively just the active
-	 * workspace. Multi-workspace support iterates the managed set.
-	 */
-	const resolveStoreForTask = async (
-		taskId: string,
-	): Promise<{ store: CloudExecutionStore; workspaceId: string } | null> => {
-		const managed = deps.workspaceRegistry.listManagedWorkspaces();
-		for (const { workspaceId } of managed) {
-			const statePath = getWorkspaceDirectoryPath(workspaceId);
-			const store = new CloudExecutionStore(statePath);
-			const state = await store.deriveTaskState(taskId);
-			if (state !== "draft") {
-				return { store, workspaceId };
-			}
-		}
-		// Fallback: check the active workspace even if it's not yet in the
-		// managed list (e.g. server just started, no terminal sessions yet).
-		const activeId = deps.workspaceRegistry.getActiveWorkspaceId();
-		if (activeId) {
-			const alreadyChecked = managed.some((m) => m.workspaceId === activeId);
-			if (!alreadyChecked) {
-				const statePath = getWorkspaceDirectoryPath(activeId);
-				const store = new CloudExecutionStore(statePath);
-				const state = await store.deriveTaskState(taskId);
-				if (state !== "draft") {
-					return { store, workspaceId: activeId };
-				}
-			}
-		}
-		return null;
-	};
-
-	const cloudCallbackContext: CallbackIngestionContext = {
-		getTaskExecutionState: async (taskId: string) => {
-			const resolved = await resolveStoreForTask(taskId);
-			if (!resolved) {
-				deps.warn(`Cloud callback: could not resolve store for task ${taskId}`);
-				return null;
-			}
-			const state = await resolved.store.deriveTaskState(taskId);
-			// "draft" means no events exist for this task — treat as known but in
-			// initial state. Return null only when the store itself isn't found.
-			return state;
-		},
-		hasProcessedCallback: async (key: string) => cloudCallbackDedupeStore.has(key),
-		recordProcessedCallback: async (key: string) => {
-			cloudCallbackDedupeStore.add(key);
-		},
-		signingSecret: cloudCallbackSigningSecret,
-	};
-
-	// ── Post-acceptance reconciliation hook ────────────────────────────────
-	const onCallbackAccepted: CloudCallbackAcceptedHook = async (result) => {
-		const resolved = await resolveStoreForTask(result.taskId);
-		if (!resolved) {
-			return;
-		}
-		const { store, workspaceId } = resolved;
-		const reconResult = await reconcileTerminalCallback(result, {
-			deriveTaskState: (taskId) => store.deriveTaskState(taskId),
-			appendEvent: (event) => store.appendEvent(event),
-			appendEvents: (events) => store.appendEvents(events),
-			readExecutionsForTask: (taskId) => store.readExecutionsForTask(taskId),
-			updateExecution: (executionId, updates) => store.updateExecution(executionId, updates),
-		});
-
-		// After successful reconciliation, if the callback moved the task to a
-		// terminal state (completing/failed/canceled), notify the web UI so it
-		// can move the board card from in_progress → review.
-		if (reconResult.reconciled) {
-			deps.runtimeStateHub.broadcastTaskReadyForReview(workspaceId, result.taskId);
-		}
-	};
+	// KB-AUTH-4: Callback signing secret, dedupe store, ingestion context,
+	// and post-acceptance hook have been removed. Cloud-platform polling
+	// (via the orchestrator) replaces task-runner callbacks.
 
 	const isRemoteMode = isKanbanRemoteHost();
 
@@ -383,24 +285,7 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 			const requestUrl = new URL(req.url ?? "/", "http://localhost");
 			const pathname = normalizeRequestPath(requestUrl.pathname);
 
-			// ── Cloud callback endpoint (B4) — bypasses passcode gate ────────
-			// Callbacks come from cloud-platform task-runner, not user browsers.
-			// Authentication is via callback signature, not user session.
-			if (pathname.startsWith(CLOUD_CALLBACK_PATH)) {
-				try {
-					await handleCloudCallback(req, res, requestUrl, cloudCallbackContext, onCallbackAccepted);
-				} catch (error) {
-					deps.warn(`Cloud callback handler error: ${error instanceof Error ? error.message : String(error)}`);
-					if (!res.headersSent) {
-						res.writeHead(500, {
-							"Content-Type": "application/json; charset=utf-8",
-							"Cache-Control": "no-store",
-						});
-						res.end(JSON.stringify({ error: "Internal server error" }));
-					}
-				}
-				return;
-			}
+			// KB-AUTH-4: Cloud callback endpoint removed — polling replaces callbacks.
 
 			// ── Passcode gate (remote mode only) ──────────────────────────────
 			const passcodeActive = isRemoteMode && isPasscodeEnabled();

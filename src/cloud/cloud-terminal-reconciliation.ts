@@ -6,8 +6,7 @@
 
 import { randomUUID } from "node:crypto";
 
-import type { CallbackIngestionResult, CallbackPayload } from "./cloud-callback-ingestion";
-import type { CloudExecutionState } from "./cloud-execution-lifecycle";
+import type { CloudExecutionState, CloudExecutionTrigger } from "./cloud-execution-lifecycle";
 import { isTerminalState, validateCloudExecutionTransition } from "./cloud-execution-lifecycle";
 import {
 	canonicalFieldsSnapshot,
@@ -80,16 +79,37 @@ export interface TerminalReconciliationContext {
 }
 
 // ---------------------------------------------------------------------------
+// Terminal Payload (replaces callback-based CallbackPayload after KB-AUTH-4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Terminal execution result payload. Previously sourced from task-runner
+ * callbacks, now sourced from cloud-platform execution status polling.
+ */
+export interface TerminalPayload {
+	readonly executionId: string;
+	readonly status: "success" | "failed" | "canceled";
+	readonly taskId?: string;
+	readonly attemptNumber?: number;
+	readonly prUrl?: string;
+	readonly taskOutput?: string;
+	readonly error?: string;
+	readonly durationSeconds?: number;
+	readonly tokensUsed?: number;
+	readonly summary?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Build Result Summary
 // ---------------------------------------------------------------------------
 
 /**
- * Build a human-readable result summary from the callback payload.
+ * Build a human-readable result summary from the terminal payload.
  *
  * **Failure preservation (PRD 15.11):** Error output is always included
- * in the summary for failed callbacks. It is never silently discarded.
+ * in the summary for failed tasks. It is never silently discarded.
  */
-export function buildResultSummary(payload: CallbackPayload): string {
+export function buildResultSummary(payload: TerminalPayload): string {
 	const parts: string[] = [];
 	parts.push(`status=${payload.status}`);
 	if (payload.prUrl) parts.push(`pr=${payload.prUrl}`);
@@ -97,6 +117,7 @@ export function buildResultSummary(payload: CallbackPayload): string {
 	if (payload.tokensUsed !== undefined) parts.push(`tokens=${payload.tokensUsed}`);
 	if (payload.error) parts.push(`error=${payload.error}`);
 	if (payload.taskOutput) parts.push(`output=${payload.taskOutput}`);
+	if (payload.summary) parts.push(`summary=${payload.summary}`);
 	return parts.join("; ");
 }
 
@@ -105,16 +126,16 @@ export function buildResultSummary(payload: CallbackPayload): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Extract execution metadata fields from a callback payload.
+ * Extract execution metadata fields from a terminal payload.
  * These are recorded in `task_events` metadata for auditability.
  */
 export function buildTerminalEventMetadata(
-	payload: CallbackPayload,
+	payload: TerminalPayload,
 	extra?: Record<string, unknown>,
 ): Record<string, unknown> {
 	const metadata: Record<string, unknown> = {
-		instanceId: payload.instanceId,
-		callbackStatus: payload.status,
+		executionId: payload.executionId,
+		terminalStatus: payload.status,
 	};
 	if (payload.prUrl !== undefined) metadata.prUrl = payload.prUrl;
 	if (payload.taskOutput !== undefined) metadata.taskOutput = payload.taskOutput;
@@ -122,7 +143,6 @@ export function buildTerminalEventMetadata(
 	if (payload.durationSeconds !== undefined) metadata.durationSeconds = payload.durationSeconds;
 	if (payload.tokensUsed !== undefined) metadata.tokensUsed = payload.tokensUsed;
 	if (payload.attemptNumber !== undefined) metadata.attemptNumber = payload.attemptNumber;
-	if (payload.idempotencyKey !== undefined) metadata.idempotencyKey = payload.idempotencyKey;
 	if (extra) Object.assign(metadata, extra);
 	return metadata;
 }
@@ -176,8 +196,20 @@ async function shouldDebugPreserve(
  * - Failure information is never silently discarded (PRD 15.11).
  * - State is recoverable after restart (persisted before return).
  */
+/**
+ * Input for terminal reconciliation. Previously driven by callback
+ * ingestion results; now driven by cloud-platform polling results.
+ */
+export interface TerminalReconciliationInput {
+	readonly taskId: string;
+	readonly payload: TerminalPayload;
+	readonly trigger: CloudExecutionTrigger;
+	readonly eventId?: string | null;
+	readonly dedupeKey?: string;
+}
+
 export async function reconcileTerminalCallback(
-	ingestionResult: Extract<CallbackIngestionResult, { accepted: true }>,
+	ingestionResult: TerminalReconciliationInput,
 	ctx: TerminalReconciliationContext,
 ): Promise<TerminalReconciliationResult> {
 	const { taskId, payload, trigger, eventId, dedupeKey } = ingestionResult;
@@ -300,8 +332,8 @@ export async function reconcileTerminalCallback(
 			};
 		}
 
-		if (!latestExecution.instanceId && payload.instanceId) {
-			executionUpdates.instanceId = payload.instanceId;
+		if (!latestExecution.instanceId && payload.executionId) {
+			executionUpdates.instanceId = payload.executionId;
 		}
 
 		executionUpdated = await ctx.updateExecution(latestExecution.executionId, executionUpdates);
