@@ -1115,6 +1115,10 @@ async function runTaskCommand(handler: () => Promise<JsonRecord>): Promise<void>
 			error: `Task command failed at ${origin}: ${toErrorMessage(error)}`,
 		});
 		process.exitCode = 1;
+	} finally {
+		// Reset so a hypothetical second invocation in the same process
+		// (tests, REPL) doesn't reuse a stale connection.
+		_resolvedConnection = null;
 	}
 }
 

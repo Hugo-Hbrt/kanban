@@ -26,6 +26,8 @@ import {
 import {
 	buildKanbanRuntimeUrl,
 	clearKanbanRuntimeTls,
+	descriptorOriginFromUrl,
+	isRuntimeReachable,
 	DEFAULT_KANBAN_RUNTIME_PORT,
 	getKanbanRuntimeHost,
 	getKanbanRuntimeOrigin,
@@ -552,21 +554,8 @@ async function runMainCommand(options: CliOptions, shouldAutoOpenBrowser: boolea
 	// session cookie and the browser can authenticate.
 	const existingDescriptor = await readRuntimeDescriptor();
 	if (existingDescriptor && !isDescriptorStale(existingDescriptor)) {
-		// Verify the runtime actually responds before attaching.
-		// Use origin only — the descriptor URL may include a workspace path
-		// (e.g. /cline) that would break the /api/health endpoint.
-		let reachable = false;
-		const descriptorOrigin = new URL(existingDescriptor.url).origin;
-		try {
-			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), 2000);
-			const healthUrl = `${descriptorOrigin}/api/health`;
-			const resp = await fetch(healthUrl, { signal: controller.signal });
-			clearTimeout(timer);
-			reachable = resp.ok;
-		} catch {
-			// unreachable
-		}
+		const descriptorOrigin = descriptorOriginFromUrl(existingDescriptor.url);
+		const reachable = await isRuntimeReachable(descriptorOrigin);
 
 		if (reachable) {
 			console.log(

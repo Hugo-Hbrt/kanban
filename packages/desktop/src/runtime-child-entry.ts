@@ -14,6 +14,9 @@
 
 import type { ChildToParentMessage, ParentToChildMessage } from "./ipc-protocol.js";
 
+/** Module-scoped handle — avoids globalThis cast and magic string keys. */
+let runtimeHandle: { shutdown: (options?: { skipSessionCleanup?: boolean }) => Promise<void> } | null = null;
+
 function send(message: ChildToParentMessage): void {
 	process.send?.(message);
 }
@@ -76,7 +79,7 @@ process.on("message", async (raw: unknown) => {
 				startHeartbeat();
 
 				// Store the handle for shutdown.
-				(globalThis as Record<string, unknown>).__kanbanRuntimeHandle = handle;
+				runtimeHandle = handle;
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				send({ type: "error", message: `Failed to start runtime: ${message}` });
@@ -88,11 +91,8 @@ process.on("message", async (raw: unknown) => {
 		case "shutdown": {
 			stopHeartbeat();
 			try {
-				const handle = (globalThis as Record<string, unknown>).__kanbanRuntimeHandle as
-					| { shutdown: () => Promise<void> }
-					| undefined;
-				if (handle) {
-					await handle.shutdown();
+				if (runtimeHandle) {
+					await runtimeHandle.shutdown();
 				}
 			} catch {
 				// Best effort — we're shutting down anyway.

@@ -17,7 +17,7 @@
  * theoretically possible but extremely unlikely on short timescales.
  */
 
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -60,8 +60,20 @@ export function getRuntimeDescriptorPath(): string {
 
 export async function writeRuntimeDescriptor(descriptor: RuntimeDescriptor): Promise<void> {
 	await mkdir(getRuntimeDescriptorDir(), { recursive: true });
-	const content = JSON.stringify(descriptor, null, "\t");
-	await writeFile(getRuntimeDescriptorPath(), content, "utf-8");
+	// Omit authToken from the serialised descriptor when it's empty —
+	// avoids writing an empty string that downstream constantTimeEqual
+	// could match against if a bug ever passes "".
+	const serialised = { ...descriptor };
+	if (!serialised.authToken) {
+		delete (serialised as Partial<RuntimeDescriptor>).authToken;
+	}
+	const content = JSON.stringify(serialised, null, "\t");
+	const descriptorPath = getRuntimeDescriptorPath();
+	await writeFile(descriptorPath, content, "utf-8");
+	// Restrict to owner-only — the file may contain an auth token.
+	await chmod(descriptorPath, 0o600).catch(() => {
+		// Best effort — Windows does not support POSIX permissions.
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +114,7 @@ function isValidDescriptor(value: unknown): value is RuntimeDescriptor {
 	const obj = value as Record<string, unknown>;
 	return (
 		typeof obj.url === "string" &&
-		typeof obj.authToken === "string" &&
+		(obj.authToken === undefined || typeof obj.authToken === "string") &&
 		typeof obj.pid === "number" &&
 		typeof obj.updatedAt === "string" &&
 		(obj.source === "desktop" || obj.source === "cli") &&

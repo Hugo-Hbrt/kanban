@@ -210,7 +210,7 @@ export function descriptorOriginFromUrl(descriptorUrl: string): string {
  * 401/404) means the server process is alive.  If the runtime renames or
  * relocates that path in the future, update this probe to match.
  */
-async function isRuntimeReachable(origin: string, timeoutMs = 1500): Promise<boolean> {
+export async function isRuntimeReachable(origin: string, timeoutMs = 1500): Promise<boolean> {
 	try {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), timeoutMs);

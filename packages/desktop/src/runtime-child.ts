@@ -24,9 +24,10 @@
  *   overrides from RuntimeConfig (port, auth token, CLI shim path, etc).
  * - PATH is inherited as-is from the Electron main process. No shell
  *   expansion or interactive shell launch — see AGENTS.md on why.
- * - Node heap is capped at 512 MB via --max-old-space-size to prevent the
- *   runtime from competing with Electron's own V8 heap. This is a tuning
- *   knob, not a hard constraint; adjust if runtime workloads grow.
+ * - Node heap is set to 4096 MB via --max-old-space-size (see
+ *   RUNTIME_CHILD_MAX_OLD_SPACE_MB) to give the runtime sufficient
+ *   headroom for multi-agent workloads. This is a tuning knob, not a
+ *   hard constraint; adjust if runtime workloads grow.
  */
 
 import { type ChildProcess, execSync, fork } from "node:child_process";
@@ -145,8 +146,8 @@ function getWindowsExtraPathDirs(): string[] {
 	// Git for Windows
 	if (programFiles) dirs.push(join(programFiles, 'Git', 'cmd'));
 	if (programFilesX86) dirs.push(join(programFilesX86, 'Git', 'cmd'));
-	// Python
-	if (localAppData) dirs.push(join(localAppData, 'Programs', 'Python', 'Python3*', 'Scripts'));
+	// Python — we skip the wildcard pattern (Python3*) since PATH entries
+	// are not globbed.  Users relying on Python should ensure it's on PATH.
 	return dirs.filter(Boolean);
 }
 
