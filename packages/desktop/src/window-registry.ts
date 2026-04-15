@@ -18,7 +18,7 @@
  * - No runtime lifecycle management — that belongs to RuntimeChildManager.
  * - No IPC protocol awareness — IPC messages go through the main module.
  * - No direct task/workspace orchestration — data flows through tRPC.
- * - No auth token management — auth cookies are set by the main module.
+ * - No auth token management — the runtime handles its own auth.
  */
 
 import { BrowserWindow, shell } from "electron";

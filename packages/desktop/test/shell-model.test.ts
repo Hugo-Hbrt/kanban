@@ -2,14 +2,14 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 /**
- * Structural verification that main.ts implements the four shell-model
- * behaviors. These tests read the source code and verify the expected
- * patterns exist — they don't execute Electron APIs.
+ * Structural verification that main.ts implements the thin shell model.
+ * These tests read the source code and verify the expected patterns
+ * exist — they don't execute Electron APIs.
  *
  * Shell model:
  *   1. Attach to existing runtime on configured endpoint
  *   2. Start runtime if endpoint is down
- *   3. Show disconnected screen + restart after disconnect
+ *   3. Show disconnected screen on runtime death; user-initiated restart
  *   4. Multi-window loads same runtime URL
  */
 
@@ -24,12 +24,10 @@ const mainSrc = readFileSync(
 
 describe("attach to existing runtime", () => {
 	it("health-checks the default endpoint before starting a child", () => {
-		// The boot flow should check health on the default origin first.
 		expect(mainSrc).toContain("checkHealth(defaultOrigin)");
 	});
 
 	it("sets runtimeUrl to the existing runtime when healthy", () => {
-		// When an external runtime is found, we attach to it.
 		expect(mainSrc).toContain("runtimeUrl = defaultOrigin");
 		expect(mainSrc).toContain("ownsChild = false");
 	});
@@ -45,38 +43,38 @@ describe("attach to existing runtime", () => {
 
 describe("start runtime if missing", () => {
 	it("calls startOwnRuntime when no existing runtime is found", () => {
-		// The else branch after checkHealth should start our own runtime.
 		expect(mainSrc).toContain("await startOwnRuntime()");
 	});
 
-	it("creates a RuntimeChildManager with start/heartbeat/restart config", () => {
+	it("creates a RuntimeChildManager as a thin launcher (no heartbeat/restart config)", () => {
 		expect(mainSrc).toContain("new RuntimeChildManager(");
-		expect(mainSrc).toContain("maxRestarts: 3");
-		expect(mainSrc).toContain("heartbeatTimeoutMs:");
+		// The thin shell model does NOT configure heartbeat or auto-restart
+		expect(mainSrc).not.toContain("maxRestarts:");
+		expect(mainSrc).not.toContain("heartbeatTimeoutMs:");
+		expect(mainSrc).not.toContain("heartbeatIntervalMs:");
 	});
 
 	it("sets ownsChild = true after starting", () => {
 		expect(mainSrc).toContain("ownsChild = true");
 	});
 
-	it("sets an auth cookie for seamless web UI authentication", () => {
-		expect(mainSrc).toContain('name: "kanban-auth"');
-		expect(mainSrc).toContain("setAuthCookie(");
+	it("does not manage auth cookies locally (runtime handles its own auth)", () => {
+		expect(mainSrc).not.toContain("setAuthCookie(");
+		expect(mainSrc).not.toContain("clearAuthCookie(");
+		expect(mainSrc).not.toContain('name: "kanban-auth"');
 	});
 });
 
 // ---------------------------------------------------------------------------
-// 3. Restart after disconnect
+// 3. Disconnected screen + user-initiated restart
 // ---------------------------------------------------------------------------
 
-describe("restart after disconnect", () => {
-	it("shows disconnected screen when max restarts exceeded", () => {
-		expect(mainSrc).toContain('"maximum restart attempts"');
+describe("disconnected screen and user-initiated restart", () => {
+	it("shows disconnected screen when runtime crashes", () => {
 		expect(mainSrc).toContain("showDisconnectedScreen()");
 	});
 
 	it("shows disconnected screen when runtime health check fails on did-fail-load", () => {
-		// The did-fail-load handler checks health and shows disconnected screen.
 		expect(mainSrc).toContain("did-fail-load");
 		expect(mainSrc).toContain("checkHealth(origin)");
 	});
@@ -96,13 +94,13 @@ describe("restart after disconnect", () => {
 		expect(mainSrc).toContain("void restartRuntime()");
 	});
 
-	it("nulls out runtimeManager before restart to reset restart counter", () => {
-		expect(mainSrc).toContain("runtimeManager = null");
-		expect(mainSrc).toContain("reset restart counter");
-	});
-
 	it("deduplicates concurrent restart calls via restartPromise", () => {
 		expect(mainSrc).toContain("restartPromise");
+	});
+
+	it("does not have hidden auto-restart (no powerMonitor health-check)", () => {
+		expect(mainSrc).not.toContain("powerMonitor");
+		expect(mainSrc).not.toContain("setupPowerMonitorHealthCheck");
 	});
 });
 
@@ -116,7 +114,6 @@ describe("multi-window same URL", () => {
 	});
 
 	it("loads the same runtimeUrl in new windows", () => {
-		// createAppWindow loads the current runtimeUrl.
 		expect(mainSrc).toContain("window.loadURL(url)");
 	});
 
@@ -137,13 +134,11 @@ describe("multi-window same URL", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Bonus: no leftover multi-runtime concepts
+// No leftover multi-runtime or stale concepts
 // ---------------------------------------------------------------------------
 
 describe("no leftover multi-runtime concepts", () => {
 	it("does not import ConnectionManager", () => {
-		// Check for actual import statement, not substring matches
-		// (RuntimeChildManager and comments naturally contain partial matches)
 		expect(mainSrc).not.toMatch(/import\s.*ConnectionManager/);
 		expect(mainSrc).not.toMatch(/from\s+["'].*connection-manager/);
 	});
@@ -169,5 +164,11 @@ describe("no leftover multi-runtime concepts", () => {
 		expect(mainSrc).not.toContain("advanceBootPhase");
 		expect(mainSrc).not.toContain("recordBootFailure");
 		expect(mainSrc).not.toContain("getBootState");
+	});
+
+	it("does not import session (no local cookie management)", () => {
+		// "session" should not appear as an Electron import
+		expect(mainSrc).not.toMatch(/\bsession\b.*from\s+["']electron["']/);
+		expect(mainSrc).not.toMatch(/import\s*\{[^}]*\bsession\b[^}]*\}\s*from\s*["']electron["']/);
 	});
 });

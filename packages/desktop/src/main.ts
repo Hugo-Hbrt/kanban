@@ -1,13 +1,14 @@
 /**
- * Electron main process entry point.
+ * Electron main process entry point — thin shell model.
  *
  * Flow:
  *   1. On launch: health-check the default port (3484).
- *      If a runtime is already running → load its URL in the window. Done.
+ *      If a runtime is already running → load its URL in the window.
  *   2. If nothing's running: start a runtime child process, wait for the
  *      IPC "ready" message, then load the URL.
- *   3. On child crash: RuntimeChildManager handles restart attempts
- *      internally.  If all attempts fail → show disconnected screen.
+ *   3. On runtime death: show the disconnected screen.  The user can
+ *      click "Restart" to manually re-launch the child.  There is no
+ *      hidden auto-restart; recovery is always user-initiated.
  *   4. Multi-window: each new window is another BrowserWindow pointing
  *      at the same runtime URL. The server handles multiple clients.
  */
@@ -18,9 +19,7 @@ import {
 	app,
 	dialog,
 	ipcMain,
-	powerMonitor,
 	powerSaveBlocker,
-	session,
 	shell,
 } from "electron";
 import { randomUUID } from "node:crypto";
@@ -67,7 +66,6 @@ const windowRegistry = new WindowRegistry();
 
 let runtimeManager: RuntimeChildManager | null = null;
 let runtimeUrl: string | null = null;
-let runtimeAuthToken: string | null = null;
 
 /** Whether we started the child or attached to an existing runtime. */
 let ownsChild = false;
@@ -113,34 +111,6 @@ async function checkHealth(origin: string): Promise<boolean> {
 		return res.ok;
 	} catch {
 		return false;
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Auth cookie — set once when we own the child, so the web UI skips passcode
-// ---------------------------------------------------------------------------
-
-async function setAuthCookie(origin: string, token: string): Promise<void> {
-	try {
-		await session.defaultSession.cookies.set({
-			url: origin,
-			name: "kanban-auth",
-			value: token,
-			path: "/",
-			httpOnly: true,
-			secure: false,
-			sameSite: "strict",
-		});
-	} catch {
-		// Best effort — the web UI will fall back to passcode prompt.
-	}
-}
-
-async function clearAuthCookie(origin: string): Promise<void> {
-	try {
-		await session.defaultSession.cookies.remove(origin, "kanban-auth");
-	} catch {
-		// Best effort.
 	}
 }
 
@@ -204,20 +174,16 @@ function attachRendererRecovery(window: BrowserWindow): void {
 			if (errorCode === -3 || !isMainFrame) return;
 			console.error(`[desktop] Renderer load failed: ${errorDescription} (code ${errorCode})`);
 
-			// Check if the runtime is still alive. If not, show the
-			// disconnected screen instead of a generic error dialog.
 			const origin = runtimeUrl ?? `http://${DEFAULT_HOST}:${DEFAULT_PORT}`;
 			void checkHealth(origin).then((healthy) => {
 				if (window.isDestroyed()) return;
 
 				if (!healthy) {
-					// Runtime is gone — show disconnected screen.
 					runtimeUrl = null;
 					showDisconnectedScreen();
 					return;
 				}
 
-				// Runtime is alive but page failed — offer a retry.
 				const choice = dialog.showMessageBoxSync(window, {
 					type: "error",
 					title: "Page Load Failed",
@@ -237,8 +203,6 @@ function attachRendererRecovery(window: BrowserWindow): void {
 
 		if (window.isDestroyed()) return;
 
-		// Same health-first logic as did-fail-load: if the runtime died,
-		// converge on the disconnected screen instead of retry-looping.
 		const origin = runtimeUrl ?? `http://${DEFAULT_HOST}:${DEFAULT_PORT}`;
 		void checkHealth(origin).then((healthy) => {
 			if (window.isDestroyed()) return;
@@ -266,7 +230,7 @@ function handleProtocolUrl(raw: string): void {
 	}
 
 	const focusedWindow = windowRegistry.getFocused();
-	relayOAuthCallback(relayTarget.toString(), runtimeAuthToken, {
+	relayOAuthCallback(relayTarget.toString(), null, {
 		fetch: globalThis.fetch,
 		getMainWindow: () => focusedWindow,
 	}).catch((err) => console.error("[desktop] OAuth relay error:", err));
@@ -364,7 +328,6 @@ ipcMain.on("restart-runtime", () => {
 	void restartRuntime();
 });
 
-
 // ---------------------------------------------------------------------------
 // Runtime child lifecycle
 // ---------------------------------------------------------------------------
@@ -375,36 +338,28 @@ function createRuntimeChildManager(): RuntimeChildManager {
 	const manager = new RuntimeChildManager({
 		childScriptPath,
 		shutdownTimeoutMs: 5_000,
-		heartbeatTimeoutMs: 15_000,
-		maxRestarts: 3,
-		restartDecayMs: 300_000,
-	});
-
-	manager.on("ready", (url: string) => {
-		console.log(`[desktop] Runtime child ready at ${url}`);
-		runtimeUrl = url;
-		// Set auth cookie so web UI auto-authenticates.
-		if (runtimeAuthToken) {
-			void setAuthCookie(new URL(url).origin, runtimeAuthToken);
-		}
-		// Reload all windows to pick up the new URL.
-		void windowRegistry.loadUrlInAllWindows(url);
-	});
-
-	manager.on("error", (message: string) => {
-		console.error(`[desktop] Runtime error: ${message}`);
-		// If max restarts exceeded, show the disconnected screen.
-		if (message.includes("maximum restart attempts")) {
-			runtimeUrl = null;
-			showDisconnectedScreen();
-		}
 	});
 
 	manager.on("crashed", (exitCode: number | null, signal: string | null) => {
 		console.error(`[desktop] Runtime crashed (code=${exitCode}, signal=${signal})`);
+		runtimeUrl = null;
+		showDisconnectedScreen();
+	});
+
+	manager.on("error", (message: string) => {
+		console.error(`[desktop] Runtime error: ${message}`);
 	});
 
 	return manager;
+}
+
+function resolveCliShimPath(): string {
+	if (app.isPackaged) {
+		const shimName = process.platform === "win32" ? "kanban.cmd" : "kanban";
+		return path.join(process.resourcesPath, "bin", shimName);
+	}
+	const devShimName = process.platform === "win32" ? "kanban-dev.cmd" : "kanban-dev";
+	return path.join(import.meta.dirname, "..", "build", "bin", devShimName);
 }
 
 async function startOwnRuntime(): Promise<void> {
@@ -412,30 +367,17 @@ async function startOwnRuntime(): Promise<void> {
 		runtimeManager = createRuntimeChildManager();
 	}
 
-	let kanbanCliCommand: string;
-	if (app.isPackaged) {
-		const shimName = process.platform === "win32" ? "kanban.cmd" : "kanban";
-		kanbanCliCommand = path.join(process.resourcesPath, "bin", shimName);
-	} else {
-		const devShimName = process.platform === "win32" ? "kanban-dev.cmd" : "kanban-dev";
-		kanbanCliCommand = path.join(import.meta.dirname, "..", "build", "bin", devShimName);
-	}
-
-	// Generate a simple token for the child.
-	runtimeAuthToken = randomUUID();
+	const authToken = randomUUID();
 
 	const url = await runtimeManager.start({
 		host: DEFAULT_HOST,
 		port: DEFAULT_PORT,
-		authToken: runtimeAuthToken,
-		kanbanCliCommand,
+		authToken,
+		kanbanCliCommand: resolveCliShimPath(),
 	});
 
 	runtimeUrl = url;
 	ownsChild = true;
-
-	// Set auth cookie before loading.
-	await setAuthCookie(new URL(url).origin, runtimeAuthToken);
 }
 
 async function restartRuntime(): Promise<void> {
@@ -448,8 +390,6 @@ async function restartRuntime(): Promise<void> {
 		try {
 			if (runtimeManager) {
 				await runtimeManager.shutdown().catch(() => {});
-				// Discard the old manager so startOwnRuntime() creates a fresh
-				// one with a reset restart counter.
 				runtimeManager = null;
 			}
 			await startOwnRuntime();
@@ -614,24 +554,6 @@ function stopAppNapPrevention(): void {
 }
 
 // ---------------------------------------------------------------------------
-// Power monitor: health check on resume from sleep
-// ---------------------------------------------------------------------------
-
-function setupPowerMonitorHealthCheck(): void {
-	powerMonitor.on("resume", () => {
-		if (!runtimeUrl || !ownsChild) return;
-
-		void checkHealth(runtimeUrl).then(async (healthy) => {
-			if (healthy) return;
-			console.warn("[desktop] Runtime unhealthy after resume — restarting.");
-			await restartRuntime().catch((err) => {
-				console.error("[desktop] Restart after resume failed:", err);
-			});
-		});
-	});
-}
-
-// ---------------------------------------------------------------------------
 // Application lifecycle
 // ---------------------------------------------------------------------------
 
@@ -641,14 +563,7 @@ if (gotTheLock) {
 
 		// ── Preflight ─────────────────────────────────────────────────
 		const childScriptPath = path.join(import.meta.dirname, "runtime-child-entry.js");
-		let cliShimPath: string;
-		if (app.isPackaged) {
-			const shimName = process.platform === "win32" ? "kanban.cmd" : "kanban";
-			cliShimPath = path.join(process.resourcesPath, "bin", shimName);
-		} else {
-			const devShimName = process.platform === "win32" ? "kanban-dev.cmd" : "kanban-dev";
-			cliShimPath = path.join(import.meta.dirname, "..", "build", "bin", devShimName);
-		}
+		const cliShimPath = resolveCliShimPath();
 
 		preflightResult = runDesktopPreflight({
 			preloadPath,
@@ -678,18 +593,15 @@ if (gotTheLock) {
 		startAppNapPrevention();
 
 		// ── Connect to runtime ────────────────────────────────────────
-		// Step 1: Check if a runtime is already running on the default port.
 		const defaultOrigin = `http://${DEFAULT_HOST}:${DEFAULT_PORT}`;
 		const existingRuntime = await checkHealth(defaultOrigin);
 
 		if (existingRuntime) {
-			// An external runtime (CLI) is already running. Just load it.
 			console.log(`[desktop] Found existing runtime at ${defaultOrigin}`);
 			runtimeUrl = defaultOrigin;
 			ownsChild = false;
 			await windowRegistry.loadUrlInAllWindows(runtimeUrl);
 		} else {
-			// Step 2: Start our own runtime child.
 			console.log("[desktop] No runtime found — starting child process.");
 			try {
 				await startOwnRuntime();
@@ -702,7 +614,6 @@ if (gotTheLock) {
 		}
 
 		rebuildMenu();
-		setupPowerMonitorHealthCheck();
 
 		// macOS: re-create window when dock icon clicked and no windows exist.
 		app.on("activate", () => {
@@ -732,7 +643,6 @@ if (gotTheLock) {
 			} catch (err) {
 				console.error("[desktop] Runtime shutdown error:", err instanceof Error ? err.message : err);
 			} finally {
-				if (runtimeUrl) void clearAuthCookie(new URL(runtimeUrl).origin);
 				stopAppNapPrevention();
 				app.quit();
 			}

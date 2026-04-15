@@ -1,33 +1,30 @@
 /**
- * RuntimeChildManager — manages the Kanban runtime as a child process.
+ * RuntimeChildManager — thin launcher for the Kanban runtime child process.
  *
- * Responsibilities (what this layer DOES):
+ * Responsibilities:
  * - Forking the runtime child process (outside asar via asarUnpack)
- * - Sending ParentToChildMessage IPC messages (start, shutdown, heartbeat-ack)
- * - Receiving ChildToParentMessage IPC messages (ready, error, shutdown-complete, heartbeat)
- * - Heartbeat monitoring with configurable timeout
- * - Crash detection and auto-restart logic (3 attempts, 5-min decay)
+ * - Sending ParentToChildMessage IPC messages (start, shutdown)
+ * - Receiving ChildToParentMessage IPC messages (ready, error, shutdown-complete)
  * - Graceful shutdown with force-kill fallback
  * - tree-kill on Windows for grandchild cleanup
  *
- * Non-responsibilities (what this layer deliberately does NOT do):
- * - No HTTP health checks — the parent trusts IPC "ready" messages, not HTTP probes.
- * - No auth token management — tokens are passed through IPC config, not generated here.
- * - No window management — this layer has no knowledge of BrowserWindows.
- * - No task/workspace orchestration — that belongs to the runtime itself.
- * - No process supervision beyond restart attempts — after MAX_RESTART_COUNT
- *   (3), the manager emits "crashed" and stops. The main process decides
- *   whether to show an error dialog or quit.
+ * Deliberately does NOT:
+ * - No heartbeat monitoring — the child's liveness is not polled.
+ * - No auto-restart — on crash the manager emits "crashed" and stops.
+ *   The main process decides whether to show a disconnected screen or
+ *   offer a manual restart button.
+ * - No HTTP health checks — trust IPC "ready", not HTTP probes.
+ * - No auth token management — tokens flow through IPC config.
+ * - No window management — no knowledge of BrowserWindows.
  *
  * Environment forwarding:
- * - The child inherits the parent's env plus KANBAN_DESKTOP=1 and any
- *   overrides from RuntimeConfig (port, auth token, CLI shim path, etc).
+ * - The child inherits filtered env plus KANBAN_DESKTOP=1 and any
+ *   overrides from RuntimeConfig (port, CLI shim path, etc).
  * - PATH is inherited as-is from the Electron main process. No shell
  *   expansion or interactive shell launch — see AGENTS.md on why.
  * - Node heap is set to 4096 MB via --max-old-space-size (see
  *   RUNTIME_CHILD_MAX_OLD_SPACE_MB) to give the runtime sufficient
- *   headroom for multi-agent workloads. This is a tuning knob, not a
- *   hard constraint; adjust if runtime workloads grow.
+ *   headroom for multi-agent workloads.
  */
 
 import { type ChildProcess, execSync, fork } from "node:child_process";
@@ -56,21 +53,9 @@ export interface RuntimeChildManagerOptions {
 	childScriptPath: string;
 	/** Timeout in ms to wait for graceful shutdown before force-killing. Default: 5 000. */
 	shutdownTimeoutMs?: number;
-	/** Heartbeat interval in ms — how often we expect the child to ping. Default: 5 000. */
-	heartbeatIntervalMs?: number;
-	/** Heartbeat timeout in ms — no heartbeat within this window → dead. Default: 15 000. */
-	heartbeatTimeoutMs?: number;
-	/** Maximum auto-restart attempts before giving up. Default: 3. */
-	maxRestarts?: number;
-	/** Time window in ms after which the restart counter resets. Default: 300 000 (5 min). */
-	restartDecayMs?: number;
 	/** Override for `child_process.fork` — used in tests to inject a mock. */
 	forkFn?: typeof fork;
 }
-
-// ---------------------------------------------------------------------------
-// Allowed environment variables forwarded to the child process.
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // V8 heap configuration for the runtime child process.
@@ -88,6 +73,10 @@ export interface RuntimeChildManagerOptions {
 
 /** Heap limit in MB for the runtime child process. */
 const RUNTIME_CHILD_MAX_OLD_SPACE_MB = 4096;
+
+// ---------------------------------------------------------------------------
+// Allowed environment variables forwarded to the child process.
+// ---------------------------------------------------------------------------
 
 const ALLOWED_ENV_KEYS: ReadonlySet<string> = new Set([
 	'PATH', 'PATHEXT',
@@ -127,9 +116,9 @@ const ALLOWED_ENV_PREFIXES: readonly string[] = [
  * Build extra PATH directories for Windows.
  *
  * Windows GUI apps inherit the system PATH, but common developer tool
- * install locations (npm global, Node.js user install, Git for Windows,
- * Python Scripts) may not be present. We add well-known directories so
- * agent shell sessions can find binaries like `kanban`, `git`, `node`, etc.
+ * install locations (npm global, Node.js user install, Git for Windows)
+ * may not be present. We add well-known directories so agent shell
+ * sessions can find binaries like `kanban`, `git`, `node`, etc.
  */
 function getWindowsExtraPathDirs(): string[] {
 	const dirs: string[] = [];
@@ -146,8 +135,6 @@ function getWindowsExtraPathDirs(): string[] {
 	// Git for Windows
 	if (programFiles) dirs.push(join(programFiles, 'Git', 'cmd'));
 	if (programFilesX86) dirs.push(join(programFilesX86, 'Git', 'cmd'));
-	// Python — we skip the wildcard pattern (Python3*) since PATH entries
-	// are not globbed.  Users relying on Python should ensure it's on PATH.
 	return dirs.filter(Boolean);
 }
 
@@ -166,10 +153,6 @@ const EXTRA_PATH_DIRS: readonly string[] =
 				"/opt/homebrew/sbin",
 				"/usr/local/bin",
 				"/usr/local/sbin",
-				// System directories — macOS GUI apps launched via launchd
-				// inherit a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) but
-				// if the inherited PATH is empty or overridden, these must be
-				// present so shells and core tools can always be found.
 				"/usr/bin",
 				"/bin",
 				"/usr/sbin",
@@ -245,18 +228,13 @@ function treeKill(pid: number, signal: NodeJS.Signals = "SIGTERM"): void {
 // ---------------------------------------------------------------------------
 
 export class RuntimeChildManager extends EventEmitter {
-	private readonly opts: Required<
-		Pick<RuntimeChildManagerOptions,
-			"childScriptPath" | "shutdownTimeoutMs" | "heartbeatIntervalMs" |
-			"heartbeatTimeoutMs" | "maxRestarts" | "restartDecayMs"
-		>
-	> & { forkFn: typeof fork };
+	private readonly opts: {
+		childScriptPath: string;
+		shutdownTimeoutMs: number;
+		forkFn: typeof fork;
+	};
 
 	private child: ChildProcess | null = null;
-	private lastConfig: RuntimeConfig | null = null;
-	private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
-	private restartCount = 0;
-	private lastCrashTime = 0;
 	private shutdownRequested = false;
 	private disposed = false;
 
@@ -265,10 +243,6 @@ export class RuntimeChildManager extends EventEmitter {
 		this.opts = {
 			childScriptPath: options.childScriptPath,
 			shutdownTimeoutMs: options.shutdownTimeoutMs ?? 5_000,
-			heartbeatIntervalMs: options.heartbeatIntervalMs ?? 5_000,
-			heartbeatTimeoutMs: options.heartbeatTimeoutMs ?? 15_000,
-			maxRestarts: options.maxRestarts ?? 3,
-			restartDecayMs: options.restartDecayMs ?? 300_000,
 			forkFn: options.forkFn ?? fork,
 		};
 	}
@@ -277,7 +251,6 @@ export class RuntimeChildManager extends EventEmitter {
 	async start(config: RuntimeConfig): Promise<string> {
 		if (this.disposed) throw new Error("RuntimeChildManager has been disposed");
 		if (this.child) throw new Error("Child process is already running");
-		this.lastConfig = config;
 		this.shutdownRequested = false;
 		return this.spawnChild(config);
 	}
@@ -286,7 +259,6 @@ export class RuntimeChildManager extends EventEmitter {
 	async shutdown(): Promise<void> {
 		if (!this.child) return;
 		this.shutdownRequested = true;
-		this.clearHeartbeatTimer();
 		return new Promise<void>((resolve) => {
 			const forceTimer = setTimeout(() => {
 				this.forceKill(); resolve();
@@ -358,7 +330,6 @@ export class RuntimeChildManager extends EventEmitter {
 				this.emit("child-message", msg);
 				switch (msg.type) {
 					case "ready":
-						this.startHeartbeatMonitor();
 						settle(resolve, msg.url);
 						this.emit("ready", msg.url);
 						break;
@@ -367,77 +338,33 @@ export class RuntimeChildManager extends EventEmitter {
 						this.emit("error", msg.message);
 						break;
 					case "shutdown-complete":
-						this.clearHeartbeatTimer();
 						this.emit("shutdown-complete");
 						break;
 					case "heartbeat":
-						this.resetHeartbeatTimer();
+						// Acknowledge heartbeats from the child but do not
+						// monitor them — the child may send them, and failing
+						// to ack would cause it to self-terminate.
 						this.send({ type: "heartbeat-ack" });
 						break;
 				}
 			});
 
 			child.on("exit", (code, signal) => {
-				this.clearHeartbeatTimer();
 				this.child = null;
 				settle(reject, new Error(
 					`Runtime child exited unexpectedly (code=${code}, signal=${signal})`,
 				));
 				if (!this.shutdownRequested) {
 					this.emit("crashed", code, signal);
-					this.maybeAutoRestart();
 				}
 			});
 
 			child.on("error", (err) => {
-				this.clearHeartbeatTimer();
 				this.child = null;
 				settle(reject, err);
 			});
 
 			this.send({ type: "start", config });
-		});
-	}
-
-	// -- Heartbeat ----------------------------------------------------------
-
-	private startHeartbeatMonitor(): void { this.resetHeartbeatTimer(); }
-
-	private resetHeartbeatTimer(): void {
-		this.clearHeartbeatTimer();
-		this.heartbeatTimer = setTimeout(() => {
-			this.forceKill();
-		}, this.opts.heartbeatTimeoutMs);
-	}
-
-	private clearHeartbeatTimer(): void {
-		if (this.heartbeatTimer !== null) {
-			clearTimeout(this.heartbeatTimer);
-			this.heartbeatTimer = null;
-		}
-	}
-
-	// -- Auto-restart -------------------------------------------------------
-
-	private maybeAutoRestart(): void {
-		if (this.disposed || this.shutdownRequested || !this.lastConfig) return;
-		const now = Date.now();
-		if (now - this.lastCrashTime > this.opts.restartDecayMs) {
-			this.restartCount = 0;
-		}
-		this.lastCrashTime = now;
-		this.restartCount++;
-		if (this.restartCount > this.opts.maxRestarts) {
-			this.emit("error",
-				`Runtime child exceeded maximum restart attempts (${this.opts.maxRestarts})`,
-			);
-			return;
-		}
-		setImmediate(() => {
-			if (this.disposed || this.shutdownRequested) return;
-			this.spawnChild(this.lastConfig!).catch((err) => {
-				this.emit("error", `Auto-restart failed: ${(err as Error).message}`);
-			});
 		});
 	}
 

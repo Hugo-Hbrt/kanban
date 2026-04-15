@@ -134,7 +134,7 @@ describe("resolveChildScriptPath", () => {
 
 
 // ---------------------------------------------------------------------------
-// RuntimeChildManager — construction
+// RuntimeChildManager
 // ---------------------------------------------------------------------------
 
 describe("RuntimeChildManager", () => {
@@ -147,7 +147,6 @@ describe("RuntimeChildManager", () => {
 	});
 
 	afterEach(async () => {
-		// Ensure timers are cleared so vitest doesn't leak.
 		vi.useRealTimers();
 	});
 
@@ -155,10 +154,7 @@ describe("RuntimeChildManager", () => {
 		return new RuntimeChildManager({
 			childScriptPath: SCRIPT_PATH,
 			forkFn: createForkFn(mockChild),
-			heartbeatTimeoutMs: 15_000,
 			shutdownTimeoutMs: 5_000,
-			maxRestarts: 3,
-			restartDecayMs: 300_000,
 			...overrides,
 		});
 	}
@@ -182,13 +178,11 @@ describe("RuntimeChildManager", () => {
 			manager = createManager();
 			const startPromise = manager.start(TEST_CONFIG);
 
-			// forkFn should have been called
 			expect(mockChild.send).toHaveBeenCalledWith(
 				expect.objectContaining({ type: "start", config: TEST_CONFIG }),
 			);
 			expect(manager.running).toBe(true);
 
-			// Simulate the child reporting ready
 			mockChild.simulateMessage({ type: "ready", url: "http://localhost:3000" });
 
 			const url = await startPromise;
@@ -209,7 +203,6 @@ describe("RuntimeChildManager", () => {
 
 		it("rejects when the child sends an error message", async () => {
 			manager = createManager();
-			// Must listen for "error" to prevent EventEmitter from throwing
 			manager.on("error", () => {});
 			const startPromise = manager.start(TEST_CONFIG);
 
@@ -219,9 +212,7 @@ describe("RuntimeChildManager", () => {
 		});
 
 		it("rejects when the child exits before ready", async () => {
-			manager = createManager({ maxRestarts: 0 });
-			// Absorb "error" from exceeded restart attempts
-			manager.on("error", () => {});
+			manager = createManager();
 			const startPromise = manager.start(TEST_CONFIG);
 
 			mockChild.simulateExit(1, null);
@@ -264,7 +255,6 @@ describe("RuntimeChildManager", () => {
 				expect.objectContaining({ type: "shutdown" }),
 			);
 
-			// Simulate shutdown-complete from child
 			manager.emit("shutdown-complete");
 
 			await shutdownPromise;
@@ -291,7 +281,6 @@ describe("RuntimeChildManager", () => {
 
 			const shutdownPromise = manager.shutdown();
 
-			// Advance past the timeout
 			vi.advanceTimersByTime(150);
 
 			await shutdownPromise;
@@ -306,10 +295,10 @@ describe("RuntimeChildManager", () => {
 
 
 	// -----------------------------------------------------------------------
-	// Heartbeat
+	// Heartbeat acknowledgment (thin — ack only, no monitoring)
 	// -----------------------------------------------------------------------
 
-	describe("heartbeat", () => {
+	describe("heartbeat acknowledgment", () => {
 		it("replies with heartbeat-ack when child sends heartbeat", async () => {
 			manager = createManager();
 			const p = manager.start(TEST_CONFIG);
@@ -324,46 +313,27 @@ describe("RuntimeChildManager", () => {
 			);
 		});
 
-		it("force-kills when heartbeat times out", async () => {
-			manager = createManager({ heartbeatTimeoutMs: 200 });
+		it("does not force-kill on heartbeat timeout (no monitoring)", async () => {
+			manager = createManager();
 			const p = manager.start(TEST_CONFIG);
 			mockChild.simulateMessage({ type: "ready", url: "http://localhost:3000" });
 			await p;
 
-			// No heartbeat arrives — advance past the timeout
-			vi.advanceTimersByTime(250);
+			// Advance time well past any reasonable heartbeat timeout
+			vi.advanceTimersByTime(60_000);
 
-			expect(mockChild.kill).toHaveBeenCalledWith("SIGKILL");
-		});
-
-		it("resets the heartbeat timer on each heartbeat", async () => {
-			manager = createManager({ heartbeatTimeoutMs: 200 });
-			const p = manager.start(TEST_CONFIG);
-			mockChild.simulateMessage({ type: "ready", url: "http://localhost:3000" });
-			await p;
-
-			// Send heartbeat at 150ms — should reset timer
-			vi.advanceTimersByTime(150);
-			mockChild.simulateMessage({ type: "heartbeat" });
-
-			// Advance another 150ms (total 300ms from start, but only 150ms since
-			// last heartbeat) — should NOT have killed yet
-			vi.advanceTimersByTime(150);
+			// Child should NOT have been killed — no heartbeat monitoring
 			expect(mockChild.kill).not.toHaveBeenCalled();
-
-			// Advance past the timeout from last heartbeat
-			vi.advanceTimersByTime(100);
-			expect(mockChild.kill).toHaveBeenCalledWith("SIGKILL");
 		});
 	});
 
 
 	// -----------------------------------------------------------------------
-	// Auto-restart
+	// No auto-restart — crash emits event and stops
 	// -----------------------------------------------------------------------
 
-	describe("auto-restart", () => {
-		it("restarts after an unexpected crash", async () => {
+	describe("no auto-restart", () => {
+		it("does not restart after an unexpected crash", async () => {
 			let spawnCount = 0;
 			const children: MockChild[] = [];
 			const forkFn = vi.fn(() => {
@@ -376,24 +346,18 @@ describe("RuntimeChildManager", () => {
 			manager = new RuntimeChildManager({
 				childScriptPath: SCRIPT_PATH,
 				forkFn,
-				maxRestarts: 3,
-				restartDecayMs: 300_000,
-				heartbeatTimeoutMs: 60_000,
 			});
 
-			// Start — first child
 			const p = manager.start(TEST_CONFIG);
 			children[0].simulateMessage({ type: "ready", url: "http://localhost:3000" });
 			await p;
 			expect(spawnCount).toBe(1);
 
-			// Crash
+			// Crash — should NOT auto-restart
 			children[0].simulateExit(1, null);
-
-			// The auto-restart uses setImmediate — flush it
 			await vi.advanceTimersByTimeAsync(0);
 
-			expect(spawnCount).toBe(2);
+			expect(spawnCount).toBe(1); // unchanged — no restart
 		});
 
 		it("does not restart after graceful shutdown", async () => {
@@ -409,8 +373,6 @@ describe("RuntimeChildManager", () => {
 			manager = new RuntimeChildManager({
 				childScriptPath: SCRIPT_PATH,
 				forkFn,
-				maxRestarts: 3,
-				heartbeatTimeoutMs: 60_000,
 			});
 
 			const p = manager.start(TEST_CONFIG);
@@ -423,51 +385,6 @@ describe("RuntimeChildManager", () => {
 
 			await vi.advanceTimersByTimeAsync(0);
 			expect(spawnCount).toBe(1); // No restart
-		});
-
-		it("gives up after maxRestarts consecutive crashes", async () => {
-			let spawnCount = 0;
-			const children: MockChild[] = [];
-			const forkFn = vi.fn(() => {
-				const child = createMockChild(10000 + spawnCount);
-				children.push(child);
-				spawnCount++;
-				return child;
-			}) as unknown as typeof fork;
-
-			const errorHandler = vi.fn();
-			manager = new RuntimeChildManager({
-				childScriptPath: SCRIPT_PATH,
-				forkFn,
-				maxRestarts: 2,
-				restartDecayMs: 300_000,
-				heartbeatTimeoutMs: 60_000,
-			});
-			manager.on("error", errorHandler);
-
-			// Start
-			const p = manager.start(TEST_CONFIG);
-			children[0].simulateMessage({ type: "ready", url: "http://localhost:3000" });
-			await p;
-
-			// Crash 1 → restart
-			children[0].simulateExit(1, null);
-			await vi.advanceTimersByTimeAsync(0);
-			expect(spawnCount).toBe(2);
-
-			// Crash 2 → restart
-			children[1].simulateExit(1, null);
-			await vi.advanceTimersByTimeAsync(0);
-			expect(spawnCount).toBe(3);
-
-			// Crash 3 → exceeds maxRestarts (2), no more restarts
-			children[2].simulateExit(1, null);
-			await vi.advanceTimersByTimeAsync(0);
-			expect(spawnCount).toBe(3); // unchanged
-
-			expect(errorHandler).toHaveBeenCalledWith(
-				expect.stringContaining("exceeded maximum restart attempts"),
-			);
 		});
 	});
 
@@ -505,7 +422,6 @@ describe("RuntimeChildManager", () => {
 			manager = new RuntimeChildManager({
 				childScriptPath: SCRIPT_PATH,
 				forkFn: forkSpy,
-				heartbeatTimeoutMs: 60_000,
 			});
 
 			const p = manager.start(TEST_CONFIG);
@@ -514,9 +430,7 @@ describe("RuntimeChildManager", () => {
 
 			const forkCall = (forkSpy as ReturnType<typeof vi.fn>).mock.calls[0];
 			const options = forkCall[2] as { env: NodeJS.ProcessEnv };
-			// Should not have random process env keys like ELECTRON_RUN_AS_NODE
 			expect(options.env.ELECTRON_RUN_AS_NODE).toBeUndefined();
-			// Should have PATH
 			expect(options.env.PATH).toBeDefined();
 		});
 	});
@@ -532,7 +446,6 @@ describe("RuntimeChildManager", () => {
 			mockChild.simulateMessage({ type: "ready", url: "http://localhost:3000" });
 			await p;
 
-			// Dispose — should trigger shutdown
 			const disposePromise = manager.dispose();
 			mockChild.simulateExit(0, null);
 			await disposePromise;
@@ -547,11 +460,9 @@ describe("RuntimeChildManager", () => {
 
 	describe("crashed event", () => {
 		it("emits crashed event on unexpected exit", async () => {
-			manager = createManager({ maxRestarts: 0 });
+			manager = createManager();
 			const crashedHandler = vi.fn();
 			manager.on("crashed", crashedHandler);
-			// Absorb the "error" event from exceeded restart attempts
-			manager.on("error", () => {});
 
 			const p = manager.start(TEST_CONFIG);
 			mockChild.simulateMessage({ type: "ready", url: "http://localhost:3000" });

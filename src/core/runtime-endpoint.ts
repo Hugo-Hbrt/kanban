@@ -212,9 +212,11 @@ export function descriptorOriginFromUrl(descriptorUrl: string): string {
  */
 export async function isRuntimeReachable(origin: string, timeoutMs = 1500): Promise<boolean> {
 	try {
+		// Use getRuntimeFetch() so HTTPS with a custom CA is trusted.
+		const runtimeFetch = await getRuntimeFetch();
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
-		const response = await fetch(`${origin}/api/health`, {
+		const response = await runtimeFetch(`${origin}/api/health`, {
 			method: "GET",
 			signal: controller.signal,
 		});

@@ -237,9 +237,8 @@ export function createAuthMiddleware(deps: AuthMiddlewareDependencies): AuthMidd
 		}
 
 		// Primary: Bearer token from Authorization header.
-		// Fallback: kanban-auth session cookie — allows browser tabs opened
-		// by the CLI to authenticate against a desktop-owned runtime using
-		// the cookie set during the initial ?auth= handshake.
+		// Fallback: kanban-auth cookie — covers WebSocket upgrades and
+		// browser tabs that authenticated via the ?auth= redirect handshake.
 		const token = extractBearerToken(req) ?? extractTokenFromCookie(req);
 		if (!token || !constantTimeEqual(token, authToken)) {
 			res.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });
@@ -263,8 +262,7 @@ export function createAuthMiddleware(deps: AuthMiddlewareDependencies): AuthMidd
 		}
 
 		// Primary: Bearer token from Authorization header (CLI/programmatic clients).
-		// Fallback: kanban-auth session cookie (Electron desktop — see
-		// extractTokenFromCookie docstring for why this is needed).
+		// Fallback: kanban-auth cookie — see extractTokenFromCookie docstring.
 		// No query-param fallback. Ever.
 		const token = extractBearerToken(req) ?? extractTokenFromCookie(req);
 		if (!token || !constantTimeEqual(token, authToken)) {
