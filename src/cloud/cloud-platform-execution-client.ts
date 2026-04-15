@@ -1,18 +1,16 @@
 // ---------------------------------------------------------------------------
-// Cloud Platform Execution Client — KB-AUTH-3
+// Cloud Execution Client — KB-AUTH-3 / Boundary Realignment
 // ---------------------------------------------------------------------------
 //
-// Replaces direct-runner calls (POST /run) with cloud-platform API calls.
-// Kanban now talks ONLY to cloud-platform, never directly to task-runners.
+// Routes execution CRUD through core-api (the public control plane), which
+// proxies to cloud-platform's internal execution API.
 //
-// Endpoints:
-//   POST   /api/v1/executions              — create execution
-//   GET    /api/v1/executions/{id}         — get execution status
-//   GET    /api/v1/executions/{id}/logs    — get execution logs
-//   POST   /api/v1/executions/{id}/cancel  — cancel execution
+// Endpoints (via core-api):
+//   POST   /api/v2/cloud-platform/executions              — create execution
+//   GET    /api/v2/cloud-platform/executions/{id}         — get execution status
+//   GET    /api/v2/cloud-platform/executions/{id}/logs    — get execution logs
+//   POST   /api/v2/cloud-platform/executions/{id}/cancel  — cancel execution
 // ---------------------------------------------------------------------------
-
-import { z } from "zod";
 
 import type { CloudAuthProvider } from "./cloud-auth-provider";
 import {
@@ -110,7 +108,10 @@ function isRetryableStatus(statusCode: number): boolean {
 export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionClient {
 	private readonly baseUrl: string;
 	private readonly authProvider: CloudAuthProvider;
-	private readonly retryConfigs: Record<keyof typeof DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS, ExecutionClientRetryConfig>;
+	private readonly retryConfigs: Record<
+		keyof typeof DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS,
+		ExecutionClientRetryConfig
+	>;
 	private readonly fetchFn: typeof globalThis.fetch;
 	private readonly delayFn: (ms: number) => Promise<void>;
 
@@ -120,10 +121,16 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 		this.fetchFn = config.fetch ?? globalThis.fetch;
 		this.delayFn = config.delay ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
 		this.retryConfigs = {
-			createExecution: { ...DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS.createExecution, ...config.retryConfigs?.createExecution },
+			createExecution: {
+				...DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS.createExecution,
+				...config.retryConfigs?.createExecution,
+			},
 			getStatus: { ...DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS.getStatus, ...config.retryConfigs?.getStatus },
 			getLogs: { ...DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS.getLogs, ...config.retryConfigs?.getLogs },
-			cancelExecution: { ...DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS.cancelExecution, ...config.retryConfigs?.cancelExecution },
+			cancelExecution: {
+				...DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS.cancelExecution,
+				...config.retryConfigs?.cancelExecution,
+			},
 		};
 	}
 
@@ -132,7 +139,7 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 		const headers = await this.buildHeaders();
 		const response = await this.executeWithRetry(
 			async (sig) =>
-				this.fetchFn(`${this.baseUrl}/api/v1/executions`, {
+				this.fetchFn(`${this.baseUrl}/api/v2/cloud-platform/executions`, {
 					method: "POST",
 					headers,
 					body: JSON.stringify(validated),
@@ -150,7 +157,7 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 		const headers = await this.buildHeaders();
 		const response = await this.executeWithRetry(
 			async (sig) =>
-				this.fetchFn(`${this.baseUrl}/api/v1/executions/${encodeURIComponent(executionId)}`, {
+				this.fetchFn(`${this.baseUrl}/api/v2/cloud-platform/executions/${encodeURIComponent(executionId)}`, {
 					method: "GET",
 					headers,
 					signal: sig,
@@ -165,7 +172,7 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 
 	async getExecutionLogs(executionId: string, cursor?: string, signal?: AbortSignal): Promise<ExecutionLogsResponse> {
 		const headers = await this.buildHeaders();
-		const url = new URL(`${this.baseUrl}/api/v1/executions/${encodeURIComponent(executionId)}/logs`);
+		const url = new URL(`${this.baseUrl}/api/v2/cloud-platform/executions/${encodeURIComponent(executionId)}/logs`);
 		if (cursor) url.searchParams.set("cursor", cursor);
 		const response = await this.executeWithRetry(
 			async (sig) =>
@@ -186,7 +193,7 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 		const headers = await this.buildHeaders();
 		await this.executeWithRetry(
 			async (sig) =>
-				this.fetchFn(`${this.baseUrl}/api/v1/executions/${encodeURIComponent(executionId)}/cancel`, {
+				this.fetchFn(`${this.baseUrl}/api/v2/cloud-platform/executions/${encodeURIComponent(executionId)}/cancel`, {
 					method: "POST",
 					headers,
 					signal: sig,
@@ -213,12 +220,7 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 	 * Unwrap cloud-platform response envelope `{ data, success, error }`.
 	 */
 	private unwrapResponse(body: unknown): unknown {
-		if (
-			body !== null &&
-			typeof body === "object" &&
-			"data" in body &&
-			"success" in body
-		) {
+		if (body !== null && typeof body === "object" && "data" in body && "success" in body) {
 			const envelope = body as { data: unknown; success: boolean; error?: string };
 			if (!envelope.success && envelope.error) {
 				throw new CloudPlatformExecutionError({
@@ -261,11 +263,13 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 				if (!retryable) {
 					let message = `Cloud platform API error: HTTP ${response.status}`;
 					try {
-						const errBody = await response.json() as Record<string, unknown>;
+						const errBody = (await response.json()) as Record<string, unknown>;
 						const errObj = errBody?.error as Record<string, unknown> | undefined;
 						if (errObj?.message) message = String(errObj.message);
 						else if (errBody?.message) message = String(errBody.message);
-					} catch { /* use default message */ }
+					} catch {
+						/* use default message */
+					}
 					throw new CloudPlatformExecutionError({
 						message,
 						statusCode: response.status,

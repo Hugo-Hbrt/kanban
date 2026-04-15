@@ -44,6 +44,7 @@ export interface ConcurrencyLimiterExtension {
 	checkAdmission(taskId: string): Promise<ConcurrencyAdmissionDecision>;
 }
 
+import { buildExecutionCreateRequest } from "./cloud-execution-contracts";
 import type { CloudExecutionState, CloudExecutionTrigger } from "./cloud-execution-lifecycle";
 import {
 	deriveCurrentState,
@@ -51,19 +52,14 @@ import {
 	isTerminalState,
 	validateCloudExecutionTransition,
 } from "./cloud-execution-lifecycle";
-import type { CloudExecutionLogStoreInterface } from "./cloud-execution-log-store";
-import type { CloudExecutionLogStreamClient, LogStreamClientFactory } from "./cloud-execution-log-stream";
-import { defaultLogStreamClientFactory } from "./cloud-execution-log-stream";
+import type { CloudExecutionLogStreamClient } from "./cloud-execution-log-stream";
 import type { EventTriggerSource, PersistedTaskEvent, PersistedTaskExecution } from "./cloud-execution-persistence";
 import type { GovernanceClient } from "./cloud-governance-client";
-import { buildExecutionCreateRequest } from "./cloud-execution-contracts";
-import type { ExecutionStatusResponse } from "./cloud-execution-contracts";
 import type { CloudPlatformExecutionClient } from "./cloud-platform-execution-client";
 import {
-	type ExecutionPollingConfig,
 	DEFAULT_EXECUTION_POLLING_CONFIG,
+	type ExecutionPollingConfig,
 	isTerminalExecutionStatus,
-	pollExecutionStatus,
 } from "./cloud-platform-execution-client";
 
 // ---------------------------------------------------------------------------
@@ -124,7 +120,7 @@ export const DEFAULT_ORCHESTRATOR_CONFIG: Readonly<OrchestratorConfig> = {
 interface TaskContext {
 	readonly taskId: string;
 	executionId: string;
-	/** Cloud-platform execution ID (returned by POST /api/v1/executions). */
+	/** Cloud execution ID (returned by POST /api/v2/cloud-platform/executions via core-api). */
 	cloudExecutionId?: string;
 	cancelRequested: boolean;
 	abortController: AbortController;
@@ -323,10 +319,6 @@ export class CloudExecutionOrchestrator {
 	private readonly logger: OrchestratorLogger;
 	private readonly concurrencyLimiter: ConcurrencyLimiterExtension | null;
 	private readonly governanceClient: GovernanceClient | null;
-	/** @phase Phase2 — Log store for persisting SSE log entries. */
-	private readonly logStore: CloudExecutionLogStoreInterface | null;
-	/** @phase Phase2 — Factory for creating SSE log stream clients. */
-	private readonly logStreamFactory: LogStreamClientFactory;
 	private readonly activeTasks = new Map<string, TaskContext>();
 	private readonly pendingCancellations = new Set<string>();
 	private running = false;
@@ -339,8 +331,6 @@ export class CloudExecutionOrchestrator {
 		logger: OrchestratorLogger = noopLogger,
 		concurrencyLimiter?: ConcurrencyLimiterExtension | null,
 		governanceClient?: GovernanceClient | null,
-		logStore?: CloudExecutionLogStoreInterface | null,
-		logStreamFactory?: LogStreamClientFactory | null,
 	) {
 		this.store = store;
 		this.executionClient = executionClient;
@@ -348,8 +338,6 @@ export class CloudExecutionOrchestrator {
 		this.logger = logger;
 		this.concurrencyLimiter = concurrencyLimiter ?? null;
 		this.governanceClient = governanceClient ?? null;
-		this.logStore = logStore ?? null;
-		this.logStreamFactory = logStreamFactory ?? defaultLogStreamClientFactory;
 	}
 
 	/** Start the worker loop. */
@@ -508,13 +496,37 @@ export class CloudExecutionOrchestrator {
 	}
 
 	// -- policy_check -> provisioning (governance required) -------------------
+	//
+	// @bridge — Slice 3 governance consolidation
+	//
+	// Primary governance authority is now server-side in core-api (Slice 3).
+	// core-api validates provider/model policy and budget authorization before
+	// accepting execution creation or provisioning requests.
+	//
+	// This client-side governance call is preserved as BRIDGE BEHAVIOR for:
+	//   1. Budget reservation (client-side reservation is still useful for
+	//      local orchestrator state tracking and early denial UX).
+	//   2. Concurrency admission (local orchestrator concern, not core-api's).
+	//   3. Backward compatibility with environments where core-api governance
+	//      integration is not yet deployed.
+	//
+	// Once server-side governance is proven stable, this bridge can be
+	// simplified to a no-op pass-through that only records the transition.
+	// ---------------------------------------------------------------------------
 
 	private async handlePolicyCheck(taskId: string): Promise<TaskStepResult> {
 		if (!this.governanceClient) {
-			this.logger.warn("Governance client not configured — auto-approving for development", { taskId });
+			// @bridge: No governance client — auto-approve.
+			// Server-side governance in core-api is now the primary authority.
+			// The client-side check is defense-in-depth / bridge only.
+			this.logger.info(
+				"Governance client not configured — auto-approving (server-side governance is primary authority)",
+				{ taskId },
+			);
 			return this.applyTransition(taskId, "policy_check", "authorized", "system", {
 				governanceDecision: "authorized",
-				reason: "governance bypassed — no governance client configured (development mode)",
+				reason: "governance bypassed — server-side governance is primary authority (Slice 3)",
+				bridgeBehavior: true,
 			});
 		}
 
@@ -523,6 +535,9 @@ export class CloudExecutionOrchestrator {
 			const latest = execs[execs.length - 1];
 			const meta = latest?.remoteMetadata;
 			const executionMode = latest?.executionMode ?? "cloud_agent";
+
+			// @bridge: Client-side authorization check (defense-in-depth).
+			// core-api now enforces governance server-side on execution creation.
 			const decision = await this.governanceClient.checkAuthorization({
 				taskId,
 				orgId: this.config.orgId ?? "",
@@ -540,9 +555,10 @@ export class CloudExecutionOrchestrator {
 			});
 
 			if (decision.decision === "authorized") {
-				this.logger.info("Policy check authorized", { taskId, reason: decision.reason });
+				this.logger.info("Policy check authorized (bridge)", { taskId, reason: decision.reason });
 
-				// Reserve budget before provisioning (PRD §9.3 D2)
+				// @bridge: Client-side budget reservation (defense-in-depth).
+				// Useful for local state tracking and early denial UX.
 				let reservationId: string | undefined;
 				try {
 					const limits = this.config.requestedLimits ?? { maxComputeSeconds: 1800, maxTokenBudget: 100_000 };
@@ -555,9 +571,13 @@ export class CloudExecutionOrchestrator {
 						executionMode,
 					});
 					reservationId = reservation.reservationId;
-					this.logger.info("Budget reserved", { taskId, reservationId, expiresAt: reservation.expiresAt });
+					this.logger.info("Budget reserved (bridge)", {
+						taskId,
+						reservationId,
+						expiresAt: reservation.expiresAt,
+					});
 				} catch (e) {
-					this.logger.warn("Budget reservation failed, proceeding without reservation", {
+					this.logger.warn("Budget reservation failed (bridge), proceeding — server-side governance is primary", {
 						taskId,
 						error: e instanceof Error ? e.message : String(e),
 					});
@@ -568,17 +588,21 @@ export class CloudExecutionOrchestrator {
 					policySnapshotId: decision.policySnapshotId,
 					reason: decision.reason,
 					reservationId,
+					bridgeBehavior: true,
 				});
 			}
 
-			this.logger.info("Policy check denied", { taskId, reason: decision.reason });
+			this.logger.info("Policy check denied (bridge)", { taskId, reason: decision.reason });
 			return this.applyTransition(taskId, "policy_check", "denied", "system", {
 				governanceDecision: "denied",
 				reason: decision.reason,
 				policySnapshotId: decision.policySnapshotId,
+				bridgeBehavior: true,
 			});
 		} catch (e) {
-			this.logger.error("Unexpected governance error, denying execution", {
+			// @bridge: On client-side governance error, still deny as defense-in-depth.
+			// Server-side governance will also deny if applicable.
+			this.logger.error("Unexpected governance error (bridge), denying execution", {
 				taskId,
 				error: e instanceof Error ? e.message : String(e),
 			});
@@ -586,6 +610,7 @@ export class CloudExecutionOrchestrator {
 				governanceDecision: "denied",
 				reason: `governance error: ${e instanceof Error ? e.message : String(e)}`,
 				governanceError: true,
+				bridgeBehavior: true,
 			});
 		}
 	}
@@ -687,9 +712,9 @@ export class CloudExecutionOrchestrator {
 		}
 	}
 
-	// -- running -> poll cloud-platform for terminal state -------------------
+	// -- running -> poll for terminal state via core-api ----------------------
 	// KB-AUTH-3: Instead of invoking /run on the runner and waiting for
-	// callbacks, we poll cloud-platform's GET /api/v1/executions/{id} endpoint.
+	// callbacks, we poll core-api's GET /api/v2/cloud-platform/executions/{id}.
 
 	private async handleRunning(taskId: string): Promise<TaskStepResult | null> {
 		const ctx = this.getOrCreateCtx(taskId);
@@ -1020,65 +1045,5 @@ export class CloudExecutionOrchestrator {
 			ctx.abortController.abort();
 			this.activeTasks.delete(taskId);
 		}
-	}
-
-	// -- Phase 2: log stream management --------------------------------------
-
-	/**
-	 * Start an SSE log stream for a task after /run is accepted.
-	 * The stream client is stored on the TaskContext for lifecycle tracking.
-	 * Entries are persisted via the log store; errors are logged for observability.
-	 */
-	private startLogStream(
-		ctx: TaskContext,
-		taskId: string,
-		instanceId: string,
-		hostname: string,
-		executionId: string,
-	): void {
-		if (!this.logStore) return; // No log store configured — skip
-
-		const client = this.logStreamFactory.create({
-			hostname,
-			executionId,
-			taskId,
-			callbacks: {
-				onEntry: (entry) => {
-					this.logStore?.append(taskId, entry);
-				},
-				onConnectionStateChange: (state) => {
-					this.logger.info("Log stream connection state", {
-						taskId,
-						instanceId,
-						state,
-					});
-				},
-				onError: (error, recoverable) => {
-					if (recoverable) {
-						this.logger.warn("Log stream transient error", {
-							taskId,
-							instanceId,
-							error: error.message,
-						});
-					} else {
-						this.logger.error("Log stream fatal error", {
-							taskId,
-							instanceId,
-							error: error.message,
-						});
-					}
-				},
-			},
-		});
-
-		ctx.logStreamClient = client;
-
-		// Connect async — don't block the /run acceptance
-		client.connect().catch((e) => {
-			this.logger.error("Log stream connect failed", {
-				taskId,
-				error: e instanceof Error ? e.message : String(e),
-			});
-		});
 	}
 }

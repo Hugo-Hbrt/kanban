@@ -8,27 +8,21 @@
 // configuration. This is the single entry-point that the Kanban server calls
 // to activate the cloud-agent execution path.
 //
-// KB-AUTH-3: Rewritten to use CloudPlatformExecutionClient instead of
-// direct runner invocation. Kanban now talks ONLY to cloud-platform.
+// Boundary realignment: Execution CRUD now routes through core-api (the public
+// control plane), not directly to cloud-platform. KANBAN_CLOUD_PLATFORM_BASE_URL
+// should point to core-api's base URL.
 // ---------------------------------------------------------------------------
 
-import { CloudExecutionStore } from "./cloud-execution-persistence";
+import { type CloudAuthProvider, EnvironmentCloudAuthProvider } from "./cloud-auth-provider";
 import {
 	CloudExecutionOrchestrator,
+	DEFAULT_ORCHESTRATOR_CONFIG,
 	type OrchestratorConfig,
 	type OrchestratorLogger,
-	DEFAULT_ORCHESTRATOR_CONFIG,
 } from "./cloud-execution-orchestrator";
-import {
-	GovernanceHttpClient,
-	type GovernanceClient,
-	parseGovernanceConfig,
-} from "./cloud-governance-client";
-import { EnvironmentCloudAuthProvider, type CloudAuthProvider } from "./cloud-auth-provider";
-import {
-	CloudPlatformExecutionHttpClient,
-	type CloudPlatformExecutionClient,
-} from "./cloud-platform-execution-client";
+import { CloudExecutionStore } from "./cloud-execution-persistence";
+import { type GovernanceClient, GovernanceHttpClient, parseGovernanceConfig } from "./cloud-governance-client";
+import { type CloudPlatformExecutionClient, CloudPlatformExecutionHttpClient } from "./cloud-platform-execution-client";
 
 // ---------------------------------------------------------------------------
 // Environment Variable Names
@@ -92,17 +86,17 @@ export function bootstrapCloudExecution(
 	const store = new CloudExecutionStore(storePath);
 
 	// Cloud-platform execution client (KB-AUTH-3)
-	const executionClient: CloudPlatformExecutionClient = overrides?.executionClient ?? new CloudPlatformExecutionHttpClient({
-		baseUrl: cloudBaseUrl,
-		authProvider,
-		fetch: overrides?.fetchFn,
-	});
+	const executionClient: CloudPlatformExecutionClient =
+		overrides?.executionClient ??
+		new CloudPlatformExecutionHttpClient({
+			baseUrl: cloudBaseUrl,
+			authProvider,
+			fetch: overrides?.fetchFn,
+		});
 
 	// Governance client (optional — returns null if not configured)
 	const govConfig = parseGovernanceConfig(env, { authProvider });
-	const governanceClient: GovernanceClient | null = govConfig
-		? new GovernanceHttpClient(govConfig, logger)
-		: null;
+	const governanceClient: GovernanceClient | null = govConfig ? new GovernanceHttpClient(govConfig, logger) : null;
 
 	// Orchestrator config
 	const config: OrchestratorConfig = {
