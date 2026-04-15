@@ -79,7 +79,8 @@ function extractBearerToken(req: IncomingMessage): string | null {
 		return null;
 	}
 	const parts = header.split(" ");
-	if (parts.length !== 2 || parts[0] !== "Bearer") {
+	// RFC 7235: auth-scheme comparison is case-insensitive.
+	if (parts.length !== 2 || parts[0].toLowerCase() !== "bearer") {
 		return null;
 	}
 	return parts[1] ?? null;
