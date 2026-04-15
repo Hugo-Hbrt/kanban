@@ -1,4 +1,8 @@
 export * from "./core/api-contract";
+export {
+	DEFAULT_KANBAN_RUNTIME_HOST,
+	DEFAULT_KANBAN_RUNTIME_PORT,
+} from "./core/runtime-endpoint";
 export type { DescriptorTrustResult, RuntimeDescriptor } from "./core/runtime-descriptor";
 export {
 	clearRuntimeDescriptor,

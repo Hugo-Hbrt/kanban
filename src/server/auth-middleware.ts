@@ -23,14 +23,13 @@
  *     - `allowedOrigins` accepts a static array or a lazy getter (for port-0
  *       scenarios where the origin isn't known until after `server.listen()`).
  *
- *  4. **Token validation** — when `authToken` is set (desktop mode):
+ *  4. **Token validation** — when `authToken` is set:
  *     - **Primary: Bearer token** from `Authorization: Bearer <token>` header.
  *       Used by tRPC/fetch clients that can set custom headers.
- *     - **Fallback: `kanban-auth` cookie** — covers browser tabs opened by
- *       the CLI against a desktop-owned runtime.  The cookie is set during
- *       the initial `?auth=` redirect handshake and is HttpOnly +
- *       SameSite=Strict.  Also used for WebSocket upgrades where custom
- *       headers cannot be set by the browser.
+ *     - **Fallback: `kanban-auth` cookie** — covers contexts where custom
+ *       headers cannot be set: browser WebSocket upgrades and browser tabs
+ *       that authenticated via the `?auth=` redirect handshake.  The cookie
+ *       is HttpOnly + SameSite=Strict.
  *     - Bearer is checked first; cookie is only consulted if no Bearer header
  *       is present. This means programmatic clients always use the explicit
  *       header path.

@@ -33,6 +33,7 @@ import {
 	registerProtocol,
 } from "./protocol-handler.js";
 import { relayOAuthCallback } from "./oauth-relay.js";
+import { DEFAULT_KANBAN_RUNTIME_HOST, DEFAULT_KANBAN_RUNTIME_PORT } from "kanban";
 import { RuntimeChildManager } from "./runtime-child.js";
 import { WindowRegistry } from "./window-registry.js";
 import type { PersistedWindowState } from "./window-state.js";
@@ -43,14 +44,8 @@ import type { PersistedWindowState } from "./window-state.js";
 
 const BACKGROUND_COLOR = "#1F2428";
 
-/**
- * Default runtime endpoint — duplicated from `src/core/runtime-endpoint.ts`
- * because the desktop package cannot import from the root `kanban` package's
- * internal modules (only the `kanban/runtime-start` subpath is exposed).
- * Keep in sync with DEFAULT_KANBAN_RUNTIME_HOST / DEFAULT_KANBAN_RUNTIME_PORT.
- */
-const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_PORT = 3484;
+const DEFAULT_HOST = DEFAULT_KANBAN_RUNTIME_HOST;
+const DEFAULT_PORT = DEFAULT_KANBAN_RUNTIME_PORT;
 
 /** Health check timeout (ms). */
 const HEALTH_TIMEOUT_MS = 3_000;

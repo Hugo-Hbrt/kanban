@@ -54,6 +54,14 @@ describe("start runtime if missing", () => {
 		expect(mainSrc).not.toContain("heartbeatIntervalMs:");
 	});
 
+	it("imports default host/port from kanban package (no duplication)", () => {
+		expect(mainSrc).toContain("DEFAULT_KANBAN_RUNTIME_HOST, DEFAULT_KANBAN_RUNTIME_PORT");
+		expect(mainSrc).toContain('from "kanban"');
+		// No hardcoded literals — values come from the shared constants
+		expect(mainSrc).not.toMatch(/const DEFAULT_HOST\s*=\s*["']127/);
+		expect(mainSrc).not.toMatch(/const DEFAULT_PORT\s*=\s*3484/);
+	});
+
 	it("sets ownsChild = true after starting", () => {
 		expect(mainSrc).toContain("ownsChild = true");
 	});
