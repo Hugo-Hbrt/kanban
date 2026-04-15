@@ -3,6 +3,8 @@
 // workspace actions, but detailed Cline, terminal, and config behavior
 // should stay in focused services instead of accumulating here.
 
+import { execSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -36,8 +38,6 @@ import {
 	parseTaskSessionStartRequest,
 	parseTaskSessionStopRequest,
 } from "../core/api-validation";
-import { execSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { isHomeAgentSessionId } from "../core/home-agent-session";
 import { resolveTaskTitle } from "../core/task-title.js";
 import { openInBrowser } from "../server/browser";
@@ -67,9 +67,7 @@ export interface CreateRuntimeApiDependencies {
 		| import("../cloud/cloud-execution-log-store").CloudExecutionLogStoreInterface
 		| null;
 	/** Cloud execution runtime — null when cloud execution is not configured. */
-	getCloudExecutionRuntime?: () =>
-		| import("../cloud/cloud-execution-bootstrap").CloudExecutionRuntime
-		| null;
+	getCloudExecutionRuntime?: () => import("../cloud/cloud-execution-bootstrap").CloudExecutionRuntime | null;
 }
 
 async function resolveExistingTaskCwdOrEnsure(options: {
@@ -165,7 +163,6 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 		startTaskSession: async (workspaceScope, input) => {
 			try {
 				const body = parseTaskSessionStartRequest(input);
-				console.log("[DEBUG startTaskSession] executionMode:", body.executionMode, "| raw input executionMode:", (input as any)?.executionMode);
 				if (body.resumeFromTrash) {
 					deps.broadcastTaskChatCleared?.(workspaceScope.workspaceId, body.taskId);
 				}
@@ -193,6 +190,10 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 						// Not a git repo or no remote — will be caught by provisioning
 					}
 
+					// Runtime path preference — "target" = gateway+WebSocket, "bridge" = HTTP polling
+					const runtimePath = cloudRuntime.runtimePath ?? "bridge";
+					const gatewayAvailable = !!cloudRuntime.runtimeClient;
+
 					await cloudRuntime.store.appendEvent({
 						eventId: randomUUID(),
 						taskId: body.taskId,
@@ -206,6 +207,8 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 							baseRef: body.baseRef,
 							executionMode: "cloud_agent",
 							repoUrl,
+							runtimePath,
+							gatewayAvailable,
 						},
 					});
 
