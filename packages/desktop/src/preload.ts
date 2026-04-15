@@ -24,20 +24,12 @@ const desktopApi = {
 	},
 
 	/**
-	 * Persist a key/value setting to a file-backed store that survives
-	 * origin/port changes across restarts.
+	 * Request the main process to restart the runtime child.
+	 * Used by the disconnected screen's "Restart" button.
 	 */
-	setDesktopSetting(key: string, value: string): void {
-		ipcRenderer.send("set-desktop-setting", key, value);
+	restartRuntime(): void {
+		ipcRenderer.send("restart-runtime");
 	},
-
-	/**
-	 * Read a persisted setting. Returns null if the key has never been set.
-	 */
-	getDesktopSetting(key: string): Promise<string | null> {
-		return ipcRenderer.invoke("get-desktop-setting", key);
-	},
-
 } as const;
 
 contextBridge.exposeInMainWorld("desktop", desktopApi);

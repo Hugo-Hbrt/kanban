@@ -7,7 +7,7 @@
 	"main": "dist/main.js",
 	"scripts": {
 		"clean": "shx rm -rf dist out",
-		"build:ts": "tsc -p tsconfig.build.json && esbuild src/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/preload.js",
+		"build:ts": "tsc -p tsconfig.build.json && esbuild src/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/preload.js && shx cp src/disconnected.html dist/disconnected.html",
 		"build:mac": "npm run rebuild:pty && npm run build:ts && electron-builder --mac --config electron-builder.yml",
 		"build:mac:dmg": "npm run rebuild:pty && npm run build:ts && electron-builder --mac dmg --config electron-builder.yml",
 		"build:mac:arm64": "npm run rebuild:pty && npm run build:ts && electron-builder --mac dmg --arm64 --config electron-builder.yml",
