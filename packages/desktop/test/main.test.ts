@@ -318,6 +318,6 @@ describe("before-quit shutdown safety", () => {
 
 		// The catch block should log with the desktop prefix.
 		expect(handler).toContain("catch");
-		expect(handler).toContain("[desktop] Connection shutdown error:");
+		expect(handler).toContain("[desktop] Runtime shutdown error:");
 	});
 });
