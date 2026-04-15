@@ -1,3 +1,45 @@
+/**
+ * Auth middleware for the Kanban runtime HTTP/WS server.
+ *
+ * Security model (request classification):
+ *
+ *  1. **Health endpoint (`/api/health`)** — always exempt from auth.
+ *     The takeover protocol, desktop connection-check, and CLI runtime-attach
+ *     all need to probe liveness before they possess a token. Exposing only
+ *     `{ ok, version }` is safe; no user data is returned.
+ *
+ *  2. **Static assets (`/`, `/index.html`, `/assets/*`)** — exempt from auth.
+ *     The web UI must load its HTML/JS/CSS *before* it can read the auth token
+ *     from the URL hash and begin making authenticated API calls. Serving the
+ *     static shell unauthenticated is standard for SPAs; all data APIs remain
+ *     gated.
+ *
+ *  3. **Origin validation (CSRF defense-in-depth)** — when `allowedOrigins` is
+ *     configured, every API request and WS upgrade must carry a matching
+ *     `Origin` header. This blocks cross-origin form POSTs and rogue pages
+ *     from reaching the runtime even if they somehow obtain a token.
+ *     - Requests with no `Origin` header are allowed (CLI/programmatic clients
+ *       do not send one).
+ *     - `allowedOrigins` accepts a static array or a lazy getter (for port-0
+ *       scenarios where the origin isn't known until after `server.listen()`).
+ *
+ *  4. **Token validation** — when `authToken` is set (desktop mode):
+ *     - **Primary: Bearer token** from `Authorization: Bearer <token>` header.
+ *       Used by tRPC/fetch clients that can set custom headers.
+ *     - **Fallback: `kanban-auth` cookie** — covers Electron WebSocket upgrades
+ *       where `session.webRequest.onBeforeSendHeaders` cannot intercept the
+ *       upgrade handshake (Chromium limitation). The cookie is set during the
+ *       initial `?auth=` redirect handshake and is HttpOnly + SameSite=Strict.
+ *     - Bearer is checked first; cookie is only consulted if no Bearer header
+ *       is present. This means programmatic clients always use the explicit
+ *       header path.
+ *     - **No query-param fallback.** Tokens in URLs leak into server logs,
+ *       Referer headers, and browser history.
+ *     - When `authToken` is undefined (local CLI mode), token validation is
+ *       skipped entirely — the server is only reachable via localhost.
+ *
+ *  All token comparisons use constant-time equality to prevent timing attacks.
+ */
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 

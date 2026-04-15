@@ -1,7 +1,7 @@
 /**
  * RuntimeChildManager — manages the Kanban runtime as a child process.
  *
- * Responsibilities:
+ * Responsibilities (what this layer DOES):
  * - Forking the runtime child process (outside asar via asarUnpack)
  * - Sending ParentToChildMessage IPC messages (start, shutdown, heartbeat-ack)
  * - Receiving ChildToParentMessage IPC messages (ready, error, shutdown-complete, heartbeat)
@@ -9,6 +9,24 @@
  * - Crash detection and auto-restart logic (3 attempts, 5-min decay)
  * - Graceful shutdown with force-kill fallback
  * - tree-kill on Windows for grandchild cleanup
+ *
+ * Non-responsibilities (what this layer deliberately does NOT do):
+ * - No HTTP health checks — the parent trusts IPC "ready" messages, not HTTP probes.
+ * - No auth token management — tokens are passed through IPC config, not generated here.
+ * - No window management — this layer has no knowledge of BrowserWindows.
+ * - No task/workspace orchestration — that belongs to the runtime itself.
+ * - No process supervision beyond restart attempts — after MAX_RESTART_COUNT
+ *   (3), the manager emits "crashed" and stops. The main process decides
+ *   whether to show an error dialog or quit.
+ *
+ * Environment forwarding:
+ * - The child inherits the parent's env plus KANBAN_DESKTOP=1 and any
+ *   overrides from RuntimeConfig (port, auth token, CLI shim path, etc).
+ * - PATH is inherited as-is from the Electron main process. No shell
+ *   expansion or interactive shell launch — see AGENTS.md on why.
+ * - Node heap is capped at 512 MB via --max-old-space-size to prevent the
+ *   runtime from competing with Electron's own V8 heap. This is a tuning
+ *   knob, not a hard constraint; adjust if runtime workloads grow.
  */
 
 import { type ChildProcess, execSync, fork } from "node:child_process";

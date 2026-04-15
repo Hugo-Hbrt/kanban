@@ -4,6 +4,12 @@
  * This file is spawned by RuntimeChildManager via child_process.fork().
  * It listens for IPC messages from the Electron main process, starts the
  * Kanban runtime, and sends lifecycle messages back.
+ *
+ * ⚠️  THIS FILE MUST STAY MINIMAL.  It is a thin IPC adapter, not a place
+ * for business logic.  If you find yourself adding domain logic (workspace
+ * orchestration, auth management, etc.), that logic belongs in the runtime
+ * itself (`src/runtime-start.ts`) or in the parent (`runtime-child.ts`).
+ * Growth here is a code smell.
  */
 
 import type { ChildToParentMessage, ParentToChildMessage } from "./ipc-protocol.js";

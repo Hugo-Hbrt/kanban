@@ -4,6 +4,10 @@
  *
  * Uses discriminated unions on the `type` field so message handlers can
  * narrow the payload with a simple switch/case.
+ *
+ * ⚠️  Keep this file intentionally minimal — only pure type definitions
+ * and zero runtime code.  Both the main process and the child process
+ * import it, so any executable code added here runs in both contexts.
  */
 
 // ---------------------------------------------------------------------------

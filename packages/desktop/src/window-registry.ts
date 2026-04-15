@@ -5,11 +5,20 @@
  * All window creation, lookup, and teardown MUST go through this registry.
  * The main module should never hold a bare `BrowserWindow` reference.
  *
- * Key behaviours:
+ * Responsibilities (window-centric):
+ * - Window creation with persisted bounds, auth cookie injection, and CSP
  * - Focus tracking: the most-recently-focused window is returned by
  *   `getFocused()` when no window currently has OS focus.
+ * - Per-window metadata: projectId, URL pathname, title
+ * - Navigation guards: restrict loads to trusted origins
  * - State persistence: `saveAllStates()` captures bounds from every window
  *   and writes them to `window-states.json`.
+ *
+ * Non-responsibilities (must NOT creep in):
+ * - No runtime lifecycle management — that belongs to RuntimeChildManager.
+ * - No IPC protocol awareness — IPC messages go through the main module.
+ * - No direct task/workspace orchestration — data flows through tRPC.
+ * - No auth token generation or rotation — tokens come from the main module.
  */
 
 import { BrowserWindow, shell } from "electron";
