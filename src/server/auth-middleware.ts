@@ -26,10 +26,11 @@
  *  4. **Token validation** — when `authToken` is set (desktop mode):
  *     - **Primary: Bearer token** from `Authorization: Bearer <token>` header.
  *       Used by tRPC/fetch clients that can set custom headers.
- *     - **Fallback: `kanban-auth` cookie** — covers Electron WebSocket upgrades
- *       where `session.webRequest.onBeforeSendHeaders` cannot intercept the
- *       upgrade handshake (Chromium limitation). The cookie is set during the
- *       initial `?auth=` redirect handshake and is HttpOnly + SameSite=Strict.
+ *     - **Fallback: `kanban-auth` cookie** — covers browser tabs opened by
+ *       the CLI against a desktop-owned runtime.  The cookie is set during
+ *       the initial `?auth=` redirect handshake and is HttpOnly +
+ *       SameSite=Strict.  Also used for WebSocket upgrades where custom
+ *       headers cannot be set by the browser.
  *     - Bearer is checked first; cookie is only consulted if no Bearer header
  *       is present. This means programmatic clients always use the explicit
  *       header path.
@@ -87,13 +88,10 @@ function extractBearerToken(req: IncomingMessage): string | null {
 /**
  * Extract the auth token from a `kanban-auth` cookie.
  *
- * This is the fallback for WebSocket upgrade requests in Electron desktop
- * mode.  Electron's `session.webRequest.onBeforeSendHeaders` intercepts
- * regular HTTP requests but **not** WebSocket upgrades, so the renderer's
- * `new WebSocket()` call never receives the `Authorization` header.
- * A session cookie set by the main process before `loadURL` is sent on
- * every request — including WS upgrades — giving us a transparent auth
- * channel that doesn't require web-UI changes.
+ * The cookie is a fallback for contexts where `Authorization` headers
+ * cannot be set: browser WebSocket upgrades (the WS spec does not allow
+ * custom headers) and browser tabs opened by the CLI via `?auth=` redirect.
+ * The cookie is set by the auth handshake and is HttpOnly + SameSite=Strict.
  */
 const COOKIE_NAME = "kanban-auth";
 

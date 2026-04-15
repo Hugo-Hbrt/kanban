@@ -1,21 +1,15 @@
 /**
- * Electron main process entry point — lean architecture.
+ * Electron main process entry point.
  *
  * Flow:
- *   1. On launch: health-check the default port (3484 or configured).
+ *   1. On launch: health-check the default port (3484).
  *      If a runtime is already running → load its URL in the window. Done.
  *   2. If nothing's running: start a runtime child process, wait for the
- *      "ready" IPC message, then load the URL.
- *   3. On disconnect mid-session: the RuntimeChildManager auto-restarts
- *      (up to 3 times). If recovery fails → show an error dialog.
+ *      IPC "ready" message, then load the URL.
+ *   3. On child crash: RuntimeChildManager handles restart attempts
+ *      internally.  If all attempts fail → show disconnected screen.
  *   4. Multi-window: each new window is another BrowserWindow pointing
  *      at the same runtime URL. The server handles multiple clients.
- *
- * What this file does NOT do:
- *   - No runtime descriptor files (runtime.json).
- *   - No takeover/failover protocol.
- *   - No connection manager / connection store / connection menu.
- *   - No auth header injection for localhost.
  */
 
 import {
@@ -42,6 +36,7 @@ import {
 import { relayOAuthCallback } from "./oauth-relay.js";
 import { RuntimeChildManager } from "./runtime-child.js";
 import { WindowRegistry } from "./window-registry.js";
+import type { PersistedWindowState } from "./window-state.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -156,7 +151,7 @@ async function clearAuthCookie(origin: string): Promise<void> {
 function createAppWindow(options: {
 	projectId?: string | null;
 	initialPath?: string | null;
-	savedState?: import("./window-state.js").PersistedWindowState;
+	savedState?: PersistedWindowState;
 }): BrowserWindow {
 	const window = windowRegistry.createWindow({
 		projectId: options.projectId ?? null,
@@ -171,8 +166,8 @@ function createAppWindow(options: {
 		onWindowFocused: () => rebuildMenu(),
 	});
 
-	// Renderer recovery — reload on crash/fail.
-	attachSimpleRecovery(window);
+	// Renderer recovery — health-check before reload.
+	attachRendererRecovery(window);
 
 	// If the runtime is already running, load the URL in this window.
 	if (runtimeUrl) {
@@ -199,10 +194,10 @@ function createAppWindow(options: {
 }
 
 // ---------------------------------------------------------------------------
-// Simple renderer recovery (no ConnectionManager)
+// Renderer recovery — health-first
 // ---------------------------------------------------------------------------
 
-function attachSimpleRecovery(window: BrowserWindow): void {
+function attachRendererRecovery(window: BrowserWindow): void {
 	window.webContents.on(
 		"did-fail-load",
 		(_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {
@@ -240,9 +235,20 @@ function attachSimpleRecovery(window: BrowserWindow): void {
 	window.webContents.on("render-process-gone", (_event, details) => {
 		console.error(`[desktop] Renderer process gone: reason=${details.reason}`);
 
-		if (runtimeUrl && !window.isDestroyed()) {
-			window.loadURL(runtimeUrl).catch(() => {});
-		}
+		if (window.isDestroyed()) return;
+
+		// Same health-first logic as did-fail-load: if the runtime died,
+		// converge on the disconnected screen instead of retry-looping.
+		const origin = runtimeUrl ?? `http://${DEFAULT_HOST}:${DEFAULT_PORT}`;
+		void checkHealth(origin).then((healthy) => {
+			if (window.isDestroyed()) return;
+			if (healthy && runtimeUrl) {
+				window.loadURL(runtimeUrl).catch(() => {});
+			} else {
+				runtimeUrl = null;
+				showDisconnectedScreen();
+			}
+		});
 	});
 }
 

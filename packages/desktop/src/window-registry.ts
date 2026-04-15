@@ -1,16 +1,16 @@
 /**
  * WindowRegistry — sole owner of BrowserWindow lifecycle, focus tracking,
- * and per-window metadata (projectId, auth interceptor disposal, title).
+ * and per-window metadata (projectId, title).
  *
  * All window creation, lookup, and teardown MUST go through this registry.
  * The main module should never hold a bare `BrowserWindow` reference.
  *
  * Responsibilities (window-centric):
- * - Window creation with persisted bounds, auth cookie injection, and CSP
+ * - Window creation with persisted bounds and CSP
  * - Focus tracking: the most-recently-focused window is returned by
  *   `getFocused()` when no window currently has OS focus.
  * - Per-window metadata: projectId, URL pathname, title
- * - Navigation guards: restrict loads to trusted origins
+ * - Navigation guards: restrict loads to the runtime origin
  * - State persistence: `saveAllStates()` captures bounds from every window
  *   and writes them to `window-states.json`.
  *
@@ -18,7 +18,7 @@
  * - No runtime lifecycle management — that belongs to RuntimeChildManager.
  * - No IPC protocol awareness — IPC messages go through the main module.
  * - No direct task/workspace orchestration — data flows through tRPC.
- * - No auth token generation or rotation — tokens come from the main module.
+ * - No auth token management — auth cookies are set by the main module.
  */
 
 import { BrowserWindow, shell } from "electron";
@@ -38,7 +38,6 @@ export interface WindowEntry {
 	projectId: string | null;
 	/** URL pathname to restore on next boot (for non-locked windows). */
 	lastViewedPath: string | null;
-	disposeAuth: (() => void) | null;
 }
 
 export interface CreateWindowOptions {
@@ -128,7 +127,6 @@ export class WindowRegistry {
 			window,
 			projectId,
 			lastViewedPath: options.savedState?.lastViewedPath ?? null,
-			disposeAuth: null,
 		};
 		this.windows.set(window.id, entry);
 		this.lastFocusedId = window.id;
@@ -145,9 +143,21 @@ export class WindowRegistry {
 		});
 
 		// -- Navigation guard ------------------------------------------------
-		window.webContents.on("will-navigate", (event, url) => {
-			if (options.runtimeUrl && !url.startsWith(options.runtimeUrl)) {
-				event.preventDefault();
+		// Compare origins (scheme + host + port) rather than string prefixes
+		// to avoid path-prefix confusion (e.g. "http://localhost:3484/evil"
+		// matching "http://localhost:3484").
+		const trustedOrigin = options.runtimeUrl ? new URL(options.runtimeUrl).origin : null;
+		window.webContents.on("will-navigate", (event: Electron.Event, url: string) => {
+			if (trustedOrigin) {
+				try {
+					const targetOrigin = new URL(url).origin;
+					if (targetOrigin !== trustedOrigin) {
+						event.preventDefault();
+					}
+				} catch {
+					// Malformed URL — block.
+					event.preventDefault();
+				}
 			}
 		});
 
@@ -177,11 +187,6 @@ export class WindowRegistry {
 		});
 
 		window.on("closed", () => {
-			// Dispose auth interceptor if installed.
-			const e = this.windows.get(window.id);
-			if (e?.disposeAuth) {
-				e.disposeAuth();
-			}
 			this.windows.delete(window.id);
 			if (this.lastFocusedId === window.id) {
 				this.lastFocusedId = null;
@@ -259,29 +264,9 @@ export class WindowRegistry {
 	 * Normally not needed — `closed` event handles this automatically.
 	 */
 	remove(windowId: number): void {
-		const entry = this.windows.get(windowId);
-		if (entry?.disposeAuth) {
-			entry.disposeAuth();
-		}
 		this.windows.delete(windowId);
 		if (this.lastFocusedId === windowId) {
 			this.lastFocusedId = null;
-		}
-	}
-
-	// -----------------------------------------------------------------------
-	// Auth interceptor management
-	// -----------------------------------------------------------------------
-
-	/** Set the auth interceptor dispose function for a window. */
-	setAuthDisposer(windowId: number, dispose: (() => void) | null): void {
-		const entry = this.windows.get(windowId);
-		if (entry) {
-			// Dispose previous interceptor before replacing.
-			if (entry.disposeAuth) {
-				entry.disposeAuth();
-			}
-			entry.disposeAuth = dispose;
 		}
 	}
 

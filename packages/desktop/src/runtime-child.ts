@@ -342,8 +342,10 @@ export class RuntimeChildManager extends EventEmitter {
 				execArgv: [`--max-old-space-size=${RUNTIME_CHILD_MAX_OLD_SPACE_MB}`],
 			});
 			this.child = child;
-			child.stdout?.on('data', () => {});
-			child.stderr?.on('data', () => {});
+			// Drain stdout/stderr to prevent the child from blocking on a
+			// full OS pipe buffer. The runtime logs via IPC, not stdio.
+			child.stdout?.on("data", () => {});
+			child.stderr?.on("data", () => {});
 			let settled = false;
 			const settle = (fn: typeof resolve | typeof reject, v: string | Error) => {
 				if (settled) return;
