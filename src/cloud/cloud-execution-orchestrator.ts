@@ -61,6 +61,7 @@ import {
 	type ExecutionPollingConfig,
 	isTerminalExecutionStatus,
 } from "./cloud-platform-execution-client";
+import type { CloudRuntimeClient, RuntimeWebSocketHandle } from "./cloud-runtime-client";
 
 // ---------------------------------------------------------------------------
 // Store Interface (structural typing for testability)
@@ -128,6 +129,14 @@ interface TaskContext {
 	executionCreated?: boolean;
 	/** @phase Phase2 — SSE log stream client for this task (when running). */
 	logStreamClient?: CloudExecutionLogStreamClient;
+	/** Target path: WebSocket handle for gateway runtime connection. */
+	wsHandle?: RuntimeWebSocketHandle;
+	/** Whether the gateway WebSocket is currently connected. */
+	wsConnected?: boolean;
+	/** Terminal status received via WebSocket (processed on next tick). */
+	wsTerminalStatus?: { status: "succeeded" | "failed" | "canceled"; result?: unknown; error?: unknown };
+	/** Whether we already attempted WebSocket connection (avoids retry spam). */
+	wsAttempted?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +324,7 @@ export interface TaskStepResult {
 export class CloudExecutionOrchestrator {
 	private readonly store: CloudExecutionStoreInterface;
 	private readonly executionClient: CloudPlatformExecutionClient;
+	private readonly runtimeClient: CloudRuntimeClient | null;
 	private readonly config: OrchestratorConfig;
 	private readonly logger: OrchestratorLogger;
 	private readonly concurrencyLimiter: ConcurrencyLimiterExtension | null;
@@ -331,6 +341,7 @@ export class CloudExecutionOrchestrator {
 		logger: OrchestratorLogger = noopLogger,
 		concurrencyLimiter?: ConcurrencyLimiterExtension | null,
 		governanceClient?: GovernanceClient | null,
+		runtimeClient?: CloudRuntimeClient | null,
 	) {
 		this.store = store;
 		this.executionClient = executionClient;
@@ -338,6 +349,7 @@ export class CloudExecutionOrchestrator {
 		this.logger = logger;
 		this.concurrencyLimiter = concurrencyLimiter ?? null;
 		this.governanceClient = governanceClient ?? null;
+		this.runtimeClient = runtimeClient ?? null;
 	}
 
 	/** Start the worker loop. */
@@ -712,15 +724,21 @@ export class CloudExecutionOrchestrator {
 		}
 	}
 
-	// -- running -> poll for terminal state via core-api ----------------------
-	// KB-AUTH-3: Instead of invoking /run on the runner and waiting for
-	// callbacks, we poll core-api's GET /api/v2/cloud-platform/executions/{id}.
+	// -- running: target path (gateway WebSocket) with bridge fallback -------
+	//
+	// Runtime path selection:
+	//   1. Target (preferred): connect via runtimeClient → gateway WebSocket.
+	//      The gateway authenticates, mints a runtime assertion, and returns
+	//      a connectUrl. We open a WebSocket and listen for execution_status
+	//      messages. Terminal status triggers a lifecycle transition.
+	//   2. Bridge (fallback): poll core-api GET /api/v2/cloud-platform/executions/{id}
+	//      via executionClient. Used when runtimeClient is null, or when the
+	//      WebSocket connection fails.
 
 	private async handleRunning(taskId: string): Promise<TaskStepResult | null> {
 		const ctx = this.getOrCreateCtx(taskId);
 
 		if (ctx.cancelRequested) {
-			// Cancel the execution on cloud-platform
 			if (ctx.cloudExecutionId) {
 				try {
 					await this.executionClient.cancelExecution(ctx.cloudExecutionId, ctx.abortController.signal);
@@ -745,63 +763,149 @@ export class CloudExecutionOrchestrator {
 			this.logger.error("No cloud execution ID found for running task", { taskId });
 			this.cleanupCtx(taskId);
 			return this.applyTransition(taskId, "running", "execution_error", "system", {
-				error: "No cloud execution ID — cannot poll status",
+				error: "No cloud execution ID — cannot monitor status",
 			});
 		}
 
+		// --- Check for terminal status received via WebSocket (target path) ---
+		if (ctx.wsTerminalStatus) {
+			const ts = ctx.wsTerminalStatus;
+			ctx.wsTerminalStatus = undefined;
+			return this.processTerminalStatus(taskId, ctx.cloudExecutionId, ts.status, ts.result, ts.error);
+		}
+
+		// --- Target path: try gateway WebSocket for real-time status ---------
+		if (this.runtimeClient && !ctx.wsAttempted && !ctx.wsConnected) {
+			ctx.wsAttempted = true;
+			try {
+				const connectResponse = await this.runtimeClient.connect({
+					instanceId: ctx.cloudExecutionId,
+					transport: "websocket",
+				});
+
+				const wsHandle = this.runtimeClient.openWebSocket(connectResponse.connectUrl, connectResponse.assertion, {
+					onMessage: (msg) => {
+						if (msg.type === "execution_status") {
+							const payload = msg.payload as Record<string, unknown> | undefined;
+							const status = payload?.status as string;
+							if (status === "succeeded" || status === "failed" || status === "canceled") {
+								ctx.wsTerminalStatus = {
+									status: status as "succeeded" | "failed" | "canceled",
+									result: payload?.result,
+									error: payload?.error,
+								};
+							}
+						}
+					},
+					onStateChange: (state) => {
+						ctx.wsConnected = state === "connected";
+						if (state === "error" || state === "disconnected") {
+							ctx.wsHandle = undefined;
+							this.logger.info("Gateway WebSocket disconnected, falling back to HTTP polling", {
+								taskId,
+								state,
+							});
+						}
+					},
+					onError: (err) => {
+						this.logger.warn("Gateway WebSocket error", {
+							taskId,
+							error: err.message,
+						});
+					},
+				});
+
+				ctx.wsHandle = wsHandle;
+				ctx.wsConnected = true;
+				this.logger.info("Target path: gateway WebSocket connected", {
+					taskId,
+					cloudExecutionId: ctx.cloudExecutionId,
+					connectUrl: connectResponse.connectUrl,
+				});
+
+				// WebSocket is now listening — no state change yet on this tick
+				return null;
+			} catch (e) {
+				this.logger.warn("Target path: gateway connect failed, using bridge (HTTP polling)", {
+					taskId,
+					cloudExecutionId: ctx.cloudExecutionId,
+					error: e instanceof Error ? e.message : String(e),
+				});
+				// Fall through to bridge path below
+			}
+		}
+
+		// If WebSocket is connected, wait for push — don't poll
+		if (ctx.wsConnected) {
+			return null;
+		}
+
+		// --- Bridge fallback: HTTP status polling ----------------------------
 		try {
 			const statusResponse = await this.executionClient.getExecutionStatus(
 				ctx.cloudExecutionId,
 				ctx.abortController.signal,
 			);
 
-			this.logger.info("Execution status polled", {
+			this.logger.info("Bridge path: execution status polled", {
 				taskId,
 				cloudExecutionId: ctx.cloudExecutionId,
 				status: statusResponse.status,
 			});
 
 			if (!isTerminalExecutionStatus(statusResponse.status)) {
-				return null; // Still running — no state change
+				return null;
 			}
 
-			// Map cloud-platform terminal status to lifecycle triggers
-			if (statusResponse.status === "succeeded") {
-				const result = statusResponse.result;
-				return this.applyTransition(taskId, "running", "execution_done", "system", {
-					cloudExecutionId: ctx.cloudExecutionId,
-					resultStatus: "success",
-					summary: result?.summary,
-					exitCode: result?.exitCode,
-				});
-			}
-
-			if (statusResponse.status === "canceled") {
-				return this.applyTransition(taskId, "running", "user_cancel", "system", {
-					cloudExecutionId: ctx.cloudExecutionId,
-					cancelledByPlatform: true,
-				});
-			}
-
-			// failed
-			const error = statusResponse.error;
-			return this.applyTransition(taskId, "running", "execution_error", "system", {
-				cloudExecutionId: ctx.cloudExecutionId,
-				errorCode: error?.code,
-				error: error?.message ?? "Execution failed",
-			});
+			return this.processTerminalStatus(
+				taskId,
+				ctx.cloudExecutionId,
+				statusResponse.status as "succeeded" | "failed" | "canceled",
+				statusResponse.result,
+				statusResponse.error,
+			);
 		} catch (e) {
 			if (ctx.cancelRequested) {
 				return this.applyTransition(taskId, "running", "user_cancel", "user");
 			}
-			// Transient polling errors — will retry on next tick
-			this.logger.warn("Execution status poll error (will retry)", {
+			this.logger.warn("Bridge path: status poll error (will retry)", {
 				taskId,
 				cloudExecutionId: ctx.cloudExecutionId,
 				error: e instanceof Error ? e.message : String(e),
 			});
 			return null;
 		}
+	}
+
+	/** Shared terminal-status processing for both target and bridge paths. */
+	private processTerminalStatus(
+		taskId: string,
+		cloudExecutionId: string,
+		status: "succeeded" | "failed" | "canceled",
+		result?: unknown,
+		error?: unknown,
+	): Promise<TaskStepResult> {
+		if (status === "succeeded") {
+			const r = result as { summary?: string; exitCode?: number } | null | undefined;
+			return this.applyTransition(taskId, "running", "execution_done", "system", {
+				cloudExecutionId,
+				resultStatus: "success",
+				summary: r?.summary,
+				exitCode: r?.exitCode,
+			});
+		}
+		if (status === "canceled") {
+			return this.applyTransition(taskId, "running", "user_cancel", "system", {
+				cloudExecutionId,
+				cancelledByPlatform: true,
+			});
+		}
+		const e = error as { code?: string; message?: string } | null | undefined;
+		return this.applyTransition(taskId, "running", "execution_error", "system", {
+			cloudExecutionId,
+			errorCode: e?.code,
+			error: e?.message ?? "Execution failed",
+		});
 	}
 
 	// -- terminal -> teardown (A4) -------------------------------------------
@@ -1037,6 +1141,16 @@ export class CloudExecutionOrchestrator {
 	private cleanupCtx(taskId: string): void {
 		const ctx = this.activeTasks.get(taskId);
 		if (ctx) {
+			// Close gateway WebSocket if connected (target path cleanup)
+			if (ctx.wsHandle) {
+				try {
+					ctx.wsHandle.close();
+				} catch {
+					// Best-effort cleanup
+				}
+				ctx.wsHandle = undefined;
+				ctx.wsConnected = false;
+			}
 			// Phase 2: Disconnect SSE log stream before aborting
 			if (ctx.logStreamClient?.isActive) {
 				ctx.logStreamClient.disconnect();

@@ -140,7 +140,7 @@ export function bootstrapCloudExecution(
 		...overrides?.orchestratorConfig,
 	};
 
-	// Assemble orchestrator
+	// Assemble orchestrator — runtimeClient enables target path (gateway+WebSocket)
 	const orchestrator = new CloudExecutionOrchestrator(
 		store,
 		executionClient,
@@ -148,6 +148,7 @@ export function bootstrapCloudExecution(
 		logger,
 		null, // concurrency limiter — Phase 2
 		governanceClient,
+		runtimeClient,
 	);
 
 	logger.info("Cloud execution runtime bootstrapped", {
