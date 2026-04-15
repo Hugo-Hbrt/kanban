@@ -736,7 +736,7 @@ function ProjectRow({
 		},
 	].filter((item) => item.count > 0);
 
-	return (
+	const rowContent = (
 		<div
 			role="button"
 			tabIndex={0}
@@ -813,7 +813,7 @@ function ProjectRow({
 							side="bottom"
 							align="end"
 							sideOffset={4}
-							className="z-50 min-w-[140px] rounded-md border border-border-bright bg-surface-1 p-1 shadow-lg"
+							className="z-50 min-w-[160px] rounded-md border border-border-bright bg-surface-1 p-1 shadow-lg"
 							onCloseAutoFocus={(event) => event.preventDefault()}
 						>
 							<DropdownMenu.Item
@@ -828,4 +828,6 @@ function ProjectRow({
 			</div>
 		</div>
 	);
+
+	return rowContent;
 }
