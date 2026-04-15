@@ -23,6 +23,7 @@ import {
 import { CloudExecutionStore } from "./cloud-execution-persistence";
 import { type GovernanceClient, GovernanceHttpClient, parseGovernanceConfig } from "./cloud-governance-client";
 import { type CloudPlatformExecutionClient, CloudPlatformExecutionHttpClient } from "./cloud-platform-execution-client";
+import { type CloudRuntimeClient, DefaultCloudRuntimeClient } from "./cloud-runtime-client";
 
 // ---------------------------------------------------------------------------
 // Environment Variable Names
@@ -35,7 +36,17 @@ const ENV = {
 	ORG_ID: "KANBAN_ORG_ID",
 	USER_ID: "KANBAN_USER_ID",
 	PROJECT_ID: "KANBAN_PROJECT_ID",
+	GATEWAY_BASE_URL: "KANBAN_GATEWAY_BASE_URL",
+	RUNTIME_PATH: "KANBAN_RUNTIME_PATH",
 } as const;
+
+/**
+ * Runtime path preference:
+ * - "target": Use gateway + WebSocket as the primary runtime path (recommended).
+ *   Falls back to bridge (HTTP polling) if gateway is unavailable.
+ * - "bridge": Use HTTP CRUD/polling only. No WebSocket connections.
+ */
+export type RuntimePathPreference = "target" | "bridge";
 
 // ---------------------------------------------------------------------------
 // Bootstrap Result
@@ -45,8 +56,10 @@ export interface CloudExecutionRuntime {
 	readonly orchestrator: CloudExecutionOrchestrator;
 	readonly store: CloudExecutionStore;
 	readonly executionClient: CloudPlatformExecutionClient;
+	readonly runtimeClient: CloudRuntimeClient | null;
 	readonly governanceClient: GovernanceClient | null;
 	readonly authProvider: CloudAuthProvider;
+	readonly runtimePath: RuntimePathPreference;
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +107,26 @@ export function bootstrapCloudExecution(
 			fetch: overrides?.fetchFn,
 		});
 
+	// Runtime path preference — "target" uses gateway+WebSocket, "bridge" uses HTTP polling
+	const runtimePath: RuntimePathPreference = (env[ENV.RUNTIME_PATH] as RuntimePathPreference) || "target";
+	const gatewayBaseUrl = env[ENV.GATEWAY_BASE_URL] ?? "";
+
+	// Cloud runtime client (target path — gateway + WebSocket)
+	let runtimeClient: CloudRuntimeClient | null = null;
+	if (runtimePath === "target" && gatewayBaseUrl) {
+		runtimeClient = new DefaultCloudRuntimeClient({
+			gatewayBaseUrl,
+			authProvider,
+		});
+		logger.info("Target runtime path enabled: gateway + WebSocket", { gatewayBaseUrl });
+	} else if (runtimePath === "target" && !gatewayBaseUrl) {
+		logger.warn(
+			"KANBAN_RUNTIME_PATH=target but KANBAN_GATEWAY_BASE_URL not set — falling back to bridge (HTTP polling)",
+		);
+	} else {
+		logger.info("Bridge runtime path: HTTP CRUD/polling only");
+	}
+
 	// Governance client (optional — returns null if not configured)
 	const govConfig = parseGovernanceConfig(env, { authProvider });
 	const governanceClient: GovernanceClient | null = govConfig ? new GovernanceHttpClient(govConfig, logger) : null;
@@ -120,8 +153,10 @@ export function bootstrapCloudExecution(
 	logger.info("Cloud execution runtime bootstrapped", {
 		cloudBaseUrl,
 		storePath,
+		runtimePath,
+		gatewayEnabled: !!runtimeClient,
 		governanceEnabled: !!governanceClient,
 	});
 
-	return { orchestrator, store, executionClient, governanceClient, authProvider };
+	return { orchestrator, store, executionClient, runtimeClient, governanceClient, authProvider, runtimePath };
 }
