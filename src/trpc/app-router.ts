@@ -19,6 +19,9 @@ import type {
 	RuntimeClineAccountSwitchResponse,
 	RuntimeClineAddProviderRequest,
 	RuntimeClineAddProviderResponse,
+	RuntimeClineDeviceAuthCompleteRequest,
+	RuntimeClineDeviceAuthCompleteResponse,
+	RuntimeClineDeviceAuthStartResponse,
 	RuntimeClineKanbanAccessResponse,
 	RuntimeClineMcpAuthStatusResponse,
 	RuntimeClineMcpOAuthRequest,
@@ -111,6 +114,9 @@ import {
 	runtimeClineAccountSwitchResponseSchema,
 	runtimeClineAddProviderRequestSchema,
 	runtimeClineAddProviderResponseSchema,
+	runtimeClineDeviceAuthCompleteRequestSchema,
+	runtimeClineDeviceAuthCompleteResponseSchema,
+	runtimeClineDeviceAuthStartResponseSchema,
 	runtimeClineKanbanAccessResponseSchema,
 	runtimeClineMcpAuthStatusResponseSchema,
 	runtimeClineMcpOAuthRequestSchema,
@@ -273,6 +279,11 @@ export interface RuntimeTrpcContext {
 			scope: RuntimeTrpcWorkspaceScope | null,
 			input: RuntimeClineOauthLoginRequest,
 		) => Promise<RuntimeClineOauthLoginResponse>;
+		startClineDeviceAuth: (scope: RuntimeTrpcWorkspaceScope | null) => Promise<RuntimeClineDeviceAuthStartResponse>;
+		completeClineDeviceAuth: (
+			scope: RuntimeTrpcWorkspaceScope | null,
+			input: RuntimeClineDeviceAuthCompleteRequest,
+		) => Promise<RuntimeClineDeviceAuthCompleteResponse>;
 		getClineMcpAuthStatuses: (scope: RuntimeTrpcWorkspaceScope | null) => Promise<RuntimeClineMcpAuthStatusResponse>;
 		runClineMcpServerOAuth: (
 			scope: RuntimeTrpcWorkspaceScope | null,
@@ -574,6 +585,15 @@ export const runtimeAppRouter = t.router({
 			.output(runtimeClineOauthLoginResponseSchema)
 			.mutation(async ({ ctx, input }) => {
 				return await ctx.runtimeApi.runClineProviderOAuthLogin(ctx.workspaceScope, input);
+			}),
+		startClineDeviceAuth: t.procedure.output(runtimeClineDeviceAuthStartResponseSchema).mutation(async ({ ctx }) => {
+			return await ctx.runtimeApi.startClineDeviceAuth(ctx.workspaceScope);
+		}),
+		completeClineDeviceAuth: t.procedure
+			.input(runtimeClineDeviceAuthCompleteRequestSchema)
+			.output(runtimeClineDeviceAuthCompleteResponseSchema)
+			.mutation(async ({ ctx, input }) => {
+				return await ctx.runtimeApi.completeClineDeviceAuth(ctx.workspaceScope, input);
 			}),
 		startShellSession: workspaceProcedure
 			.input(runtimeShellSessionStartRequestSchema)

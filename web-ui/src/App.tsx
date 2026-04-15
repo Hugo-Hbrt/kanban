@@ -231,6 +231,7 @@ export default function App(): ReactElement {
 		isAwaitingWorkspaceSnapshot,
 		isInitialRuntimeLoad,
 		isProjectSwitching,
+		isWorkspaceMetadataPending,
 		onDetailClosed: () => {
 			setIsGitHistoryOpen(false);
 		},
@@ -1001,7 +1002,7 @@ export default function App(): ReactElement {
 													onClose={closeHomeTerminal}
 													minimalHeaderTitle="Terminal"
 													minimalHeaderSubtitle={homeTerminalSubtitle}
-													panelBackgroundColor={terminalThemeColors.surfaceRaised}
+													panelBackgroundColor="var(--color-surface-1)"
 													terminalBackgroundColor={terminalThemeColors.surfaceRaised}
 													cursorColor={terminalThemeColors.textPrimary}
 													onConnectionReady={markTerminalConnectionReady}
