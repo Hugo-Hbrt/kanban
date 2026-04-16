@@ -14,6 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import { type CloudAuthProvider, EnvironmentCloudAuthProvider } from "./cloud-auth-provider";
+import { CloudBackgroundPoller } from "./cloud-background-poller";
 import {
 	CloudExecutionOrchestrator,
 	DEFAULT_ORCHESTRATOR_CONFIG,
@@ -60,6 +61,7 @@ export interface CloudExecutionRuntime {
 	readonly governanceClient: GovernanceClient | null;
 	readonly authProvider: CloudAuthProvider;
 	readonly runtimePath: RuntimePathPreference;
+	readonly backgroundPoller: CloudBackgroundPoller;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +153,15 @@ export function bootstrapCloudExecution(
 		runtimeClient,
 	);
 
+	// Background poller — drives processTask() for active cloud tasks
+	const backgroundPoller = new CloudBackgroundPoller({
+		orchestrator,
+		logger,
+		onTerminal: (taskId, terminalState) => {
+			logger.info("[cloud-bootstrap] Task reached terminal state", { taskId, terminalState });
+		},
+	});
+
 	logger.info("Cloud execution runtime bootstrapped", {
 		cloudBaseUrl,
 		storePath,
@@ -159,5 +170,14 @@ export function bootstrapCloudExecution(
 		governanceEnabled: !!governanceClient,
 	});
 
-	return { orchestrator, store, executionClient, runtimeClient, governanceClient, authProvider, runtimePath };
+	return {
+		orchestrator,
+		store,
+		executionClient,
+		runtimeClient,
+		governanceClient,
+		authProvider,
+		runtimePath,
+		backgroundPoller,
+	};
 }

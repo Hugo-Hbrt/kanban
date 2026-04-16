@@ -236,6 +236,10 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 						};
 					}
 
+					// Register for background polling so the orchestrator continues
+					// driving the cloud execution lifecycle after this request returns.
+					cloudRuntime.backgroundPoller.register(body.taskId);
+
 					return {
 						ok: true,
 						summary: {

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { AgentTerminalPanel } from "@/components/detail-panels/agent-terminal-panel";
 import { ClineAgentChatPanel, type ClineAgentChatPanelHandle } from "@/components/detail-panels/cline-agent-chat-panel";
+import { CloudExecutionDetailPanel } from "@/components/detail-panels/cloud-execution-detail-panel";
 import { ColumnContextPanel } from "@/components/detail-panels/column-context-panel";
 import { type DiffLineComment, DiffViewerPanel } from "@/components/detail-panels/diff-viewer-panel";
 import { FileTreePanel } from "@/components/detail-panels/file-tree-panel";
@@ -26,6 +27,7 @@ import type {
 	RuntimeTaskSessionSummary,
 	RuntimeWorkspaceChangesMode,
 } from "@/runtime/types";
+import { useCloudExecutionDetail } from "@/runtime/use-cloud-execution-detail";
 import { useRuntimeWorkspaceChanges } from "@/runtime/use-runtime-workspace-changes";
 import { useTaskWorkspaceStateVersionValue } from "@/stores/workspace-metadata-store";
 import { useTerminalThemeColors } from "@/terminal/theme-colors";
@@ -631,7 +633,62 @@ export function CardDetailView({
 
 	const showBottomTerminal = bottomTerminalOpen && !!bottomTerminalTaskId;
 
-	const agentChatPanel = showClineAgentChatPanel ? (
+	// Cloud execution detail — shown instead of agent panels for cloud_agent tasks
+	const isCloudAgentTask = selection.card.executionMode === "cloud_agent";
+	const cloudExecDetail = useCloudExecutionDetail(
+		isCloudAgentTask ? selection.card.id : null,
+		isCloudAgentTask ? currentProjectId : null,
+		taskWorkspaceStateVersion,
+	);
+
+	// Auto-move board card when cloud execution reaches terminal state.
+	// Emits a synthetic session summary to trigger the existing board movement
+	// logic in use-board-interactions (awaiting_review → review column).
+	const cloudTerminalHandledRef = useRef<string | null>(null);
+	const cloudCurrentState = cloudExecDetail.summary?.summary?.currentState;
+	useEffect(() => {
+		if (!isCloudAgentTask || !cloudCurrentState) return;
+		const terminalMap: Record<string, string> = {
+			completed: "awaiting_review",
+			failed: "error",
+			canceled: "error",
+		};
+		const mappedState = terminalMap[cloudCurrentState];
+		if (!mappedState) return;
+		const dedupeKey = `${selection.card.id}:${cloudCurrentState}`;
+		if (cloudTerminalHandledRef.current === dedupeKey) return;
+		cloudTerminalHandledRef.current = dedupeKey;
+
+		onSessionSummary({
+			taskId: selection.card.id,
+			state: mappedState as "awaiting_review" | "error",
+			mode: null,
+			agentId: null,
+			workspacePath: null,
+			pid: null,
+			startedAt: Date.now(),
+			updatedAt: Date.now(),
+			lastOutputAt: null,
+			reviewReason:
+				cloudCurrentState === "completed" ? "cloud_execution_completed" : `cloud_execution_${cloudCurrentState}`,
+			exitCode: cloudCurrentState === "completed" ? 0 : 1,
+			lastHookAt: null,
+			latestHookActivity: null,
+		});
+	}, [isCloudAgentTask, cloudCurrentState, selection.card.id, onSessionSummary]);
+
+	const agentChatPanel = isCloudAgentTask ? (
+		<div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-auto">
+			<CloudExecutionDetailPanel
+				taskId={selection.card.id}
+				timeline={cloudExecDetail.timeline}
+				summary={cloudExecDetail.summary}
+				isLoading={cloudExecDetail.isLoading}
+				isError={cloudExecDetail.isError}
+				onRefetch={cloudExecDetail.refetch}
+			/>
+		</div>
+	) : showClineAgentChatPanel ? (
 		<ClineAgentChatPanel
 			ref={clineAgentChatPanelRef}
 			taskId={selection.card.id}
