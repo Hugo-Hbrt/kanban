@@ -1,0 +1,19 @@
+#!/bin/bash
+# Kanban CLI shim — bundled with the desktop app.
+#
+# Spawned by the desktop main process (as `cliPath`) and also placed on the
+# PATH of agent sessions so hooks can invoke `kanban` by name. Executes the
+# pre-built CLI bundle that ships alongside the app under Resources/cli/.
+#
+# See electron-builder.yml `extraResources` for how cli.js gets there.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+RESOURCES_DIR="$(dirname "$SCRIPT_DIR")"
+CLI_ENTRY="$RESOURCES_DIR/cli/cli.js"
+
+if [ ! -f "$CLI_ENTRY" ]; then
+  echo "error: Kanban CLI not found at $CLI_ENTRY" >&2
+  exit 1
+fi
+
+exec node "$CLI_ENTRY" "$@"

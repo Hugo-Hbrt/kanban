@@ -1,0 +1,115 @@
+appId: com.cline.kanban
+productName: Kanban
+copyright: Copyright © 2025 Cline
+
+directories:
+  output: out
+  buildResources: build
+
+# afterSign hook — notarizes the macOS .app bundle via Apple notarytool.
+# Requires APPLE_ID, APPLE_ID_PASSWORD, and APPLE_TEAM_ID env vars.
+# The hook is a no-op on non-mac platforms or when env vars are missing.
+afterSign: ./scripts/notarize.cjs
+
+# Files packed into app.asar — only the desktop shell's own compiled output.
+# electron-builder automatically excludes common cruft (tests, .git, docs).
+files:
+  - dist/**/*
+  - package.json
+
+# extraResources lands outside app.asar, under Contents/Resources/ on macOS.
+#
+#   build/bin → Resources/bin    CLI shim scripts (kanban, kanban.cmd).
+#                                 main.ts resolves these via process.resourcesPath.
+#
+#   ../../dist → Resources/cli   The pre-built Kanban CLI bundle (cli.js) plus
+#                                 its static web-ui assets. The shim execs
+#                                 `node cli/cli.js`; the runtime resolves
+#                                 web-ui/ as a sibling of cli.js (see
+#                                 src/server/assets.ts).
+#
+# Sourcemaps are filtered out — dist/cli.js.map is ~23 MB per build.
+extraResources:
+  - from: build/bin
+    to: bin
+    filter:
+      - "**/*"
+  - from: ../../dist
+    to: cli
+    filter:
+      - "**/*"
+      - "!**/*.map"
+
+# Custom protocol — registers kanban:// deep-links for OAuth callbacks.
+# On macOS this ends up in Info.plist CFBundleURLTypes; on Windows it
+# registers the protocol in the registry; on Linux it creates the
+# appropriate XDG mime handler.
+protocols:
+  - name: Kanban
+    schemes:
+      - kanban
+
+asar: true
+
+# asarUnpack covers files that need real filesystem paths:
+#
+#   node_modules/node-pty/**
+#     node-pty ships a spawn-helper binary it locates by string-replacing
+#     `app.asar` with `app.asar.unpacked` in its own __dirname. That
+#     helper must live on the real filesystem. See scripts/patch-node-pty.mjs
+#     for the monkey-patch that avoids double-suffixing when already unpacked.
+#
+#   **/*.node
+#     Native addons are loaded via dlopen() which requires a real path.
+#     Catches any transitive native addons that might land in node_modules.
+asarUnpack:
+  - "node_modules/node-pty/**"
+  - "**/*.node"
+
+# ──────────────────────────────────────────
+# Auto-update: publish to GitHub Releases
+# ──────────────────────────────────────────
+# electron-updater reads this at build time to embed the update feed URL.
+# At runtime, autoUpdater.checkForUpdates() fetches the latest release
+# from the GitHub repo and compares versions.
+publish:
+  provider: github
+  owner: cline
+  repo: kanban
+  releaseType: release
+
+# ──────────────────────────────────────────
+# macOS configuration
+# ──────────────────────────────────────────
+mac:
+  category: public.app-category.developer-tools
+  icon: build/icon.icns
+  # dmg for user-facing download, zip for electron-updater's differential updates.
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # NSAppSleepDisabled prevents App Nap from throttling background runtime work.
+  extendInfo:
+    NSAppSleepDisabled: true
+    NSSupportsAutomaticTermination: false
+    NSSupportsSuddenTermination: false
+
+dmg:
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
