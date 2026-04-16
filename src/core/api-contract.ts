@@ -1291,6 +1291,20 @@ export type CloudExecutionSummaryResponse = {
 };
 
 // ---------------------------------------------------------------------------
+// Cloud agent capability — per-user UI gate
+// ---------------------------------------------------------------------------
+
+export const cloudAgentCapabilityResponseSchema = z.object({
+	cloudAgentAllowed: z.boolean(),
+	reason: z.string(),
+	// configured=false means cloud execution isn't wired up in this deployment
+	// (KANBAN_CLOUD_PLATFORM_BASE_URL unset). Distinguishes "no cloud" from
+	// "cloud exists but this user isn't allowed."
+	configured: z.boolean(),
+});
+export type CloudAgentCapabilityResponse = z.infer<typeof cloudAgentCapabilityResponseSchema>;
+
+// ---------------------------------------------------------------------------
 
 export const runtimeHookEventSchema = z.enum(["to_review", "to_in_progress", "activity"]);
 export type RuntimeHookEvent = z.infer<typeof runtimeHookEventSchema>;

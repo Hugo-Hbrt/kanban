@@ -131,6 +131,7 @@ export function TaskCreateDialog({
 	defaultProviderId,
 	defaultModelId,
 	defaultReasoningEffort,
+	cloudAgentAllowed = false,
 }: {
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
@@ -170,6 +171,12 @@ export function TaskCreateDialog({
 	defaultModelId?: string | null;
 	/** Default Cline reasoning effort from runtimeConfig.clineProviderSettings.reasoningEffort */
 	defaultReasoningEffort?: RuntimeClineReasoningEffort | null;
+	/**
+	 * Whether the current user may use cloud-agent execution. When false, the
+	 * Cloud agent toggle is hidden. Server-side 403 enforcement is authoritative;
+	 * this is purely for UI affordance.
+	 */
+	cloudAgentAllowed?: boolean;
 }): ReactElement {
 	const [mode, setMode] = useState<"single" | "multi">("single");
 	const [createMore, setCreateMore] = useState(false);
@@ -597,7 +604,7 @@ export function TaskCreateDialog({
 						</NativeSelect>
 					</div>
 
-					{onExecutionModeChange ? (
+					{onExecutionModeChange && cloudAgentAllowed ? (
 						<div>
 							<span className="text-[11px] text-text-secondary block mb-1">Execution mode</span>
 							<div className="flex items-center gap-2">

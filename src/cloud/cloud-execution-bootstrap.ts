@@ -15,6 +15,7 @@
 
 import { type CloudAuthProvider, EnvironmentCloudAuthProvider } from "./cloud-auth-provider";
 import { CloudBackgroundPoller } from "./cloud-background-poller";
+import { type CloudCapabilitiesClient, CloudCapabilitiesHttpClient } from "./cloud-capabilities-client";
 import {
 	CloudExecutionOrchestrator,
 	DEFAULT_ORCHESTRATOR_CONFIG,
@@ -59,6 +60,7 @@ export interface CloudExecutionRuntime {
 	readonly executionClient: CloudPlatformExecutionClient;
 	readonly runtimeClient: CloudRuntimeClient | null;
 	readonly governanceClient: GovernanceClient | null;
+	readonly capabilitiesClient: CloudCapabilitiesClient;
 	readonly authProvider: CloudAuthProvider;
 	readonly runtimePath: RuntimePathPreference;
 	readonly backgroundPoller: CloudBackgroundPoller;
@@ -80,6 +82,7 @@ export function bootstrapCloudExecution(
 	logger: OrchestratorLogger = { info: () => {}, warn: () => {}, error: () => {} },
 	overrides?: {
 		executionClient?: CloudPlatformExecutionClient;
+		capabilitiesClient?: CloudCapabilitiesClient;
 		authProvider?: CloudAuthProvider;
 		orchestratorConfig?: Partial<OrchestratorConfig>;
 		fetchFn?: typeof globalThis.fetch;
@@ -104,6 +107,16 @@ export function bootstrapCloudExecution(
 	const executionClient: CloudPlatformExecutionClient =
 		overrides?.executionClient ??
 		new CloudPlatformExecutionHttpClient({
+			baseUrl: cloudBaseUrl,
+			authProvider,
+			fetch: overrides?.fetchFn,
+		});
+
+	// Capabilities client — powers the UI's cloud-agent gate via tRPC.
+	// Same base URL as the execution client; same auth provider.
+	const capabilitiesClient: CloudCapabilitiesClient =
+		overrides?.capabilitiesClient ??
+		new CloudCapabilitiesHttpClient({
 			baseUrl: cloudBaseUrl,
 			authProvider,
 			fetch: overrides?.fetchFn,
@@ -176,6 +189,7 @@ export function bootstrapCloudExecution(
 		executionClient,
 		runtimeClient,
 		governanceClient,
+		capabilitiesClient,
 		authProvider,
 		runtimePath,
 		backgroundPoller,

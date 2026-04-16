@@ -6,6 +6,7 @@ import { initTRPC, TRPCError } from "@trpc/server";
 import { z } from "zod";
 
 import type {
+	CloudAgentCapabilityResponse,
 	CloudExecutionLogsRequest,
 	CloudExecutionLogsResponse,
 	CloudExecutionSummaryRequest,
@@ -103,6 +104,7 @@ import type {
 	TaskRemoteExecutionDetailResponse,
 } from "../core/api-contract";
 import {
+	cloudAgentCapabilityResponseSchema,
 	cloudExecutionLogsRequestSchema,
 	cloudExecutionLogsResponseSchema,
 	cloudExecutionSummaryRequestSchema,
@@ -320,6 +322,7 @@ export interface RuntimeTrpcContext {
 			scope: RuntimeTrpcWorkspaceScope,
 			input: CloudExecutionLogsRequest,
 		) => Promise<CloudExecutionLogsResponse>;
+		getCloudAgentCapability: () => Promise<CloudAgentCapabilityResponse>;
 	};
 	workspaceApi: {
 		loadGitSummary: (
@@ -638,6 +641,9 @@ export const runtimeAppRouter = t.router({
 			.query(async ({ ctx, input }) => {
 				return await ctx.runtimeApi.getCloudExecutionLogs(ctx.workspaceScope, input);
 			}),
+		getCloudAgentCapability: t.procedure.output(cloudAgentCapabilityResponseSchema).query(async ({ ctx }) => {
+			return await ctx.runtimeApi.getCloudAgentCapability();
+		}),
 	}),
 	workspace: t.router({
 		getGitSummary: workspaceProcedure

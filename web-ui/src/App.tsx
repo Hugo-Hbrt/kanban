@@ -64,6 +64,7 @@ import {
 	selectTaskChatMessagesForTask,
 } from "@/runtime/native-agent";
 import type { RuntimeClineReasoningEffort, RuntimeTaskSessionSummary } from "@/runtime/types";
+import { useCloudAgentCapability } from "@/runtime/use-cloud-agent-capability";
 import { useRuntimeProjectConfig } from "@/runtime/use-runtime-project-config";
 import { useTerminalConnectionReady } from "@/runtime/use-terminal-connection-ready";
 import { useWorkspacePersistence } from "@/runtime/use-workspace-persistence";
@@ -138,6 +139,8 @@ export default function App(): ReactElement {
 	const { isBlocked: isKanbanAccessBlocked, refresh: refreshKanbanAccess } = useKanbanAccessGate({
 		workspaceId: currentProjectId,
 	});
+	const { capability: cloudAgentCapability } = useCloudAgentCapability(currentProjectId);
+	const cloudAgentAllowed = cloudAgentCapability?.cloudAgentAllowed ?? false;
 	const isTaskAgentReady = isTaskAgentSetupSatisfied(runtimeProjectConfig);
 	const settingsWorkspaceId = navigationCurrentProjectId ?? currentProjectId;
 	const { config: settingsRuntimeProjectConfig, refresh: refreshSettingsRuntimeProjectConfig } =
@@ -792,6 +795,7 @@ export default function App(): ReactElement {
 			onBranchRefChange={setEditTaskBranchRef}
 			executionMode={editTaskExecutionMode}
 			onExecutionModeChange={setEditTaskExecutionMode}
+			cloudAgentAllowed={cloudAgentAllowed}
 			agentId={editTaskAgentId}
 			onAgentIdChange={setEditTaskAgentId}
 			clineSettings={editTaskClineSettings}
@@ -1144,6 +1148,7 @@ export default function App(): ReactElement {
 					onBranchRefChange={setNewTaskBranchRef}
 					executionMode={newTaskExecutionMode}
 					onExecutionModeChange={setNewTaskExecutionMode}
+					cloudAgentAllowed={cloudAgentAllowed}
 					agentId={newTaskAgentId}
 					onAgentIdChange={setNewTaskAgentId}
 					clineSettings={newTaskClineSettings}

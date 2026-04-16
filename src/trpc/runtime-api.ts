@@ -849,5 +849,31 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 				hasMore,
 			};
 		},
+		getCloudAgentCapability: async () => {
+			const cloudRuntime = deps.getCloudExecutionRuntime?.();
+			if (!cloudRuntime) {
+				return {
+					cloudAgentAllowed: false,
+					reason: "Cloud execution is not configured for this deployment.",
+					configured: false,
+				};
+			}
+			try {
+				const result = await cloudRuntime.capabilitiesClient.getCloudAgentCapability();
+				return {
+					cloudAgentAllowed: result.cloudAgentAllowed,
+					reason: result.reason,
+					configured: true,
+				};
+			} catch (err) {
+				// Fail closed — if we can't reach the policy decision point, assume not allowed.
+				// This matches the server-side authoritative 403 behavior.
+				return {
+					cloudAgentAllowed: false,
+					reason: `Unable to determine cloud-agent capability: ${err instanceof Error ? err.message : String(err)}`,
+					configured: true,
+				};
+			}
+		},
 	};
 }

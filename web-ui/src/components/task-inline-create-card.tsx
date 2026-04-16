@@ -8,9 +8,9 @@ import { BranchSelectDropdown, type BranchSelectOption } from "@/components/bran
 import { TaskAgentModelPicker, useTaskAgentModelPicker } from "@/components/task-agent-model-picker";
 import { TaskPromptComposer } from "@/components/task-prompt-composer";
 import { Button } from "@/components/ui/button";
-import type { TaskAutoReviewMode, TaskExecutionMode, TaskImage } from "@/types";
 import { NativeSelect } from "@/components/ui/native-select";
 import type { RuntimeAgentId, RuntimeClineReasoningEffort, RuntimeTaskClineSettings } from "@/runtime/types";
+import type { TaskAutoReviewMode, TaskExecutionMode, TaskImage } from "@/types";
 import { pasteShortcutLabel } from "@/utils/platform";
 import { useDocumentEvent, useMeasure } from "@/utils/react-use";
 
@@ -78,6 +78,7 @@ export function TaskInlineCreateCard({
 	defaultProviderId,
 	defaultModelId,
 	defaultReasoningEffort,
+	cloudAgentAllowed = false,
 }: {
 	title?: string;
 	onTitleChange?: (value: string) => void;
@@ -116,6 +117,11 @@ export function TaskInlineCreateCard({
 	defaultModelId?: string | null;
 	/** Default Cline reasoning effort from runtimeConfig.clineProviderSettings.reasoningEffort */
 	defaultReasoningEffort?: RuntimeClineReasoningEffort | null;
+	/**
+	 * Whether the current user may use cloud-agent execution. When false, the
+	 * execution mode selector is hidden. Server-side 403 is authoritative.
+	 */
+	cloudAgentAllowed?: boolean;
 }): ReactElement {
 	const promptId = `${idPrefix}-prompt-input`;
 	const planModeId = `${idPrefix}-plan-mode-toggle`;
@@ -333,7 +339,7 @@ export function TaskInlineCreateCard({
 						onPopoverOpenChange={setIsModelPickerPopoverOpen}
 					/>
 				) : null}
-				{onExecutionModeChange ? (
+				{onExecutionModeChange && cloudAgentAllowed ? (
 					<div className="flex items-center gap-1.5 text-xs text-text-muted">
 						<span>Run on</span>
 						<NativeSelect
