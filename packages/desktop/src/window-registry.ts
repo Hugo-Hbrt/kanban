@@ -211,10 +211,19 @@ export class WindowRegistry {
 		return loadAllWindowStates(userDataPath);
 	}
 
+	/**
+	 * Build the renderer URL for a window opened to a specific project.
+	 *
+	 * Uses path-based encoding (`/<projectId>`) to match the web-ui's
+	 * existing project-routing scheme (parseProjectIdFromPathname). This
+	 * keeps the renderer free of any desktop-specific URL handling — the
+	 * window simply lands on the project's normal pathname like a regular
+	 * tab, and the user is free to navigate anywhere from there.
+	 */
 	static buildWindowUrl(baseUrl: string, projectId: string | null): string {
 		if (!projectId) return baseUrl;
 		const url = new URL(baseUrl);
-		url.searchParams.set("projectId", projectId);
+		url.pathname = `/${encodeURIComponent(projectId)}`;
 		return url.toString();
 	}
 
@@ -226,17 +235,21 @@ export class WindowRegistry {
 	}
 
 	private buildEntryUrl(baseUrl: string, entry: WindowEntry): string {
-		if (entry.projectId) {
-			return WindowRegistry.buildWindowUrl(baseUrl, entry.projectId);
-		}
+		// Prefer lastViewedPath so user-navigation is restored on relaunch.
+		// projectId is only the *initial* project the window was opened to;
+		// the window is not locked to it, so the user may have navigated
+		// elsewhere before quitting.
 		if (entry.lastViewedPath) {
 			try {
 				const url = new URL(baseUrl);
 				url.pathname = entry.lastViewedPath;
 				return url.toString();
 			} catch {
-				// Fall through to base URL.
+				// Fall through.
 			}
+		}
+		if (entry.projectId) {
+			return WindowRegistry.buildWindowUrl(baseUrl, entry.projectId);
 		}
 		return baseUrl;
 	}

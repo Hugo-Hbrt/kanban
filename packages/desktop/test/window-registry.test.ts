@@ -140,29 +140,34 @@ describe("WindowRegistry.buildWindowUrl", () => {
 		);
 	});
 
-	it("appends projectId as a query parameter", () => {
+	it("encodes projectId as the URL pathname", () => {
 		const url = WindowRegistry.buildWindowUrl("http://localhost:52341", "project-abc");
-		expect(url).toBe("http://localhost:52341/?projectId=project-abc");
+		expect(url).toBe("http://localhost:52341/project-abc");
 	});
 
-	it("preserves existing path in the base URL", () => {
+	it("overwrites any existing path in the base URL", () => {
+		// The path is the project; any pre-existing path on the base URL
+		// is irrelevant and gets replaced.
 		const url = WindowRegistry.buildWindowUrl("http://localhost:52341/some/path", "proj-1");
 		const parsed = new URL(url);
-		expect(parsed.pathname).toBe("/some/path");
-		expect(parsed.searchParams.get("projectId")).toBe("proj-1");
+		expect(parsed.pathname).toBe("/proj-1");
 	});
 
 	it("preserves existing query parameters", () => {
 		const url = WindowRegistry.buildWindowUrl("http://localhost:52341/?token=abc", "proj-2");
 		const parsed = new URL(url);
+		expect(parsed.pathname).toBe("/proj-2");
 		expect(parsed.searchParams.get("token")).toBe("abc");
-		expect(parsed.searchParams.get("projectId")).toBe("proj-2");
 	});
 
-	it("handles projectId with special characters", () => {
+	it("URL-encodes projectIds containing slashes or whitespace", () => {
+		// Matches the web-ui's buildProjectPathname encoding so that
+		// parseProjectIdFromPathname round-trips the value back via
+		// decodeURIComponent on the first path segment.
 		const url = WindowRegistry.buildWindowUrl("http://localhost:52341", "/Users/john/my project");
 		const parsed = new URL(url);
-		expect(parsed.searchParams.get("projectId")).toBe("/Users/john/my project");
+		expect(parsed.pathname).toBe("/%2FUsers%2Fjohn%2Fmy%20project");
+		expect(decodeURIComponent(parsed.pathname.slice(1))).toBe("/Users/john/my project");
 	});
 
 	it("returns base URL unchanged when projectId is empty string", () => {

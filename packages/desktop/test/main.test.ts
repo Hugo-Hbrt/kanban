@@ -253,28 +253,38 @@ describe("Window state persistence", () => {
 });
 
 // ---------------------------------------------------------------------------
-// before-quit shutdown idempotency (structural source-code check)
+// before-quit shutdown safety (structural source-code check)
 // ---------------------------------------------------------------------------
+//
+// The invariant under test is: the app can never hang on quit. The shutdown
+// path now has two layers:
+//
+//   1. main.ts's `before-quit` handler calls `orchestrator.shutdown()` and
+//      then `app.quit()`. It does NOT need try/finally because
+//      orchestrator.shutdown() is contractually non-throwing.
+//
+//   2. orchestrator.shutdown() wraps `manager.shutdown()` in `.catch(...)`
+//      that logs with the `[desktop] Runtime shutdown error:` prefix and
+//      swallows the error.
+//
+// If either layer changes shape, these tests will catch it.
 
 describe("before-quit shutdown safety", () => {
-	const src = readFileSync(
+	const mainSrc = readFileSync(
 		new URL("../src/main.ts", import.meta.url),
 		"utf-8",
 	);
+	const orchestratorSrc = readFileSync(
+		new URL("../src/runtime-orchestrator.ts", import.meta.url),
+		"utf-8",
+	);
 
-	/**
-	 * Extract the before-quit handler body from the source. We look for the
-	 * `app.on("before-quit"` block and grab everything between the first `{`
-	 * on that line through the matching closing brace.
-	 */
-	function extractBeforeQuitHandler(): string {
+	/** Extracts a handler body by scanning for a marker line + brace balancing. */
+	function extractBlock(src: string, marker: string, label: string): string {
 		const lines = src.split("\n");
-		const startIdx = lines.findIndex((l) =>
-			l.includes('app.on("before-quit"'),
-		);
-		if (startIdx === -1) throw new Error("before-quit handler not found");
+		const startIdx = lines.findIndex((l) => l.includes(marker));
+		if (startIdx === -1) throw new Error(`${label} not found`);
 
-		// Walk forward collecting lines until braces balance.
 		let depth = 0;
 		let started = false;
 		const collected: string[] = [];
@@ -292,32 +302,54 @@ describe("before-quit shutdown safety", () => {
 		return collected.join("\n");
 	}
 
-	it("wraps stopAppNapPrevention and app.quit in a finally block after event.preventDefault", () => {
-		const handler = extractBeforeQuitHandler();
+	it("main.ts calls orchestrator.shutdown() then app.quit() after event.preventDefault()", () => {
+		const handler = extractBlock(
+			mainSrc,
+			'app.on("before-quit"',
+			"before-quit handler",
+		);
 
-		// After event.preventDefault(), the shutdown must be wrapped in
-		// try { … } catch { … } finally { stopAppNapPrevention(); app.quit(); }
-		// so the app can never hang.
 		expect(handler).toContain("event.preventDefault()");
-		expect(handler).toContain("finally");
+		expect(handler).toContain("orchestrator.shutdown()");
+		expect(handler).toContain("app.quit()");
 
-		// Verify that stopAppNapPrevention and app.quit appear *after* the
-		// finally keyword within the preventDefault branch.
+		// Order within the preventDefault branch: preventDefault → shutdown → quit.
 		const preventIdx = handler.indexOf("event.preventDefault()");
-		const finallyIdx = handler.indexOf("finally", preventIdx);
-		const stopIdx = handler.indexOf("stopAppNapPrevention()", finallyIdx);
-		const quitIdx = handler.indexOf("app.quit()", finallyIdx);
+		const shutdownIdx = handler.indexOf("orchestrator.shutdown()", preventIdx);
+		const quitIdx = handler.indexOf("app.quit()", shutdownIdx);
 
-		expect(finallyIdx).toBeGreaterThan(preventIdx);
-		expect(stopIdx).toBeGreaterThan(finallyIdx);
-		expect(quitIdx).toBeGreaterThan(finallyIdx);
+		expect(shutdownIdx).toBeGreaterThan(preventIdx);
+		expect(quitIdx).toBeGreaterThan(shutdownIdx);
 	});
 
-	it("catches and logs connectionManager.shutdown errors", () => {
-		const handler = extractBeforeQuitHandler();
+	it("orchestrator.shutdown() catches and logs manager.shutdown errors", () => {
+		const shutdownBody = extractBlock(
+			orchestratorSrc,
+			"async shutdown(): Promise<void>",
+			"RuntimeOrchestrator.shutdown",
+		);
 
-		// The catch block should log with the desktop prefix.
-		expect(handler).toContain("catch");
-		expect(handler).toContain("[desktop] Runtime shutdown error:");
+		// manager.shutdown() must be wrapped so it never rejects — either
+		// via try/catch or .catch(...). The log prefix lets grep-level
+		// triage pin down startup hangs immediately.
+		expect(shutdownBody).toContain("manager.shutdown()");
+		expect(shutdownBody).toMatch(/\.catch\(|try\s*\{/);
+		expect(shutdownBody).toContain("[desktop] Runtime shutdown error:");
+	});
+
+	it("orchestrator.shutdown() always stops the power-save blocker", () => {
+		const shutdownBody = extractBlock(
+			orchestratorSrc,
+			"async shutdown(): Promise<void>",
+			"RuntimeOrchestrator.shutdown",
+		);
+
+		// Called before manager.shutdown() so it runs even if there is no
+		// owned child — and always before any awaited work that could hang.
+		expect(shutdownBody).toContain("stopAppNapPrevention()");
+		const stopIdx = shutdownBody.indexOf("stopAppNapPrevention()");
+		const mgrIdx = shutdownBody.indexOf("manager.shutdown()");
+		expect(stopIdx).toBeGreaterThan(-1);
+		if (mgrIdx !== -1) expect(stopIdx).toBeLessThan(mgrIdx);
 	});
 });
