@@ -690,6 +690,7 @@ export function CardDetailView({
 			ref={clineAgentChatPanelRef}
 			taskId={selection.card.id}
 			summary={sessionSummary}
+			sessionStateAuthoritative={!isCloudAgentTask}
 			taskColumnId={selection.column.id}
 			defaultMode="act"
 			showComposerModeToggle={false}

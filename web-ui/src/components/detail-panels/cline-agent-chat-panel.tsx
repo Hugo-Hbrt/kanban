@@ -96,6 +96,10 @@ export interface ClineAgentChatPanelProps {
 	onCancelAutomaticAction?: () => void;
 	cancelAutomaticActionLabel?: string | null;
 	showMoveToTrash?: boolean;
+	// Defaults to true (local Cline tasks). cloud_agent tasks pass false
+	// because their session summary's "running" state means "pod is up,"
+	// not "turn is executing" — see useClineChatPanelController.
+	sessionStateAuthoritative?: boolean;
 }
 
 export const ClineAgentChatPanel = React.forwardRef<ClineAgentChatPanelHandle, ClineAgentChatPanelProps>(
@@ -127,6 +131,7 @@ export const ClineAgentChatPanel = React.forwardRef<ClineAgentChatPanelHandle, C
 			onCancelAutomaticAction,
 			cancelAutomaticActionLabel,
 			showMoveToTrash = false,
+			sessionStateAuthoritative = true,
 		},
 		ref,
 	): ReactElement {
@@ -160,6 +165,7 @@ export const ClineAgentChatPanel = React.forwardRef<ClineAgentChatPanelHandle, C
 			onCancelAutomaticAction,
 			cancelAutomaticActionLabel,
 			showMoveToTrash,
+			sessionStateAuthoritative,
 		});
 		const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 		// TODO: Persist per-task mode immediately when toggled so page refresh restores unsent mode changes.
