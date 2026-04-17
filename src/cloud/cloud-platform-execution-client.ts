@@ -124,7 +124,8 @@ function isRetryableStatus(statusCode: number): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Pod /run + /run/status contract (matches apps/task-runner/runner/main.go)
+// Pod /run + /run/status contract (matches apps/task-runner/runner/main.go
+// post-Shape-B: no execution_id, no cloud_platform_url, no result_upload_jwt)
 // ---------------------------------------------------------------------------
 
 interface PodRunRequest {
@@ -136,28 +137,22 @@ interface PodRunRequest {
 	starting_commit_sha: string;
 	worktree_intent: string;
 	reservation_id: string;
-	result_upload_jwt: string;
-	cloud_platform_url: string;
-	execution_id: string;
+}
+
+interface PodRunResult {
+	instanceId?: string;
+	status?: "success" | "failed";
+	taskId?: string;
+	attemptNumber?: number;
+	prUrl?: string;
+	taskOutput?: string;
+	error?: string;
+	durationSeconds?: number;
 }
 
 interface PodStatusResponse {
-	status: "idle" | "running" | "completed";
-	task_id?: string;
-	execution_id?: string;
-	attempt_number?: number;
-	started_at?: string;
-	finished_at?: string;
-	result?: {
-		outcome?: string;
-		exit_code?: number;
-		summary?: string;
-		pr_url?: string;
-	};
-	error?: {
-		code?: string;
-		message?: string;
-	};
+	state: "idle" | "running" | "completed";
+	result?: PodRunResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,9 +260,6 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 			starting_commit_sha: "",
 			worktree_intent: validated.worktreeIntent,
 			reservation_id: "",
-			result_upload_jwt: "",
-			cloud_platform_url: "",
-			execution_id: instanceId,
 		};
 
 		await this.executeWithRetry(
@@ -421,29 +413,30 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 
 	private mapPodStatus(executionId: string, pod: PodStatusResponse): ExecutionStatusResponse {
 		const meta = this.executionMeta.get(executionId);
-		const taskId = pod.task_id ?? meta?.taskId ?? executionId;
-		const attemptNumber = pod.attempt_number ?? meta?.attemptNumber ?? 1;
+		const taskId = pod.result?.taskId ?? meta?.taskId ?? executionId;
+		const attemptNumber = pod.result?.attemptNumber ?? meta?.attemptNumber ?? 1;
 
 		let status: ExecutionStatusResponse["status"] = "queued";
 		let result: ExecutionStatusResponse["result"] = null;
 		let error: ExecutionStatusResponse["error"] = null;
 
-		if (pod.status === "idle") status = "queued";
-		else if (pod.status === "running") status = "running";
-		else if (pod.status === "completed") {
-			const exitCode = pod.result?.exit_code ?? 0;
-			status = exitCode === 0 ? "succeeded" : "failed";
+		if (pod.state === "idle") status = "queued";
+		else if (pod.state === "running") status = "running";
+		else if (pod.state === "completed") {
+			const podOutcome = pod.result?.status;
+			const succeeded = podOutcome === "success";
+			status = succeeded ? "succeeded" : "failed";
 			if (pod.result) {
 				result = {
-					outcome: pod.result.outcome ?? (exitCode === 0 ? "success" : "failure"),
-					exitCode,
-					summary: pod.result.summary ?? pod.result.pr_url ?? "",
+					outcome: podOutcome ?? (succeeded ? "success" : "failure"),
+					exitCode: succeeded ? 0 : 1,
+					summary: pod.result.prUrl ?? pod.result.taskOutput ?? "",
 				};
 			}
-			if (pod.error) {
+			if (!succeeded) {
 				error = {
-					code: pod.error.code ?? "UNKNOWN",
-					message: pod.error.message ?? "",
+					code: "TASK_FAILED",
+					message: pod.result?.error ?? "Task failed",
 				};
 			}
 		}
@@ -456,8 +449,8 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 			requestedByUserId: "",
 			orgId: "",
 			projectId: "",
-			startedAt: pod.started_at ?? null,
-			finishedAt: pod.finished_at ?? null,
+			startedAt: null,
+			finishedAt: null,
 			result,
 			error,
 		};
