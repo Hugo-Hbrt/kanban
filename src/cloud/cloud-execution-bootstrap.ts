@@ -26,6 +26,7 @@ import {
 import { CloudExecutionStore } from "./cloud-execution-persistence";
 import { type CloudPlatformExecutionClient, CloudPlatformExecutionHttpClient } from "./cloud-platform-execution-client";
 import { type CloudRuntimeClient, DefaultCloudRuntimeClient } from "./cloud-runtime-client";
+import { CloudTaskChatService } from "./cloud-task-chat-service";
 
 // ---------------------------------------------------------------------------
 // Environment Variable Names
@@ -67,6 +68,7 @@ export interface CloudExecutionRuntime {
 	readonly runtimePath: RuntimePathPreference;
 	readonly backgroundPoller: CloudBackgroundPoller;
 	readonly logStore: CloudExecutionLogStore;
+	readonly chatService: CloudTaskChatService;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +155,19 @@ export function bootstrapCloudExecution(
 
 	const logStore = new CloudExecutionLogStore();
 
+	// Resolve the orchestrator ↔ chat-service circular dep via a late-bound
+	// reference: the chat service needs to call orchestrator.sendMessageToTask,
+	// but the orchestrator needs the chat service to ingest inbound WS events.
+	// We build the chat service first with a closure over an `orchestratorRef`
+	// that's populated one line later.
+	let orchestratorRef: CloudExecutionOrchestrator | null = null;
+	const chatService = new CloudTaskChatService({
+		sendToTask: (taskId, message) => {
+			if (!orchestratorRef) return { ok: false, error: "orchestrator not ready" };
+			return orchestratorRef.sendMessageToTask(taskId, message);
+		},
+	});
+
 	const orchestrator = new CloudExecutionOrchestrator(
 		store,
 		executionClient,
@@ -161,7 +176,9 @@ export function bootstrapCloudExecution(
 		null,
 		runtimeClient,
 		logStore,
+		chatService,
 	);
+	orchestratorRef = orchestrator;
 
 	// Background poller — drives processTask() for active cloud tasks
 	const backgroundPoller = new CloudBackgroundPoller({
@@ -189,5 +206,6 @@ export function bootstrapCloudExecution(
 		runtimePath,
 		backgroundPoller,
 		logStore,
+		chatService,
 	};
 }

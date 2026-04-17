@@ -503,6 +503,18 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 		getTaskChatMessages: async (workspaceScope, input) => {
 			try {
 				const body = parseTaskChatMessagesRequest(input);
+				// Cloud-agent tasks route through the cloud chat service (ACP WS-backed).
+				// We detect "is cloud" by whether the chat service has any transcript
+				// for this taskId — the orchestrator ingests `session_started` into the
+				// chat service the moment the ACP WS connects, which races well ahead
+				// of the first UI query.
+				const cloudRuntime = deps.getCloudExecutionRuntime?.();
+				if (cloudRuntime) {
+					const cloudMessages = cloudRuntime.chatService.listMessages(body.taskId);
+					if (cloudMessages.length > 0) {
+						return { ok: true, messages: cloudMessages };
+					}
+				}
 				const clineTaskSessionService = await deps.getScopedClineTaskSessionService(workspaceScope);
 				const summary = clineTaskSessionService.getSummary(body.taskId);
 				const messages = await clineTaskSessionService.loadTaskSessionMessages(body.taskId);
@@ -708,6 +720,22 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 		sendTaskChatMessage: async (workspaceScope, input) => {
 			try {
 				const body = parseTaskChatSendRequest(input);
+				// Cloud-agent tasks: if the chat service has a transcript for this task,
+				// it's a live cloud session — route the prompt through the ACP WebSocket
+				// instead of spawning a local Cline process.
+				const cloudRuntime = deps.getCloudExecutionRuntime?.();
+				if (cloudRuntime) {
+					const cloudMessages = cloudRuntime.chatService.listMessages(body.taskId);
+					if (cloudMessages.length > 0) {
+						const result = cloudRuntime.chatService.sendUserPrompt(body.taskId, body.text);
+						return {
+							ok: result.sendOk,
+							summary: null,
+							message: result.message,
+							error: result.sendError,
+						};
+					}
+				}
 				const clineTaskSessionService = await deps.getScopedClineTaskSessionService(workspaceScope);
 				if (isClineClearSlashCommand(body.text)) {
 					const summary = await clineTaskSessionService.clearTaskSession(body.taskId);

@@ -150,6 +150,10 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 			});
 			clineTaskSessionServiceByWorkspaceId.set(scope.workspaceId, service);
 			deps.runtimeStateHub.trackClineTaskSessionService(scope.workspaceId, scope.workspacePath, service);
+			const cloudRuntime = deps.getCloudExecutionRuntime?.();
+			if (cloudRuntime) {
+				deps.runtimeStateHub.trackCloudTaskChatService(scope.workspaceId, cloudRuntime.chatService);
+			}
 		}
 		return service;
 	};

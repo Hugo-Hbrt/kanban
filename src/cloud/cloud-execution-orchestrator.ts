@@ -61,7 +61,8 @@ import {
 	isTerminalExecutionStatus,
 } from "./cloud-platform-execution-client";
 import type { CloudExecutionLogStoreInterface } from "./cloud-execution-log-store";
-import type { CloudRuntimeClient, RuntimeWebSocketHandle } from "./cloud-runtime-client";
+import type { CloudRuntimeClient, RuntimeMessage, RuntimeWebSocketHandle } from "./cloud-runtime-client";
+import type { CloudTaskChatService } from "./cloud-task-chat-service";
 
 // ---------------------------------------------------------------------------
 // Store Interface (structural typing for testability)
@@ -137,6 +138,8 @@ interface TaskContext {
 	wsTerminalStatus?: { status: "succeeded" | "failed" | "canceled"; result?: unknown; error?: unknown };
 	/** Whether we already attempted WebSocket connection (avoids retry spam). */
 	wsAttempted?: boolean;
+	/** Prompt to relay to the pod as the first `user_prompt` once the ACP WebSocket connects. */
+	pendingInitialPrompt?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +329,7 @@ export class CloudExecutionOrchestrator {
 	private readonly executionClient: CloudPlatformExecutionClient;
 	private readonly runtimeClient: CloudRuntimeClient | null;
 	private readonly logStore: CloudExecutionLogStoreInterface | null;
+	private cloudTaskChatService: CloudTaskChatService | null = null;
 	private readonly config: OrchestratorConfig;
 	private readonly logger: OrchestratorLogger;
 	private readonly concurrencyLimiter: ConcurrencyLimiterExtension | null;
@@ -343,6 +347,7 @@ export class CloudExecutionOrchestrator {
 		concurrencyLimiter?: ConcurrencyLimiterExtension | null,
 		runtimeClient?: CloudRuntimeClient | null,
 		logStore?: CloudExecutionLogStoreInterface | null,
+		cloudTaskChatService?: CloudTaskChatService | null,
 	) {
 		this.store = store;
 		this.executionClient = executionClient;
@@ -351,6 +356,31 @@ export class CloudExecutionOrchestrator {
 		this.concurrencyLimiter = concurrencyLimiter ?? null;
 		this.runtimeClient = runtimeClient ?? null;
 		this.logStore = logStore ?? null;
+		this.cloudTaskChatService = cloudTaskChatService ?? null;
+	}
+
+	// Late-bind the chat service after construction so the bootstrap can
+	// resolve the orchestrator ↔ chat-service circular dependency (the chat
+	// service's sendToTask callback needs to call orchestrator.sendMessageToTask).
+	setCloudTaskChatService(service: CloudTaskChatService | null): void {
+		this.cloudTaskChatService = service;
+	}
+
+	// Send a RuntimeMessage to the pod for a given task. Returns { ok: false }
+	// if the WebSocket isn't connected or the send throws. Called by
+	// CloudTaskChatService.sendUserPrompt and by the cancel/end-session handlers
+	// in runtime-api.
+	sendMessageToTask(taskId: string, message: RuntimeMessage): { ok: boolean; error?: string } {
+		const ctx = this.activeTasks.get(taskId);
+		if (!ctx?.wsHandle || !ctx.wsConnected) {
+			return { ok: false, error: "no active cloud session" };
+		}
+		try {
+			ctx.wsHandle.send(message);
+			return { ok: true };
+		} catch (e) {
+			return { ok: false, error: e instanceof Error ? e.message : String(e) };
+		}
 	}
 
 	/** Start the worker loop. */
@@ -706,6 +736,25 @@ export class CloudExecutionOrchestrator {
 		// --- Target path: try gateway WebSocket for real-time status ---------
 		if (this.runtimeClient && !ctx.wsAttempted && !ctx.wsConnected) {
 			ctx.wsAttempted = true;
+
+			// Capture the initial prompt from the most recent submit event so we can
+			// relay it to the pod via the ACP WebSocket. For cline-base instances the
+			// prompt doesn't flow through POST /executions — it has to be sent as
+			// the first user_prompt RuntimeMessage after the WS connects.
+			if (!ctx.pendingInitialPrompt) {
+				const events = await this.store.readEventsForTask(taskId);
+				for (let i = events.length - 1; i >= 0; i--) {
+					const evt = events[i];
+					if (evt?.trigger === "submit" && evt.metadata) {
+						const p = (evt.metadata.prompt as string) ?? (evt.metadata.taskPrompt as string);
+						if (p && p.length > 0) {
+							ctx.pendingInitialPrompt = p;
+							break;
+						}
+					}
+				}
+			}
+
 			try {
 				const connectResponse = await this.runtimeClient.connect({
 					instanceId: ctx.cloudExecutionId,
@@ -738,10 +787,43 @@ export class CloudExecutionOrchestrator {
 								};
 							}
 						}
+						if (this.cloudTaskChatService) {
+							try {
+								this.cloudTaskChatService.ingestInboundEvent(taskId, msg);
+							} catch (e) {
+								this.logger.warn("Cloud chat service ingest failed", {
+									taskId,
+									error: e instanceof Error ? e.message : String(e),
+								});
+							}
+						}
 					},
 					onStateChange: (state) => {
 						const wasConnected = ctx.wsConnected === true;
 						ctx.wsConnected = state === "connected";
+						if (state === "connected" && !wasConnected && ctx.pendingInitialPrompt) {
+							const initialPrompt = ctx.pendingInitialPrompt;
+							ctx.pendingInitialPrompt = undefined;
+							if (this.cloudTaskChatService) {
+								try {
+									this.cloudTaskChatService.sendUserPrompt(taskId, initialPrompt);
+								} catch (e) {
+									this.logger.warn("Initial prompt relay via chat service failed", {
+										taskId,
+										error: e instanceof Error ? e.message : String(e),
+									});
+								}
+							} else {
+								try {
+									ctx.wsHandle?.send({ type: "user_prompt", payload: { text: initialPrompt } });
+								} catch (e) {
+									this.logger.warn("Initial prompt relay via WS handle failed", {
+										taskId,
+										error: e instanceof Error ? e.message : String(e),
+									});
+								}
+							}
+						}
 						if (state === "disconnected") {
 							ctx.wsHandle = undefined;
 							if (wasConnected && !ctx.wsTerminalStatus) {

@@ -41,6 +41,10 @@ export interface CreateRuntimeStateHubDependencies {
 export interface RuntimeStateHub {
 	trackTerminalManager: (workspaceId: string, manager: TerminalSessionManager) => void;
 	trackClineTaskSessionService: (workspaceId: string, workspacePath: string, service: ClineTaskSessionService) => void;
+	trackCloudTaskChatService: (
+		workspaceId: string,
+		service: import("../cloud/cloud-task-chat-service").CloudTaskChatService,
+	) => void;
 	broadcastTaskChatMessage: (workspaceId: string, taskId: string, message: ClineTaskMessage) => void;
 	broadcastTaskChatCleared: (workspaceId: string, taskId: string) => void;
 	handleUpgrade: (
@@ -64,6 +68,7 @@ export function createRuntimeStateHub(deps: CreateRuntimeStateHubDependencies): 
 	const terminalSummaryUnsubscribeByWorkspaceId = new Map<string, () => void>();
 	const clineSummaryUnsubscribeByWorkspaceId = new Map<string, () => void>();
 	const clineMessageUnsubscribeByWorkspaceId = new Map<string, () => void>();
+	const cloudChatMessageUnsubscribeByWorkspaceId = new Map<string, () => void>();
 	const clinePreviousSummaryByWorkspaceId = new Map<string, Map<string, RuntimeTaskSessionSummary>>();
 	const pendingTaskSessionSummariesByWorkspaceId = new Map<string, Map<string, RuntimeTaskSessionSummary>>();
 	const taskSessionBroadcastTimersByWorkspaceId = new Map<string, NodeJS.Timeout>();
@@ -258,6 +263,15 @@ export function createRuntimeStateHub(deps: CreateRuntimeStateHubDependencies): 
 		}
 		clineSummaryUnsubscribeByWorkspaceId.delete(workspaceId);
 		clinePreviousSummaryByWorkspaceId.delete(workspaceId);
+		const unsubscribeCloudChat = cloudChatMessageUnsubscribeByWorkspaceId.get(workspaceId);
+		if (unsubscribeCloudChat) {
+			try {
+				unsubscribeCloudChat();
+			} catch {
+				// Best-effort cleanup
+			}
+		}
+		cloudChatMessageUnsubscribeByWorkspaceId.delete(workspaceId);
 		const unsubscribeClineMessage = clineMessageUnsubscribeByWorkspaceId.get(workspaceId);
 		if (unsubscribeClineMessage) {
 			try {
@@ -538,6 +552,20 @@ export function createRuntimeStateHub(deps: CreateRuntimeStateHubDependencies): 
 				broadcastTaskChatMessage(workspaceId, taskId, message);
 			});
 			clineMessageUnsubscribeByWorkspaceId.set(workspaceId, unsubscribeMessage);
+		},
+		// Cloud_agent chat: subscribe to the cloud chat service and broadcast
+		// messages through the same pipeline the Cline service uses. One
+		// registration per workspace is sufficient — the chat service itself is
+		// a singleton on the runtime, but the hub broadcasts are scoped per
+		// workspace because the UI subscribes per workspace.
+		trackCloudTaskChatService: (workspaceId, service) => {
+			if (cloudChatMessageUnsubscribeByWorkspaceId.has(workspaceId)) {
+				return;
+			}
+			const unsubscribe = service.onMessage((taskId, message) => {
+				broadcastTaskChatMessage(workspaceId, taskId, message);
+			});
+			cloudChatMessageUnsubscribeByWorkspaceId.set(workspaceId, unsubscribe);
 		},
 		broadcastTaskChatMessage,
 		broadcastTaskChatCleared,
