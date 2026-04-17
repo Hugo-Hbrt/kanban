@@ -799,9 +799,16 @@ export class CloudExecutionOrchestrator {
 						}
 					},
 					onStateChange: (state) => {
+						// ctx.wsConnected is set to true synchronously after
+						// openWebSocket returns (see below), so by the time
+						// onStateChange fires wasConnected is already true. We
+						// guard the initial-prompt relay on pendingInitialPrompt
+						// being set, not on a wasConnected edge — pendingInitialPrompt
+						// is cleared after the first send, which is enough to make
+						// this fire exactly once per connection.
 						const wasConnected = ctx.wsConnected === true;
 						ctx.wsConnected = state === "connected";
-						if (state === "connected" && !wasConnected && ctx.pendingInitialPrompt) {
+						if (state === "connected" && ctx.pendingInitialPrompt) {
 							const initialPrompt = ctx.pendingInitialPrompt;
 							ctx.pendingInitialPrompt = undefined;
 							if (this.cloudTaskChatService) {
