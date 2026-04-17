@@ -649,3 +649,81 @@ describe("validateExecutionIdentityFidelity", () => {
 		expect(result.violations.some((v) => v.field === "repoUrl")).toBe(true);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Regression: concurrent advanceTask() must not create duplicate executions
+// ---------------------------------------------------------------------------
+//
+// Repro symptom from the field: a single kanban task showed TWO
+// "Execution created on cloud-platform" log lines with different
+// cloudExecutionIds (e.g. ins-0109d286 and ins-c0418c5f), TWO
+// provisioning→running events in task-events.json, and three gateway
+// WebSocket "connected" log lines. Root cause: the tick loop and an
+// explicit processTask() (or two consecutive ticks while the first's
+// createExecution HTTP roundtrip was still pending) both read the same
+// pre-transition state, both read latest.instanceId as undefined, and
+// both called createExecution. The orchestrator now serialises advanceTask
+// per taskId via an inflight promise cache.
+describe("Orchestrator — concurrent advanceTask() per task", () => {
+	it("does not create a second execution when two processTask() calls overlap", async () => {
+		const store = createMockStore();
+
+		let pendingResolve: ((resp: ExecutionCreateResponse) => void) | null = null;
+		const createCalls: ExecutionCreateRequest[] = [];
+		const client: CloudPlatformExecutionClient = {
+			async createExecution(request: ExecutionCreateRequest) {
+				createCalls.push(request);
+				return new Promise<ExecutionCreateResponse>((resolve) => {
+					pendingResolve = resolve;
+				});
+			},
+			async getExecutionStatus(executionId: string): Promise<ExecutionStatusResponse> {
+				return {
+					executionId,
+					status: "running",
+					taskId: "task-race",
+					attemptNumber: 1,
+					requestedByUserId: "u",
+					orgId: "o",
+					projectId: "p",
+					startedAt: new Date().toISOString(),
+					finishedAt: null,
+					result: null,
+					error: null,
+				};
+			},
+			async cancelExecution() {},
+		};
+
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
+		await seedTaskToState(store, "task-race", "provisioning");
+
+		const a = orch.processTask("task-race");
+		const b = orch.processTask("task-race");
+
+		await new Promise((r) => setTimeout(r, 5));
+		expect(createCalls).toHaveLength(1);
+		expect(pendingResolve).not.toBeNull();
+
+		pendingResolve?.({
+			executionId: "exec-task-race",
+			status: "queued",
+			taskId: "task-race",
+			attemptNumber: 1,
+			createdAt: new Date().toISOString(),
+		});
+
+		const [ra, rb] = await Promise.all([a, b]);
+
+		expect(createCalls).toHaveLength(1);
+		expect(ra).toEqual(rb);
+		expect(ra?.success).toBe(true);
+		expect(ra?.newState).toBe("running");
+
+		const runningEvents = store._events.filter(
+			(e) => e.taskId === "task-race" && e.fromState === "provisioning" && e.toState === "running",
+		);
+		expect(runningEvents).toHaveLength(1);
+	});
+});
+

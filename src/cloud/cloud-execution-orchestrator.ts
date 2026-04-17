@@ -335,7 +335,16 @@ export class CloudExecutionOrchestrator {
 	private readonly concurrencyLimiter: ConcurrencyLimiterExtension | null;
 	private readonly activeTasks = new Map<string, TaskContext>();
 	private readonly pendingCancellations = new Set<string>();
+	// Per-task inflight guard for advanceTask. Prevents duplicate side-effects
+	// (e.g. a second createExecution call for the same task) when the tick
+	// loop and an explicit processTask() overlap, or when two consecutive
+	// ticks fire while a slow HTTP roundtrip is still pending and the state
+	// hasn't transitioned yet. Both callers would otherwise read the same
+	// pre-transition state and race past idempotency guards that check
+	// persisted fields.
+	private readonly inflightAdvance = new Map<string, Promise<TaskStepResult | null>>();
 	private running = false;
+
 	private tickTimer: ReturnType<typeof setTimeout> | null = null;
 	private logSequenceCounter = 0;
 
@@ -486,6 +495,22 @@ export class CloudExecutionOrchestrator {
 	// -- internal: task advancement ------------------------------------------
 
 	private async advanceTask(taskId: string, state: CloudExecutionState): Promise<TaskStepResult | null> {
+		const pending = this.inflightAdvance.get(taskId);
+		if (pending) return pending;
+
+		const p = this.advanceTaskUnlocked(taskId, state).finally(() => {
+			if (this.inflightAdvance.get(taskId) === p) {
+				this.inflightAdvance.delete(taskId);
+			}
+		});
+		this.inflightAdvance.set(taskId, p);
+		return p;
+	}
+
+	private async advanceTaskUnlocked(
+		taskId: string,
+		state: CloudExecutionState,
+	): Promise<TaskStepResult | null> {
 		switch (state) {
 			case "queued":
 				return this.handleQueued(taskId);
