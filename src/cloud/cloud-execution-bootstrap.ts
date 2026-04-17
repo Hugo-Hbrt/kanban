@@ -16,6 +16,7 @@
 import { type CloudAuthProvider, EnvironmentCloudAuthProvider } from "./cloud-auth-provider";
 import { CloudBackgroundPoller } from "./cloud-background-poller";
 import { type CloudCapabilitiesClient, CloudCapabilitiesHttpClient } from "./cloud-capabilities-client";
+import { CloudExecutionLogStore } from "./cloud-execution-log-store";
 import {
 	CloudExecutionOrchestrator,
 	DEFAULT_ORCHESTRATOR_CONFIG,
@@ -65,6 +66,7 @@ export interface CloudExecutionRuntime {
 	readonly authProvider: CloudAuthProvider;
 	readonly runtimePath: RuntimePathPreference;
 	readonly backgroundPoller: CloudBackgroundPoller;
+	readonly logStore: CloudExecutionLogStore;
 }
 
 // ---------------------------------------------------------------------------
@@ -149,14 +151,16 @@ export function bootstrapCloudExecution(
 		...overrides?.orchestratorConfig,
 	};
 
-	// Assemble orchestrator — runtimeClient enables target path (gateway+WebSocket)
+	const logStore = new CloudExecutionLogStore();
+
 	const orchestrator = new CloudExecutionOrchestrator(
 		store,
 		executionClient,
 		config,
 		logger,
-		null, // concurrency limiter — Phase 2
+		null,
 		runtimeClient,
+		logStore,
 	);
 
 	// Background poller — drives processTask() for active cloud tasks
@@ -184,5 +188,6 @@ export function bootstrapCloudExecution(
 		authProvider,
 		runtimePath,
 		backgroundPoller,
+		logStore,
 	};
 }

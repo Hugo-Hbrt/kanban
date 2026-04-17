@@ -315,8 +315,8 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 	private mapInstanceStatus(executionId: string, data: CoreInstanceStatus): ExecutionStatusResponse {
 		let status: ExecutionStatusResponse["status"] = "queued";
 		if (data.state === "provisioning" || data.state === "starting") status = "queued";
-		else if (data.state === "ready" || data.state === "unhealthy") status = "running";
-		else if (data.state === "failed") status = "failed";
+		else if (data.state === "ready") status = "running";
+		else if (data.state === "failed" || data.state === "unhealthy") status = "failed";
 
 		const error =
 			status === "failed"

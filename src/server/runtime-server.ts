@@ -204,7 +204,7 @@ export async function createRuntimeServer(deps: CreateRuntimeServerDependencies)
 				broadcastTaskChatCleared: deps.runtimeStateHub.broadcastTaskChatCleared,
 				bumpClineSessionContextVersion: deps.runtimeStateHub.bumpClineSessionContextVersion,
 				prepareForStateReset,
-				getCloudExecutionLogStore: () => cloudExecutionLogStore,
+				getCloudExecutionLogStore: () => deps.getCloudExecutionRuntime?.()?.logStore ?? cloudExecutionLogStore,
 				getCloudExecutionRuntime: deps.getCloudExecutionRuntime,
 			}),
 			workspaceApi: createWorkspaceApi({

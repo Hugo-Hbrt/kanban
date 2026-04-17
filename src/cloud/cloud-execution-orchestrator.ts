@@ -60,6 +60,7 @@ import {
 	type ExecutionPollingConfig,
 	isTerminalExecutionStatus,
 } from "./cloud-platform-execution-client";
+import type { CloudExecutionLogStoreInterface } from "./cloud-execution-log-store";
 import type { CloudRuntimeClient, RuntimeWebSocketHandle } from "./cloud-runtime-client";
 
 // ---------------------------------------------------------------------------
@@ -324,6 +325,7 @@ export class CloudExecutionOrchestrator {
 	private readonly store: CloudExecutionStoreInterface;
 	private readonly executionClient: CloudPlatformExecutionClient;
 	private readonly runtimeClient: CloudRuntimeClient | null;
+	private readonly logStore: CloudExecutionLogStoreInterface | null;
 	private readonly config: OrchestratorConfig;
 	private readonly logger: OrchestratorLogger;
 	private readonly concurrencyLimiter: ConcurrencyLimiterExtension | null;
@@ -331,6 +333,7 @@ export class CloudExecutionOrchestrator {
 	private readonly pendingCancellations = new Set<string>();
 	private running = false;
 	private tickTimer: ReturnType<typeof setTimeout> | null = null;
+	private logSequenceCounter = 0;
 
 	constructor(
 		store: CloudExecutionStoreInterface,
@@ -339,6 +342,7 @@ export class CloudExecutionOrchestrator {
 		logger: OrchestratorLogger = noopLogger,
 		concurrencyLimiter?: ConcurrencyLimiterExtension | null,
 		runtimeClient?: CloudRuntimeClient | null,
+		logStore?: CloudExecutionLogStoreInterface | null,
 	) {
 		this.store = store;
 		this.executionClient = executionClient;
@@ -346,6 +350,7 @@ export class CloudExecutionOrchestrator {
 		this.logger = logger;
 		this.concurrencyLimiter = concurrencyLimiter ?? null;
 		this.runtimeClient = runtimeClient ?? null;
+		this.logStore = logStore ?? null;
 	}
 
 	/** Start the worker loop. */
@@ -534,6 +539,20 @@ export class CloudExecutionOrchestrator {
 			const latest = execs[execs.length - 1];
 			const meta = latest?.remoteMetadata;
 
+			const existingInstanceId = latest?.instanceId ?? meta?.instanceId;
+			if (existingInstanceId) {
+				ctx.cloudExecutionId = existingInstanceId;
+				ctx.executionCreated = true;
+				this.logger.info("Reusing existing cloud execution (idempotent replay)", {
+					taskId,
+					cloudExecutionId: existingInstanceId,
+				});
+				return this.applyTransition(taskId, "provisioning", "sandbox_ready", "system", {
+					cloudExecutionId: existingInstanceId,
+					idempotentReuse: true,
+				});
+			}
+
 			let eventRepoUrl = "";
 			let eventBaseRef = "main";
 			let eventProviderId: string | undefined;
@@ -679,6 +698,19 @@ export class CloudExecutionOrchestrator {
 
 				const wsHandle = this.runtimeClient.openWebSocket(connectResponse.connectUrl, connectResponse.assertion, {
 					onMessage: (msg) => {
+						if (this.logStore) {
+							try {
+								this.logSequenceCounter++;
+								this.logStore.append(taskId, {
+									sequence: this.logSequenceCounter,
+									timestamp: new Date().toISOString(),
+									level: "info",
+									message: typeof msg === "string" ? msg : JSON.stringify(msg),
+								});
+							} catch {
+								// Best-effort log capture
+							}
+						}
 						if (msg.type === "execution_status") {
 							const payload = msg.payload as Record<string, unknown> | undefined;
 							const status = payload?.status as string;
@@ -692,12 +724,24 @@ export class CloudExecutionOrchestrator {
 						}
 					},
 					onStateChange: (state) => {
+						const wasConnected = ctx.wsConnected === true;
 						ctx.wsConnected = state === "connected";
-						if (state === "error" || state === "disconnected") {
+						if (state === "disconnected") {
 							ctx.wsHandle = undefined;
-							this.logger.info("Gateway WebSocket disconnected, falling back to HTTP polling", {
+							if (wasConnected && !ctx.wsTerminalStatus) {
+								ctx.wsTerminalStatus = { status: "succeeded" };
+								this.logger.info("Gateway WebSocket clean close — inferring task completion", {
+									taskId,
+								});
+							} else {
+								this.logger.info("Gateway WebSocket disconnected before connect, will retry via HTTP", {
+									taskId,
+								});
+							}
+						} else if (state === "error") {
+							ctx.wsHandle = undefined;
+							this.logger.warn("Gateway WebSocket error, falling back to HTTP polling", {
 								taskId,
-								state,
 							});
 						}
 					},
