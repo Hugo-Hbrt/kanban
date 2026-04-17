@@ -24,6 +24,7 @@ export const executionCreateRequestSchema = z.object({
 	baseBranch: z.string(),
 	featureBranchIntent: z.string(),
 	worktreeIntent: z.string(),
+	prompt: z.string().min(1),
 });
 export type ExecutionCreateRequest = z.infer<typeof executionCreateRequestSchema>;
 
@@ -160,6 +161,7 @@ export interface ExecutionRequestContext {
 	baseBranch: string;
 	featureBranchIntent: string;
 	worktreeIntent: string;
+	prompt: string;
 }
 
 /**
@@ -178,6 +180,7 @@ export function buildExecutionCreateRequest(ctx: ExecutionRequestContext): Execu
 		baseBranch: ctx.baseBranch,
 		featureBranchIntent: ctx.featureBranchIntent,
 		worktreeIntent: ctx.worktreeIntent,
+		prompt: ctx.prompt,
 	});
 }
 

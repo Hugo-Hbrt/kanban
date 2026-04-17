@@ -534,23 +534,23 @@ export class CloudExecutionOrchestrator {
 			const latest = execs[execs.length - 1];
 			const meta = latest?.remoteMetadata;
 
-			// Fallback: read repoUrl/baseRef from the submit event
 			let eventRepoUrl = "";
 			let eventBaseRef = "main";
-			if (!meta?.repoUrl) {
-				const events = await this.store.readEventsForTask(taskId);
-				for (let i = events.length - 1; i >= 0; i--) {
-					const evt = events[i];
-					if (evt?.trigger === "submit" && evt.metadata) {
-						eventRepoUrl = (evt.metadata.repoUrl as string) ?? "";
-						eventBaseRef = (evt.metadata.baseRef as string) ?? "main";
-						break;
-					}
+			let eventPrompt = "";
+			const events = await this.store.readEventsForTask(taskId);
+			for (let i = events.length - 1; i >= 0; i--) {
+				const evt = events[i];
+				if (evt?.trigger === "submit" && evt.metadata) {
+					if (!meta?.repoUrl) eventRepoUrl = (evt.metadata.repoUrl as string) ?? "";
+					eventBaseRef = (evt.metadata.baseRef as string) ?? "main";
+					eventPrompt = (evt.metadata.prompt as string) ?? (evt.metadata.taskPrompt as string) ?? "";
+					break;
 				}
 			}
 
 			const attemptNumber = latest?.attemptNumber ?? 1;
 			const worktreeIntent = latest?.worktreeIntent ?? meta?.worktreePath ?? `${taskId}/attempt-${attemptNumber}`;
+			const prompt = eventPrompt || `Execute kanban task ${taskId}`;
 
 			const request = buildExecutionCreateRequest({
 				taskId,
@@ -562,6 +562,7 @@ export class CloudExecutionOrchestrator {
 				baseBranch: meta?.baseBranch ?? eventBaseRef,
 				featureBranchIntent: meta?.featureBranch ?? "",
 				worktreeIntent,
+				prompt,
 			});
 
 			const createResponse = await this.executionClient.createExecution(request, ctx.abortController.signal);

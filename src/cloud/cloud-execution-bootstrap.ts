@@ -33,6 +33,9 @@ import { type CloudRuntimeClient, DefaultCloudRuntimeClient } from "./cloud-runt
 const ENV = {
 	CLOUD_PLATFORM_BASE_URL: "KANBAN_CLOUD_PLATFORM_BASE_URL",
 	CLOUD_PLATFORM_API_KEY: "KANBAN_CLOUD_PLATFORM_API_KEY",
+	GITHUB_PAT: "KANBAN_GITHUB_PAT",
+	POD_SCHEME: "KANBAN_POD_SCHEME",
+	POD_PORT: "KANBAN_POD_PORT",
 	CLOUD_EXECUTION_STORE_PATH: "KANBAN_CLOUD_EXECUTION_STORE_PATH",
 	ORG_ID: "KANBAN_ORG_ID",
 	USER_ID: "KANBAN_USER_ID",
@@ -107,6 +110,9 @@ export function bootstrapCloudExecution(
 		new CloudPlatformExecutionHttpClient({
 			baseUrl: cloudBaseUrl,
 			authProvider,
+			githubPat: env[ENV.GITHUB_PAT] ?? "",
+			podScheme: (env[ENV.POD_SCHEME] as "http" | "https" | undefined) ?? undefined,
+			podPort: env[ENV.POD_PORT] ? Number(env[ENV.POD_PORT]) : undefined,
 			fetch: overrides?.fetchFn,
 		});
 
