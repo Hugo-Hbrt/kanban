@@ -115,9 +115,19 @@ export function useCloudExecutionDetail(
 		void fetchDetail();
 	}, [fetchDetail, stateVersion, taskId, workspaceId]);
 
-	// Poll during active execution
+	// Poll during active execution. We also poll when no summary exists yet
+	// (summary.found === false / summary === null): the initial fetch can race
+	// the backend's submit event — the UI queries the cloud store before the
+	// orchestrator has written anything, gets found:false, and would otherwise
+	// be stuck on an empty detail panel forever because currentState is
+	// undefined. Polling until the submit event lands bridges that window.
+	// For tasks that genuinely never use cloud execution, the caller must
+	// gate `taskId`/`workspaceId` to null (see card-detail-view's isCloudAgentTask
+	// check) so this hook is inert and no polling happens.
 	const currentState = summary?.summary?.currentState;
-	const shouldPoll = isActiveExecutionState(currentState) && !!taskId && !!workspaceId;
+	const hasAnyExecutionData = summary?.found === true || timeline?.found === true;
+	const shouldPoll =
+		!!taskId && !!workspaceId && (isActiveExecutionState(currentState) || !hasAnyExecutionData);
 
 	useEffect(() => {
 		if (!shouldPoll) {
