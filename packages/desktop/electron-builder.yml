@@ -1,0 +1,102 @@
+appId: com.cline.kanban
+productName: Kanban
+copyright: Copyright © 2025 Cline
+
+directories:
+  output: out
+  buildResources: build
+
+# afterSign hook — notarizes the macOS .app bundle via Apple notarytool.
+# Requires APPLE_ID, APPLE_ID_PASSWORD, and APPLE_TEAM_ID env vars.
+# The hook is a no-op on non-mac platforms or when env vars are missing.
+afterSign: ./scripts/notarize.cjs
+
+# Files packed into app.asar:
+#
+#   dist/**/*                     Desktop shell's own compiled output
+#                                  (main.js, preload.js, disconnected.html).
+#   package.json                   Read by Electron + install-app-deps.
+#   cli/**/*                       The pre-built Kanban CLI bundle. The
+#                                  `stage:cli` npm script copies root `dist/`
+#                                  into `packages/desktop/cli/` (electron-
+#                                  builder's `files:` rejects paths outside
+#                                  the package root, so we stage locally).
+#                                  asarUnpack (below) extracts `cli/**` to
+#                                  `app.asar.unpacked/cli/` so node can
+#                                  execute it and ESM module resolution
+#                                  walks up to `app.asar.unpacked/node_modules/`
+#                                  to find node-pty (the CLI's one runtime
+#                                  external — everything else is bundled).
+#                                  NOTE: electron-builder's asarUnpack globs
+#                                  match against the path as staged in the
+#                                  package root, so we must NOT use `from/to`
+#                                  rebasing here — otherwise files end up
+#                                  packed at `cli/**` in asar but asarUnpack
+#                                  can't find them and they stay trapped
+#                                  inside app.asar.
+files:
+  - dist/**/*
+  - package.json
+  - cli/**/*
+  - "!cli/**/*.map"
+
+# extraResources lands outside app.asar, under Contents/Resources/ on macOS.
+#
+#   build/bin → Resources/bin    CLI shim scripts (kanban, kanban.cmd).
+#                                 main.ts resolves these via process.resourcesPath.
+extraResources:
+  - from: build/bin
+    to: bin
+    filter:
+      - "**/*"
+
+# Custom protocol — registers kanban:// deep-links for OAuth callbacks.
+# On macOS this ends up in Info.plist CFBundleURLTypes; on Windows it
+# registers the protocol in the registry; on Linux it creates the
+# appropriate XDG mime handler.
+protocols:
+  - name: Kanban
+    schemes:
+      - kanban
+
+asar: true
+
+# asarUnpack covers files that need real filesystem paths:
+#
+#   node_modules/node-pty/**
+#     node-pty ships a spawn-helper binary it locates by string-replacing
+#     `app.asar` with `app.asar.unpacked` in its own __dirname. That
+#     helper must live on the real filesystem. See scripts/patch-node-pty.mjs
+#     for the monkey-patch that avoids double-suffixing when already unpacked.
+#
+#   **/*.node
+#     Native addons are loaded via dlopen() which requires a real path.
+#     Catches any transitive native addons that might land in node_modules.
+asarUnpack:
+  - "cli/**"
+  - "node_modules/node-pty/**"
+  - "**/*.node"
+
+# ──────────────────────────────────────────
+# macOS configuration
+# ──────────────────────────────────────────
+mac:
+  category: public.app-category.developer-tools
+  icon: build/icon.icns
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # NSAppSleepDisabled prevents App Nap from throttling background runtime work.
+  extendInfo:
+    NSAppSleepDisabled: true
+    NSSupportsAutomaticTermination: false
+    NSSupportsSuddenTermination: false
+
+dmg:
+  artifactName: "${productName}-${version}-${arch}.${ext}"

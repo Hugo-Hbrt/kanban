@@ -13,4 +13,5 @@ web-ui/.env
 web-ui/.env.*
 !web-ui/.env.example
 packages/desktop/out
+packages/desktop/cli
 packages/desktop/*.tgz
