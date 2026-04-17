@@ -468,6 +468,8 @@ export class CloudExecutionOrchestrator {
 				return this.handleCreateExecution(taskId);
 			case "running":
 				return this.handleRunning(taskId);
+			case "completing":
+				return this.handleCompleting(taskId);
 			case "completed":
 			case "failed":
 			case "canceled":
@@ -477,6 +479,20 @@ export class CloudExecutionOrchestrator {
 			default:
 				return null;
 		}
+	}
+
+	// `completing` is the post-execution finalization state: the task has
+	// finished running (clean WS close or explicit terminal status from the
+	// runner) but has not yet been materialized as `completed` via the
+	// `finalize_success` trigger. Without a dedicated handler, the poller
+	// would loop forever emitting "No state change" because the FSM has no
+	// auto-advance from `completing` → `completed` — finalization is a
+	// deliberate trigger so future code can gate completion on post-run
+	// finalization work (result upload verification, etc.). Today we have
+	// nothing to verify after a WS clean close, so we advance immediately.
+	private async handleCompleting(taskId: string): Promise<TaskStepResult> {
+		this.logger.info("Completing → finalizing task", { taskId });
+		return this.applyTransition(taskId, "completing", "finalize_success", "system");
 	}
 
 	// -- queued -> policy_check (with concurrency gate) ----------------------

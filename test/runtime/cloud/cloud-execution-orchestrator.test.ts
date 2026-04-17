@@ -535,6 +535,40 @@ describe("Orchestrator — teardown", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Completing → completed (finalize_success)
+// ---------------------------------------------------------------------------
+
+// Regression: tasks that reached `completing` via a WebSocket clean close
+// previously got stuck there because `advanceTask` had no case for
+// `completing` — the poller emitted "No state change" forever. This test
+// locks the auto-advance behavior: a task persisted in `completing` must
+// progress to `completed` on the next tick without any external trigger.
+describe("Orchestrator — completing auto-finalization", () => {
+	it("advances completing to completed via finalize_success on next tick", async () => {
+		const store = createMockStore();
+		const client = createMockExecutionClient();
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
+
+		await seedTaskToState(store, "task-1", "running");
+		await store.appendEvent({
+			eventId: randomUUID(),
+			taskId: "task-1",
+			trigger: "execution_done",
+			fromState: "running",
+			toState: "completing",
+			timestamp: new Date().toISOString(),
+			triggerSource: "system",
+		});
+
+		const result = await orch.processTask("task-1");
+
+		expect(result?.newState).toBe("completed");
+		expect(result?.trigger).toBe("finalize_success");
+		expect(result?.success).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // policy_check auto-authorization (governance removed)
 // ---------------------------------------------------------------------------
 
