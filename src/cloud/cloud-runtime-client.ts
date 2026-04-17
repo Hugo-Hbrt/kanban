@@ -1,17 +1,26 @@
 // ---------------------------------------------------------------------------
-// Cloud Runtime Client — Slice 5
+// Cloud Runtime Client — ACP target path (post-Shape-B pivot)
 // ---------------------------------------------------------------------------
 //
-// Primary runtime interaction path using the runtime gateway + WebSocket.
-// This replaces HTTP execution polling as the target runtime model.
+// Primary runtime interaction path: WebSocket directly to the ACP pod.
+// The pod is provisioned by the execution client (see cloud-platform-
+// execution-client.ts) and exposes an ACP WebSocket at
+// `runtime.connectUrl` (wss://<instance-hostname>/ws).
+//
+// No gateway. No separate connect round-trip. No per-session assertion.
+// Authentication is the user's sk_ token (CLINE_API_KEY), passed as a
+// `?token=` query param on the WebSocket upgrade. Same token that
+// provisioned the pod; the pod's bridge validates it the same way.
 //
 // Flow:
-//   1. POST /gateway/v1/instances/{instanceId}/connect → get assertion + connectUrl
-//   2. Open WebSocket to connectUrl with assertion as auth
-//   3. Exchange messages over WebSocket (cline-base protocol)
+//   1. connect(instanceId) → GET /api/v2/cloud-platform/instances/:id
+//      → returns { runtime: { connectUrl } } from core-api
+//   2. openWebSocket(connectUrl, token) → wss://.../ws?token=sk_...
+//   3. Exchange ACP messages over WebSocket (prompts, tool calls, events)
 //
-// The HTTP execution CRUD bridge path (via CloudPlatformExecutionClient) is
-// preserved for backward compatibility. This client implements the target path.
+// The HTTP path (via CloudPlatformExecutionClient) remains as a fallback
+// for orchestrator-level lifecycle polling when the WebSocket can't be
+// established.
 // ---------------------------------------------------------------------------
 
 import type { CloudAuthProvider } from "./cloud-auth-provider";
@@ -27,6 +36,9 @@ export interface RuntimeConnectRequest {
 
 export interface RuntimeConnectResponse {
 	readonly instanceId: string;
+	/** sk_ token used for `?token=` WebSocket auth. Kept as `assertion` for API
+	 *  stability with existing orchestrator callsites — semantically it's the
+	 *  user's CLINE_API_KEY. */
 	readonly assertion: string;
 	readonly connectUrl: string;
 	readonly transport: string;
@@ -48,9 +60,9 @@ export interface RuntimeConnectionCallbacks {
 }
 
 export interface CloudRuntimeClientConfig {
-	/** Base URL of the runtime gateway (e.g. https://cloud-platform.cline.bot). */
-	readonly gatewayBaseUrl: string;
-	/** Auth provider for user bearer tokens (sent to gateway). */
+	/** Base URL of core-api (e.g. https://api.cline.bot). */
+	readonly coreApiBaseUrl: string;
+	/** Auth provider supplying the user's sk_ token (Bearer). */
 	readonly authProvider: CloudAuthProvider;
 	/** Custom fetch for testing. */
 	readonly fetch?: typeof globalThis.fetch;
@@ -92,31 +104,44 @@ export class DefaultCloudRuntimeClient implements CloudRuntimeClient {
 	}
 
 	async connect(request: RuntimeConnectRequest): Promise<RuntimeConnectResponse> {
-		const gatewayUrl = `${this.config.gatewayBaseUrl.replace(/\/$/, "")}/gateway/v1/instances/${request.instanceId}/connect`;
+		const url = `${this.config.coreApiBaseUrl.replace(/\/$/, "")}/api/v2/cloud-platform/instances/${encodeURIComponent(request.instanceId)}`;
 		const authHeaders = await this.config.authProvider.getAuthHeaders();
 
-		const resp = await this.fetchFn(gatewayUrl, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				...authHeaders,
-			},
-			body: JSON.stringify({
-				transport: request.transport ?? "websocket",
-			}),
+		const resp = await this.fetchFn(url, {
+			method: "GET",
+			headers: { ...authHeaders, "X-Service-Name": "kanban" },
 		});
 
 		if (!resp.ok) {
 			const body = await resp.text();
 			throw new CloudRuntimeError({
-				message: `Gateway connect failed: ${resp.status} ${body}`,
+				message: `Instance lookup failed: ${resp.status} ${body}`,
 				statusCode: resp.status,
 				retryable: resp.status >= 500,
 			});
 		}
 
-		const data = (await resp.json()) as RuntimeConnectResponse;
-		return data;
+		const body = (await resp.json()) as unknown;
+		const data = unwrapEnvelope(body) as {
+			instanceId: string;
+			runtime?: { transport: string; connectUrl: string } | null;
+		} | null;
+		if (!data?.runtime?.connectUrl) {
+			throw new CloudRuntimeError({
+				message: `Instance ${request.instanceId} has no runtime.connectUrl`,
+				statusCode: 502,
+				retryable: false,
+			});
+		}
+
+		const assertion = extractBearerToken(authHeaders);
+		return {
+			instanceId: data.instanceId,
+			assertion,
+			connectUrl: data.runtime.connectUrl,
+			transport: data.runtime.transport,
+			expiresInSeconds: 0,
+		};
 	}
 
 	openWebSocket(connectUrl: string, assertion: string, callbacks: RuntimeConnectionCallbacks): RuntimeWebSocketHandle {
@@ -170,9 +195,11 @@ class DefaultRuntimeWebSocketHandle implements RuntimeWebSocketHandle {
 	private doConnect(): void {
 		this.setState("connecting");
 
-		// Pass assertion as a subprotocol or query param
-		// Using query param for broad compatibility
-		const url = `${this.connectUrl}?assertion=${encodeURIComponent(this.assertion)}`;
+		// The ACP pod accepts the sk_ token via `?token=` query param (same
+		// surface as bridge). The CloudRuntimeClient currently passes the
+		// token in the `assertion` field for API compatibility with prior
+		// gateway-era callsites.
+		const url = `${this.connectUrl}?token=${encodeURIComponent(this.assertion)}`;
 
 		try {
 			this.ws = new this.WS(url);
@@ -235,4 +262,21 @@ export class CloudRuntimeError extends Error {
 		this.statusCode = opts.statusCode;
 		this.retryable = opts.retryable;
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function unwrapEnvelope(body: unknown): unknown {
+	if (body !== null && typeof body === "object" && "data" in body && "success" in body) {
+		return (body as { data: unknown }).data;
+	}
+	return body;
+}
+
+function extractBearerToken(headers: Record<string, string>): string {
+	const authz = headers["Authorization"] ?? headers["authorization"] ?? "";
+	const match = /^Bearer\s+(.+)$/i.exec(authz);
+	return match?.[1] ?? "";
 }

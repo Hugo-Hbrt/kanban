@@ -536,6 +536,8 @@ export class CloudExecutionOrchestrator {
 
 			let eventRepoUrl = "";
 			let eventBaseRef = "main";
+			let eventProviderId: string | undefined;
+			let eventModelId: string | undefined;
 			let eventPrompt = "";
 			const events = await this.store.readEventsForTask(taskId);
 			for (let i = events.length - 1; i >= 0; i--) {
@@ -544,6 +546,8 @@ export class CloudExecutionOrchestrator {
 					if (!meta?.repoUrl) eventRepoUrl = (evt.metadata.repoUrl as string) ?? "";
 					eventBaseRef = (evt.metadata.baseRef as string) ?? "main";
 					eventPrompt = (evt.metadata.prompt as string) ?? (evt.metadata.taskPrompt as string) ?? "";
+					eventProviderId = (evt.metadata.providerId as string) || undefined;
+					eventModelId = (evt.metadata.modelId as string) || undefined;
 					break;
 				}
 			}
@@ -563,6 +567,8 @@ export class CloudExecutionOrchestrator {
 				featureBranchIntent: meta?.featureBranch ?? "",
 				worktreeIntent,
 				prompt,
+				providerId: (meta as { providerId?: string } | undefined)?.providerId ?? eventProviderId,
+				modelId: (meta as { modelId?: string } | undefined)?.modelId ?? eventModelId,
 			});
 
 			const createResponse = await this.executionClient.createExecution(request, ctx.abortController.signal);

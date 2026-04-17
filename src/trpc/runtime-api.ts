@@ -216,6 +216,10 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 							repoUrl,
 							runtimePath,
 							gatewayAvailable,
+							...(body.clineSettings?.providerId
+								? { providerId: body.clineSettings.providerId }
+								: {}),
+							...(body.clineSettings?.modelId ? { modelId: body.clineSettings.modelId } : {}),
 						},
 					});
 

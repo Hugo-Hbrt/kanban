@@ -1,17 +1,28 @@
 // ---------------------------------------------------------------------------
-// Cloud Execution Client — kanban → core-api (/instances) → pod (direct)
+// Cloud Execution Client — kanban → core-api (/instances) → ACP pod
 // ---------------------------------------------------------------------------
 //
-// Architecture:
+// Architecture (ACP pivot, assumes cloud/cloud-platform#6 has landed):
 //   kanban → core-api POST   /api/v2/cloud-platform/instances        (provision)
-//   kanban → core-api GET    /api/v2/cloud-platform/instances/:id    (poll ready)
+//   kanban → core-api GET    /api/v2/cloud-platform/instances/:id    (poll instance lifecycle)
 //   kanban → core-api DELETE /api/v2/cloud-platform/instances/:id    (teardown/cancel)
-//   kanban → pod      POST   https://<hostname>/run                   (start work)
-//   kanban → pod      GET    https://<hostname>/run/status            (poll progress)
 //
-// The pod does not call back into kanban. Status and result are pulled.
-// `executionId` returned to callers is the same as the cloud-platform
-// `instanceId`, so we have a single identifier end-to-end.
+// `instanceType: "acp"` provisions a cline-base pod that exposes the ACP
+// protocol over a WebSocket at `runtime.connectUrl`. Actual task execution
+// (prompts, tool calls, completion signalling) flows over that WebSocket and
+// is owned by CloudRuntimeClient — NOT by this HTTP client.
+//
+// This client's responsibilities are narrow:
+//   - createExecution  : provision an ACP pod, wait for readiness, capture connectUrl
+//   - getExecutionStatus: poll core-api for instance lifecycle state only
+//                         (queued / running / failed / canceled). Task-level
+//                         success/failure is reported by the WebSocket path.
+//   - cancelExecution  : delete the pod
+//   - getInstanceRuntime: expose the cached RuntimeInfo so the runtime client
+//                         can open the WebSocket without a separate round-trip
+//
+// `executionId` returned to callers is the cloud-platform `instanceId`, so
+// there is a single identifier end-to-end.
 // ---------------------------------------------------------------------------
 
 import type { CloudAuthProvider } from "./cloud-auth-provider";
@@ -21,10 +32,6 @@ import {
 	type ExecutionStatusResponse,
 	executionCreateRequestSchema,
 } from "./cloud-execution-contracts";
-
-// ---------------------------------------------------------------------------
-// Error Types
-// ---------------------------------------------------------------------------
 
 export class CloudPlatformExecutionError extends Error {
 	readonly statusCode: number;
@@ -45,10 +52,6 @@ export class CloudPlatformExecutionError extends Error {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Retry Configuration
-// ---------------------------------------------------------------------------
-
 export interface ExecutionClientRetryConfig {
 	readonly maxRetries: number;
 	readonly baseDelayMs: number;
@@ -62,10 +65,6 @@ export const DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS = {
 	cancelExecution: { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5_000, timeoutMs: 10_000 },
 } as const satisfies Record<string, ExecutionClientRetryConfig>;
 
-// ---------------------------------------------------------------------------
-// Provision Polling Config
-// ---------------------------------------------------------------------------
-
 export interface ProvisionPollingConfig {
 	readonly pollIntervalMs: number;
 	readonly timeoutMs: number;
@@ -76,21 +75,11 @@ export const DEFAULT_PROVISION_POLLING_CONFIG: Readonly<ProvisionPollingConfig> 
 	timeoutMs: 120_000,
 };
 
-// ---------------------------------------------------------------------------
-// Client Configuration
-// ---------------------------------------------------------------------------
-
 export interface CloudPlatformExecutionClientConfig {
-	/** core-api base URL, e.g. https://api.cline.bot */
 	readonly baseUrl: string;
-	/** Auth provider supplying the user's `sk_` token (Bearer) for core-api + pod. */
 	readonly authProvider: CloudAuthProvider;
-	/** GitHub PAT used for cloning the repo + pushing PR branches inside the pod. */
+	/** Optional GitHub PAT for private-repo cloning inside the pod (PR #6 contract). */
 	readonly githubPat?: string;
-	/** Override scheme for pod URLs (default "https"). Useful for local dev. */
-	readonly podScheme?: "http" | "https";
-	/** Override pod port (default unset → default 443/80 from scheme). */
-	readonly podPort?: number;
 	readonly retryConfigs?: Partial<
 		Record<keyof typeof DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS, Partial<ExecutionClientRetryConfig>>
 	>;
@@ -99,19 +88,23 @@ export interface CloudPlatformExecutionClientConfig {
 	readonly delay?: (ms: number) => Promise<void>;
 }
 
-// ---------------------------------------------------------------------------
-// Client Interface
-// ---------------------------------------------------------------------------
+export interface RuntimeInfo {
+	readonly transport: string;
+	readonly connectUrl: string;
+}
 
 export interface CloudPlatformExecutionClient {
 	createExecution(request: ExecutionCreateRequest, signal?: AbortSignal): Promise<ExecutionCreateResponse>;
 	getExecutionStatus(executionId: string, signal?: AbortSignal): Promise<ExecutionStatusResponse>;
 	cancelExecution(executionId: string, signal?: AbortSignal): Promise<void>;
+	/**
+	 * Returns the ACP runtime connection info for a provisioned instance, so
+	 * the caller (runtime client) can open a WebSocket without re-querying
+	 * core-api. Returns null if not yet known; call getExecutionStatus first.
+	 * Optional so test stubs don't have to implement it.
+	 */
+	getInstanceRuntime?(executionId: string): RuntimeInfo | null;
 }
-
-// ---------------------------------------------------------------------------
-// Retry-safe status code classification
-// ---------------------------------------------------------------------------
 
 function isRetryableStatus(statusCode: number): boolean {
 	if (statusCode === 408 || statusCode === 429) return true;
@@ -120,60 +113,18 @@ function isRetryableStatus(statusCode: number): boolean {
 	return false;
 }
 
-// ---------------------------------------------------------------------------
-// Pod /run + /run/status contract (matches apps/task-runner/runner/main.go
-// post-Shape-B: no execution_id, no cloud_platform_url, no result_upload_jwt)
-// ---------------------------------------------------------------------------
-
-interface PodRunRequest {
-	prompt: string;
-	task_id: string;
-	attempt_number: number;
-	branch_name: string;
-	base_branch: string;
-	starting_commit_sha: string;
-	worktree_intent: string;
-	reservation_id: string;
-}
-
-interface PodRunResult {
-	instanceId?: string;
-	status?: "success" | "failed";
-	taskId?: string;
-	attemptNumber?: number;
-	prUrl?: string;
-	taskOutput?: string;
-	error?: string;
-	durationSeconds?: number;
-}
-
-interface PodStatusResponse {
-	state: "idle" | "running" | "completed";
-	result?: PodRunResult;
-}
-
-// ---------------------------------------------------------------------------
-// Instance status response shape from core-api
-// ---------------------------------------------------------------------------
-
 interface CoreInstanceStatus {
 	instanceId: string;
 	state: string;
-	instanceUrl: string;
 	hostname: string;
 	namespace: string;
+	runtime?: { transport: string; connectUrl: string } | null;
 }
-
-// ---------------------------------------------------------------------------
-// HTTP Client Implementation
-// ---------------------------------------------------------------------------
 
 export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionClient {
 	private readonly baseUrl: string;
 	private readonly authProvider: CloudAuthProvider;
 	private readonly githubPat: string;
-	private readonly podScheme: "http" | "https";
-	private readonly podPort: number | undefined;
 	private readonly retryConfigs: Record<
 		keyof typeof DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS,
 		ExecutionClientRetryConfig
@@ -181,15 +132,13 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 	private readonly provisionPolling: ProvisionPollingConfig;
 	private readonly fetchFn: typeof globalThis.fetch;
 	private readonly delayFn: (ms: number) => Promise<void>;
-	private readonly hostnameCache = new Map<string, string>();
+	private readonly runtimeCache = new Map<string, RuntimeInfo>();
 	private readonly executionMeta = new Map<string, { taskId: string; attemptNumber: number }>();
 
 	constructor(config: CloudPlatformExecutionClientConfig) {
 		this.baseUrl = config.baseUrl.replace(/\/+$/, "");
 		this.authProvider = config.authProvider;
 		this.githubPat = config.githubPat ?? "";
-		this.podScheme = config.podScheme ?? "https";
-		this.podPort = config.podPort;
 		this.fetchFn = config.fetch ?? globalThis.fetch;
 		this.delayFn = config.delay ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
 		this.retryConfigs = {
@@ -211,13 +160,24 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 		const authHeaders = await this.authProvider.getAuthHeaders();
 		const apiKey = extractBearerToken(authHeaders);
 
-		const provisionBody = {
+		const requestedRuntime: Record<string, string> = { transport: "websocket" };
+		if (validated.requestedRuntime?.transport) {
+			requestedRuntime.transport = validated.requestedRuntime.transport;
+		}
+		if (validated.requestedRuntime?.providerId) {
+			requestedRuntime.providerId = validated.requestedRuntime.providerId;
+		}
+		if (validated.requestedRuntime?.modelId) {
+			requestedRuntime.modelId = validated.requestedRuntime.modelId;
+		}
+
+		const provisionBody: Record<string, unknown> = {
 			repoUrl: validated.repoUrl,
 			apiKey,
-			instanceType: "task-runner",
-			githubPat: this.githubPat,
-			prBaseBranch: validated.baseBranch,
+			instanceType: "acp",
+			requestedRuntime,
 		};
+		if (this.githubPat) provisionBody.githubPat = this.githubPat;
 
 		const provisionResp = await this.executeWithRetry(
 			async (sig) =>
@@ -241,34 +201,16 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 		const instanceId = provisionData.instanceId;
 
 		const ready = await this.waitForInstanceReady(instanceId, authHeaders, signal);
-		this.hostnameCache.set(instanceId, ready.hostname);
+		if (ready.runtime?.connectUrl) {
+			this.runtimeCache.set(instanceId, {
+				transport: ready.runtime.transport,
+				connectUrl: ready.runtime.connectUrl,
+			});
+		}
 		this.executionMeta.set(instanceId, {
 			taskId: validated.taskId,
 			attemptNumber: validated.attemptNumber,
 		});
-
-		const runBody: PodRunRequest = {
-			prompt: validated.prompt,
-			task_id: validated.taskId,
-			attempt_number: validated.attemptNumber,
-			branch_name: validated.featureBranchIntent,
-			base_branch: validated.baseBranch,
-			starting_commit_sha: "",
-			worktree_intent: validated.worktreeIntent,
-			reservation_id: "",
-		};
-
-		await this.executeWithRetry(
-			async (sig) =>
-				this.fetchFn(this.podUrl(ready.hostname, "/run"), {
-					method: "POST",
-					headers: { "Content-Type": "application/json", ...authHeaders },
-					body: JSON.stringify(runBody),
-					signal: sig,
-				}),
-			this.retryConfigs.createExecution,
-			signal,
-		);
 
 		return {
 			executionId: instanceId,
@@ -281,20 +223,30 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 
 	async getExecutionStatus(executionId: string, signal?: AbortSignal): Promise<ExecutionStatusResponse> {
 		const authHeaders = await this.authProvider.getAuthHeaders();
-		const hostname = await this.resolveHostname(executionId, authHeaders, signal);
-
 		const response = await this.executeWithRetry(
 			async (sig) =>
-				this.fetchFn(this.podUrl(hostname, "/run/status"), {
-					method: "GET",
-					headers: { ...authHeaders },
-					signal: sig,
-				}),
+				this.fetchFn(
+					`${this.baseUrl}/api/v2/cloud-platform/instances/${encodeURIComponent(executionId)}`,
+					{
+						method: "GET",
+						headers: { ...authHeaders, "X-Service-Name": "kanban" },
+						signal: sig,
+					},
+				),
 			this.retryConfigs.getStatus,
 			signal,
 		);
-		const pod = (await response.json()) as PodStatusResponse;
-		return this.mapPodStatus(executionId, pod);
+		if (response.status === 404) {
+			return this.buildStatusResponse(executionId, "canceled", null, null);
+		}
+		const data = this.unwrapResponse(await response.json()) as CoreInstanceStatus;
+		if (data?.runtime?.connectUrl) {
+			this.runtimeCache.set(executionId, {
+				transport: data.runtime.transport,
+				connectUrl: data.runtime.connectUrl,
+			});
+		}
+		return this.mapInstanceStatus(executionId, data);
 	}
 
 	async cancelExecution(executionId: string, signal?: AbortSignal): Promise<void> {
@@ -312,47 +264,12 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 			this.retryConfigs.cancelExecution,
 			signal,
 		);
-		this.hostnameCache.delete(executionId);
+		this.runtimeCache.delete(executionId);
 		this.executionMeta.delete(executionId);
 	}
 
-	// -----------------------------------------------------------------------
-	// Internal helpers
-	// -----------------------------------------------------------------------
-
-	private podUrl(hostname: string, path: string): string {
-		const host = this.podPort ? `${hostname}:${this.podPort}` : hostname;
-		return `${this.podScheme}://${host}${path}`;
-	}
-
-	private async resolveHostname(
-		instanceId: string,
-		authHeaders: Record<string, string>,
-		signal?: AbortSignal,
-	): Promise<string> {
-		const cached = this.hostnameCache.get(instanceId);
-		if (cached) return cached;
-
-		const resp = await this.executeWithRetry(
-			async (sig) =>
-				this.fetchFn(`${this.baseUrl}/api/v2/cloud-platform/instances/${encodeURIComponent(instanceId)}`, {
-					method: "GET",
-					headers: { ...authHeaders, "X-Service-Name": "kanban" },
-					signal: sig,
-				}),
-			this.retryConfigs.getStatus,
-			signal,
-		);
-		const data = this.unwrapResponse(await resp.json()) as CoreInstanceStatus;
-		if (!data?.hostname) {
-			throw new CloudPlatformExecutionError({
-				message: `instance ${instanceId} has no hostname`,
-				statusCode: 502,
-				retryable: false,
-			});
-		}
-		this.hostnameCache.set(instanceId, data.hostname);
-		return data.hostname;
+	getInstanceRuntime(executionId: string): RuntimeInfo | null {
+		return this.runtimeCache.get(executionId) ?? null;
 	}
 
 	private async waitForInstanceReady(
@@ -377,8 +294,8 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 			if (resp.ok) {
 				const data = this.unwrapResponse(await resp.json()) as CoreInstanceStatus;
 				last = data;
-				if (data.state === "running" && data.hostname) return data;
-				if (data.state === "failed" || data.state === "terminated") {
+				if (data.state === "ready" && data.hostname) return data;
+				if (data.state === "failed") {
 					throw new CloudPlatformExecutionError({
 						message: `instance ${instanceId} entered terminal state ${data.state} during provisioning`,
 						statusCode: 502,
@@ -389,47 +306,38 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 			await this.delayFn(this.provisionPolling.pollIntervalMs);
 		}
 		throw new CloudPlatformExecutionError({
-			message: `instance ${instanceId} did not reach running in ${this.provisionPolling.timeoutMs}ms (last state: ${last?.state ?? "unknown"})`,
+			message: `instance ${instanceId} did not reach ready in ${this.provisionPolling.timeoutMs}ms (last state: ${last?.state ?? "unknown"})`,
 			statusCode: 504,
 			retryable: false,
 		});
 	}
 
-	private mapPodStatus(executionId: string, pod: PodStatusResponse): ExecutionStatusResponse {
-		const meta = this.executionMeta.get(executionId);
-		const taskId = pod.result?.taskId ?? meta?.taskId ?? executionId;
-		const attemptNumber = pod.result?.attemptNumber ?? meta?.attemptNumber ?? 1;
-
+	private mapInstanceStatus(executionId: string, data: CoreInstanceStatus): ExecutionStatusResponse {
 		let status: ExecutionStatusResponse["status"] = "queued";
-		let result: ExecutionStatusResponse["result"] = null;
-		let error: ExecutionStatusResponse["error"] = null;
+		if (data.state === "provisioning" || data.state === "starting") status = "queued";
+		else if (data.state === "ready" || data.state === "unhealthy") status = "running";
+		else if (data.state === "failed") status = "failed";
 
-		if (pod.state === "idle") status = "queued";
-		else if (pod.state === "running") status = "running";
-		else if (pod.state === "completed") {
-			const podOutcome = pod.result?.status;
-			const succeeded = podOutcome === "success";
-			status = succeeded ? "succeeded" : "failed";
-			if (pod.result) {
-				result = {
-					outcome: podOutcome ?? (succeeded ? "success" : "failure"),
-					exitCode: succeeded ? 0 : 1,
-					summary: pod.result.prUrl ?? pod.result.taskOutput ?? "",
-				};
-			}
-			if (!succeeded) {
-				error = {
-					code: "TASK_FAILED",
-					message: pod.result?.error ?? "Task failed",
-				};
-			}
-		}
+		const error =
+			status === "failed"
+				? { code: "INSTANCE_FAILED", message: `Instance ${executionId} entered state ${data.state}` }
+				: null;
 
+		return this.buildStatusResponse(executionId, status, null, error);
+	}
+
+	private buildStatusResponse(
+		executionId: string,
+		status: ExecutionStatusResponse["status"],
+		result: ExecutionStatusResponse["result"],
+		error: ExecutionStatusResponse["error"],
+	): ExecutionStatusResponse {
+		const meta = this.executionMeta.get(executionId);
 		return {
 			executionId,
 			status,
-			taskId,
-			attemptNumber,
+			taskId: meta?.taskId ?? executionId,
+			attemptNumber: meta?.attemptNumber ?? 1,
 			requestedByUserId: "",
 			orgId: "",
 			projectId: "",
@@ -479,7 +387,7 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 					clearTimeout(timeoutId);
 					externalSignal?.removeEventListener("abort", onAbort);
 				}
-				if (response.ok || response.status === 204) return response;
+				if (response.ok || response.status === 204 || response.status === 404) return response;
 				const retryable = isRetryableStatus(response.status);
 				if (!retryable) {
 					let message = `Cloud platform API error: HTTP ${response.status}`;
@@ -512,21 +420,11 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Extract the user's sk_ token from the auth headers so we can put it in
-// the ProvisionRequest body as `apiKey`. It's the same token either way —
-// both core-api's Bearer auth and the pod's CLINE_API_KEY consume it.
-// ---------------------------------------------------------------------------
-
 function extractBearerToken(headers: Record<string, string>): string {
 	const authz = headers["Authorization"] ?? headers["authorization"] ?? "";
 	const match = /^Bearer\s+(.+)$/i.exec(authz);
 	return match?.[1] ?? "";
 }
-
-// ---------------------------------------------------------------------------
-// Polling Configuration
-// ---------------------------------------------------------------------------
 
 export interface ExecutionPollingConfig {
 	readonly pollIntervalMs: number;
@@ -539,10 +437,6 @@ export const DEFAULT_EXECUTION_POLLING_CONFIG: Readonly<ExecutionPollingConfig> 
 	maxPollDurationMs: 3_600_000,
 	maxConsecutiveErrors: 10,
 };
-
-// ---------------------------------------------------------------------------
-// Polling Result
-// ---------------------------------------------------------------------------
 
 export type ExecutionPollingOutcome =
 	| {

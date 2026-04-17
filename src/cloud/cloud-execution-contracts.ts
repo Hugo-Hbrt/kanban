@@ -13,6 +13,13 @@ import { z } from "zod";
 // Execution Create Request (POST /api/v2/cloud-platform/executions via core-api)
 // ---------------------------------------------------------------------------
 
+export const requestedRuntimeRequestSchema = z.object({
+	transport: z.string().optional(),
+	providerId: z.string().optional(),
+	modelId: z.string().optional(),
+});
+export type RequestedRuntimeRequest = z.infer<typeof requestedRuntimeRequestSchema>;
+
 export const executionCreateRequestSchema = z.object({
 	taskId: z.string().min(1),
 	attemptNumber: z.number().int().positive(),
@@ -25,6 +32,7 @@ export const executionCreateRequestSchema = z.object({
 	featureBranchIntent: z.string(),
 	worktreeIntent: z.string(),
 	prompt: z.string().min(1),
+	requestedRuntime: requestedRuntimeRequestSchema.optional(),
 });
 export type ExecutionCreateRequest = z.infer<typeof executionCreateRequestSchema>;
 
@@ -144,13 +152,29 @@ export interface ExecutionRequestContext {
 	featureBranchIntent: string;
 	worktreeIntent: string;
 	prompt: string;
+	providerId?: string;
+	modelId?: string;
+	transport?: string;
 }
 
 /**
  * Build a canonical ExecutionCreateRequest from Kanban runtime context.
  * No raw user tokens are included in the body — auth is header-only.
+ *
+ * `providerId` / `modelId` / `transport` become `requestedRuntime` in the
+ * outbound request so cloud-platform can bake per-task agent/model
+ * overrides into the pod (see cline-base entrypoint.sh). Omitted when
+ * none are set so the pod falls back to its built-in defaults.
  */
 export function buildExecutionCreateRequest(ctx: ExecutionRequestContext): ExecutionCreateRequest {
+	const requestedRuntime =
+		ctx.providerId || ctx.modelId || ctx.transport
+			? {
+					...(ctx.transport ? { transport: ctx.transport } : {}),
+					...(ctx.providerId ? { providerId: ctx.providerId } : {}),
+					...(ctx.modelId ? { modelId: ctx.modelId } : {}),
+				}
+			: undefined;
 	return executionCreateRequestSchema.parse({
 		taskId: ctx.taskId,
 		attemptNumber: ctx.attemptNumber,
@@ -163,6 +187,7 @@ export function buildExecutionCreateRequest(ctx: ExecutionRequestContext): Execu
 		featureBranchIntent: ctx.featureBranchIntent,
 		worktreeIntent: ctx.worktreeIntent,
 		prompt: ctx.prompt,
+		...(requestedRuntime ? { requestedRuntime } : {}),
 	});
 }
 

@@ -111,8 +111,6 @@ export function bootstrapCloudExecution(
 			baseUrl: cloudBaseUrl,
 			authProvider,
 			githubPat: env[ENV.GITHUB_PAT] ?? "",
-			podScheme: (env[ENV.POD_SCHEME] as "http" | "https" | undefined) ?? undefined,
-			podPort: env[ENV.POD_PORT] ? Number(env[ENV.POD_PORT]) : undefined,
 			fetch: overrides?.fetchFn,
 		});
 
@@ -126,22 +124,18 @@ export function bootstrapCloudExecution(
 			fetch: overrides?.fetchFn,
 		});
 
-	// Runtime path preference — "target" uses gateway+WebSocket, "bridge" uses HTTP polling
+	// Runtime path preference — "target" opens the ACP WebSocket directly to
+	// the provisioned pod (via connectUrl returned by core-api). "bridge"
+	// restricts the orchestrator to HTTP lifecycle polling only.
 	const runtimePath: RuntimePathPreference = (env[ENV.RUNTIME_PATH] as RuntimePathPreference) || "target";
-	const gatewayBaseUrl = env[ENV.GATEWAY_BASE_URL] ?? "";
 
-	// Cloud runtime client (target path — gateway + WebSocket)
 	let runtimeClient: CloudRuntimeClient | null = null;
-	if (runtimePath === "target" && gatewayBaseUrl) {
+	if (runtimePath === "target") {
 		runtimeClient = new DefaultCloudRuntimeClient({
-			gatewayBaseUrl,
+			coreApiBaseUrl: cloudBaseUrl,
 			authProvider,
 		});
-		logger.info("Target runtime path enabled: gateway + WebSocket", { gatewayBaseUrl });
-	} else if (runtimePath === "target" && !gatewayBaseUrl) {
-		logger.warn(
-			"KANBAN_RUNTIME_PATH=target but KANBAN_GATEWAY_BASE_URL not set — falling back to bridge (HTTP polling)",
-		);
+		logger.info("Target runtime path enabled: ACP WebSocket", { coreApiBaseUrl: cloudBaseUrl });
 	} else {
 		logger.info("Bridge runtime path: HTTP CRUD/polling only");
 	}
@@ -178,7 +172,7 @@ export function bootstrapCloudExecution(
 		cloudBaseUrl,
 		storePath,
 		runtimePath,
-		gatewayEnabled: !!runtimeClient,
+		runtimeClientEnabled: !!runtimeClient,
 	});
 
 	return {
