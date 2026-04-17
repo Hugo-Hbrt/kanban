@@ -71,6 +71,26 @@ export interface CreateRuntimeApiDependencies {
 	getCloudExecutionRuntime?: () => import("../cloud/cloud-execution-bootstrap").CloudExecutionRuntime | null;
 }
 
+// The cloud orchestrator persists its event log to the path given by
+// KANBAN_CLOUD_EXECUTION_STORE_PATH (via `bootstrapCloudExecution`), which is
+// NOT the same as the workspace path. When cloud execution is configured we
+// must read from the orchestrator's store so the UI sees the same events the
+// orchestrator writes — otherwise the task stays "in progress" in the UI
+// forever even though the cloud task completed (its events went to a
+// different directory). Falls back to a workspace-scoped store only when
+// cloud execution is not configured (preserves legacy local-only behavior).
+async function resolveCloudStore(
+	deps: CreateRuntimeApiDependencies,
+	scope: RuntimeTrpcWorkspaceScope,
+): Promise<import("../cloud/cloud-execution-persistence").CloudExecutionStore> {
+	const cloudRuntime = deps.getCloudExecutionRuntime?.();
+	if (cloudRuntime) {
+		return cloudRuntime.store;
+	}
+	const { CloudExecutionStore } = await import("../cloud/cloud-execution-persistence");
+	return new CloudExecutionStore(scope.workspacePath);
+}
+
 async function resolveExistingTaskCwdOrEnsure(options: {
 	cwd: string;
 	taskId: string;
@@ -833,8 +853,7 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 		// -----------------------------------------------------------------------
 		getTaskRemoteExecutionDetail: async (scope, input) => {
 			const { assembleTaskRemoteExecutionDetail } = await import("../cloud/cloud-remote-execution-detail");
-			const { CloudExecutionStore } = await import("../cloud/cloud-execution-persistence");
-			const store = new CloudExecutionStore(scope.workspacePath);
+			const store = await resolveCloudStore(deps, scope);
 			const detail = await assembleTaskRemoteExecutionDetail(store, input.taskId);
 			return {
 				found: detail !== null,
@@ -843,8 +862,7 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 		},
 		getCloudExecutionTimeline: async (scope, input) => {
 			const { queryExecutionTimeline } = await import("../cloud/cloud-execution-timeline");
-			const { CloudExecutionStore } = await import("../cloud/cloud-execution-persistence");
-			const store = new CloudExecutionStore(scope.workspacePath);
+			const store = await resolveCloudStore(deps, scope);
 			const timeline = await queryExecutionTimeline(store, input.taskId);
 			const found = timeline.totalEntries > 0;
 			return {
@@ -854,8 +872,7 @@ export function createRuntimeApi(deps: CreateRuntimeApiDependencies): RuntimeTrp
 		},
 		getCloudExecutionSummary: async (scope, input) => {
 			const { buildExecutionSummary } = await import("../cloud/cloud-execution-timeline");
-			const { CloudExecutionStore } = await import("../cloud/cloud-execution-persistence");
-			const store = new CloudExecutionStore(scope.workspacePath);
+			const store = await resolveCloudStore(deps, scope);
 			const summary = await buildExecutionSummary(store, input.taskId);
 			return {
 				found: summary !== null,
