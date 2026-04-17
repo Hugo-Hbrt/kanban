@@ -231,6 +231,21 @@ describe("CloudTaskChatService", () => {
 			expect(summaries).toEqual([{ state: "awaiting_review", reviewReason: "interrupted" }]);
 		});
 
+		it("appendStatus broadcasts a status-role message and dedupes consecutive identical ones", () => {
+			const { service } = makeService();
+			const seen: Array<{ role: string; content: string }> = [];
+			service.onMessage((_taskId, msg) => seen.push({ role: msg.role, content: msg.content }));
+
+			service.appendStatus("task-1", "⏳ Provisioning cloud sandbox…");
+			service.appendStatus("task-1", "⏳ Provisioning cloud sandbox…");
+			service.appendStatus("task-1", "✅ Cloud sandbox ready, starting session…");
+
+			expect(seen).toEqual([
+				{ role: "status", content: "⏳ Provisioning cloud sandbox…" },
+				{ role: "status", content: "✅ Cloud sandbox ready, starting session…" },
+			]);
+		});
+
 		it("redundant summary patches do not fan out duplicate events", () => {
 			const { service } = makeService();
 			const count = { n: 0 };

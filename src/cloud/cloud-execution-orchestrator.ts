@@ -1081,6 +1081,8 @@ export class CloudExecutionOrchestrator {
 			trigger,
 		});
 
+		this.emitChatStatusForTransition(taskId, result.from, result.to, trigger, metadata);
+
 		return {
 			taskId,
 			previousState: result.from,
@@ -1088,6 +1090,61 @@ export class CloudExecutionOrchestrator {
 			trigger,
 			success: true,
 		};
+	}
+
+	// -- chat-visible lifecycle status messages -----------------------------
+	//
+	// Cloud tasks have a non-trivial cold-start window (instance provision +
+	// container start + ACP WebSocket handshake) that local tasks don't. The
+	// chat panel would otherwise sit silent from submit → first agent_message_chunk.
+	// We surface the same few transitions a human cares about as synthetic
+	// status messages so the transcript reads as:
+	//
+	//   [status] ⏳ Provisioning cloud sandbox…
+	//   [status] ✅ Cloud sandbox ready, starting session…
+	//   [status] Cloud session established (sess-xxx)   ← already emitted by the chat service
+	//                                                      on the WS session_started event
+	//   [user]    <their prompt>
+	//   [assistant] <agent reply>
+	//
+	// We deliberately do NOT surface every internal transition (queued→policy_check,
+	// completing, teardown, archived) — those are implementation noise. Only
+	// transitions visible to the human are emitted.
+	private emitChatStatusForTransition(
+		taskId: string,
+		from: CloudExecutionState,
+		to: CloudExecutionState,
+		trigger: CloudExecutionTrigger,
+		metadata: Record<string, unknown> | undefined,
+	): void {
+		if (!this.cloudTaskChatService) return;
+
+		let text: string | null = null;
+		if (to === "provisioning") {
+			text = "⏳ Provisioning cloud sandbox…";
+		} else if (from === "provisioning" && to === "running" && trigger === "sandbox_ready") {
+			text = metadata?.idempotentReuse
+				? "🔗 Reconnecting to existing cloud sandbox…"
+				: "✅ Cloud sandbox ready, starting session…";
+		} else if (from === "provisioning" && trigger === "provision_timeout") {
+			const err = typeof metadata?.error === "string" ? metadata.error : "timed out";
+			text = `❌ Cloud sandbox failed to provision: ${err}`;
+		} else if (trigger === "user_cancel") {
+			text = "🛑 Task canceled.";
+		} else if (trigger === "execution_error") {
+			const err = typeof metadata?.error === "string" ? metadata.error : "unknown error";
+			text = `❌ Cloud execution failed: ${err}`;
+		}
+
+		if (!text) return;
+		try {
+			this.cloudTaskChatService.appendStatus(taskId, text);
+		} catch (e) {
+			this.logger.warn("Chat status append failed", {
+				taskId,
+				error: e instanceof Error ? e.message : String(e),
+			});
+		}
 	}
 
 	// -- context management --------------------------------------------------

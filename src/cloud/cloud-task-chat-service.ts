@@ -118,6 +118,22 @@ export class CloudTaskChatService {
 		this.tasks.delete(taskId);
 	}
 
+	// Append a synthetic "status" role message to a task's transcript and
+	// broadcast to subscribers. Used by the orchestrator to surface lifecycle
+	// events (provisioning/starting/ready/failed) in the chat panel — cloud
+	// tasks have a non-trivial cold-start that local tasks don't, so the user
+	// needs visibility that something is happening before the agent responds.
+	//
+	// Dedupes by text: if the last status message on this task is identical,
+	// we skip. Cheap guard against chatter from the state machine emitting the
+	// same transition multiple times on retries.
+	appendStatus(taskId: string, text: string): void {
+		const state = this.ensureTask(taskId);
+		const last = state.messages[state.messages.length - 1];
+		if (last && last.role === "status" && last.content === text) return;
+		this.appendMessage(taskId, this.createMessage(taskId, "status", text));
+	}
+
 	// Called by runtime-api when the user submits a prompt for a cloud_agent task.
 	// Records the user message locally, then forwards it to the pod as a
 	// user_prompt RuntimeMessage. Returns the created ClineTaskMessage regardless
