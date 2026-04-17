@@ -18,7 +18,6 @@ import type {
 	ExecutionCreateRequest,
 	ExecutionCreateResponse,
 	ExecutionStatusResponse,
-	ExecutionLogsResponse,
 } from "../../../src/cloud/cloud-execution-contracts";
 
 // ---------------------------------------------------------------------------
@@ -117,9 +116,6 @@ function createMockExecutionClient(opts?: {
 				result: opts?.result ?? null,
 				error: opts?.error ?? null,
 			};
-		},
-		async getExecutionLogs(): Promise<ExecutionLogsResponse> {
-			return { executionId: "exec-1", lines: [], nextCursor: null };
 		},
 		async cancelExecution(executionId: string): Promise<void> {
 			state.cancelCalls.push(executionId);

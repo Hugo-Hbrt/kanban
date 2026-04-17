@@ -556,7 +556,6 @@ describe("Orchestrator integration — concurrency gate in handleQueued", () => 
 		const executionClient = {
 			createExecution: async () => ({ executionId: "e1", status: "queued" as const, taskId: "t1", attemptNumber: 1, createdAt: new Date().toISOString() }),
 			getExecutionStatus: async () => ({ executionId: "e1", status: "running" as const, taskId: "t1", attemptNumber: 1, requestedByUserId: "u1", orgId: "o1", projectId: "p1", startedAt: null, finishedAt: null, result: null, error: null }),
-			getExecutionLogs: async () => ({ executionId: "e1", lines: [], nextCursor: null }),
 			cancelExecution: async () => {},
 		};
 		const limiter = new OrgConcurrencyLimiter(store, () => "org-A", { maxConcurrentPerOrg: 2 });
@@ -583,7 +582,6 @@ describe("Orchestrator integration — concurrency gate in handleQueued", () => 
 		const executionClient = {
 			createExecution: async () => ({ executionId: "e1", status: "queued" as const, taskId: "t1", attemptNumber: 1, createdAt: new Date().toISOString() }),
 			getExecutionStatus: async () => ({ executionId: "e1", status: "running" as const, taskId: "t1", attemptNumber: 1, requestedByUserId: "u1", orgId: "o1", projectId: "p1", startedAt: null, finishedAt: null, result: null, error: null }),
-			getExecutionLogs: async () => ({ executionId: "e1", lines: [], nextCursor: null }),
 			cancelExecution: async () => {},
 		};
 

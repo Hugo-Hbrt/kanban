@@ -18,7 +18,6 @@ import type { CloudAuthProvider } from "./cloud-auth-provider";
 import {
 	type ExecutionCreateRequest,
 	type ExecutionCreateResponse,
-	type ExecutionLogsResponse,
 	type ExecutionStatusResponse,
 	executionCreateRequestSchema,
 } from "./cloud-execution-contracts";
@@ -60,7 +59,6 @@ export interface ExecutionClientRetryConfig {
 export const DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS = {
 	createExecution: { maxRetries: 2, baseDelayMs: 1000, maxDelayMs: 10_000, timeoutMs: 30_000 },
 	getStatus: { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5_000, timeoutMs: 10_000 },
-	getLogs: { maxRetries: 1, baseDelayMs: 500, maxDelayMs: 5_000, timeoutMs: 10_000 },
 	cancelExecution: { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5_000, timeoutMs: 10_000 },
 } as const satisfies Record<string, ExecutionClientRetryConfig>;
 
@@ -108,7 +106,6 @@ export interface CloudPlatformExecutionClientConfig {
 export interface CloudPlatformExecutionClient {
 	createExecution(request: ExecutionCreateRequest, signal?: AbortSignal): Promise<ExecutionCreateResponse>;
 	getExecutionStatus(executionId: string, signal?: AbortSignal): Promise<ExecutionStatusResponse>;
-	getExecutionLogs(executionId: string, cursor?: string, signal?: AbortSignal): Promise<ExecutionLogsResponse>;
 	cancelExecution(executionId: string, signal?: AbortSignal): Promise<void>;
 }
 
@@ -201,7 +198,6 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 				...config.retryConfigs?.createExecution,
 			},
 			getStatus: { ...DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS.getStatus, ...config.retryConfigs?.getStatus },
-			getLogs: { ...DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS.getLogs, ...config.retryConfigs?.getLogs },
 			cancelExecution: {
 				...DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS.cancelExecution,
 				...config.retryConfigs?.cancelExecution,
@@ -299,18 +295,6 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 		);
 		const pod = (await response.json()) as PodStatusResponse;
 		return this.mapPodStatus(executionId, pod);
-	}
-
-	async getExecutionLogs(
-		_executionId: string,
-		_cursor?: string,
-		_signal?: AbortSignal,
-	): Promise<ExecutionLogsResponse> {
-		return {
-			executionId: _executionId,
-			lines: [],
-			nextCursor: null,
-		};
 	}
 
 	async cancelExecution(executionId: string, signal?: AbortSignal): Promise<void> {

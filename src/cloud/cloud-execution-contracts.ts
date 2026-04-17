@@ -75,24 +75,6 @@ export const executionStatusResponseSchema = z.object({
 export type ExecutionStatusResponse = z.infer<typeof executionStatusResponseSchema>;
 
 // ---------------------------------------------------------------------------
-// Execution Logs Response (GET /api/v2/cloud-platform/executions/{id}/logs via core-api)
-// ---------------------------------------------------------------------------
-
-export const executionLogLineSchema = z.object({
-	cursor: z.string(),
-	ts: z.string(),
-	stream: z.string(),
-	message: z.string(),
-});
-
-export const executionLogsResponseSchema = z.object({
-	executionId: z.string().min(1),
-	lines: z.array(executionLogLineSchema),
-	nextCursor: z.string().nullable(),
-});
-export type ExecutionLogsResponse = z.infer<typeof executionLogsResponseSchema>;
-
-// ---------------------------------------------------------------------------
 // Provisioning Contract Types (target-state, used when calling core-api
 // instance lifecycle endpoints)
 // ---------------------------------------------------------------------------
