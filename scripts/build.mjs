@@ -1,6 +1,16 @@
 import * as esbuild from "esbuild";
+import { execSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 
-/** Modules that must stay external (native addons, large runtime deps). */
+/**
+ * Modules that must stay external (native addons, large runtime deps that
+ * don't bundle cleanly, or deps using dynamic require patterns).
+ *
+ * These are resolved at runtime via Node's node_modules lookup. For the CLI
+ * to work outside of its npm-install context (e.g. packaged inside the
+ * Electron desktop app at `Resources/cli/cli.js`), we also stage these deps
+ * into `dist/node_modules/` below so `dist/` is a self-contained deployable.
+ */
 const external = [
 	"node-pty",
 	"@sentry/node",
@@ -66,3 +76,56 @@ await Promise.all([
 ]);
 
 console.log("esbuild: bundled dist/cli.js and dist/index.js");
+
+// ---------------------------------------------------------------------------
+// Stage external runtime deps into dist/node_modules/
+// ---------------------------------------------------------------------------
+//
+// cli.js has literal `import "zod"` / `require("ws")` statements for every
+// name in `external`. Node resolves those via node_modules lookup starting
+// from cli.js's location. When the CLI is run normally (`npm i -g kanban`),
+// the enclosing node_modules/ satisfies resolution. But when `dist/` ships
+// anywhere else — notably the Electron desktop app at `Resources/cli/` —
+// there is no enclosing node_modules/.
+//
+// So we install the externals directly into `dist/node_modules/`, making
+// `dist/` a fully self-contained deployable. One `npm install` with a
+// synthetic package.json pulls in transitive deps automatically.
+
+const rootPkg = JSON.parse(readFileSync("package.json", "utf-8"));
+const rootDeps = { ...rootPkg.dependencies, ...rootPkg.devDependencies };
+const runtimeDeps = Object.fromEntries(
+	external
+		.map((name) => [name, rootDeps[name]])
+		.filter(([, v]) => typeof v === "string"),
+);
+
+const missing = external.filter((name) => !(name in runtimeDeps));
+if (missing.length > 0) {
+	throw new Error(
+		`build.mjs: externals missing from root package.json: ${missing.join(", ")}`,
+	);
+}
+
+mkdirSync("dist", { recursive: true });
+writeFileSync(
+	"dist/package.json",
+	`${JSON.stringify(
+		{
+			name: "kanban-cli-runtime-deps",
+			version: "0.0.0",
+			private: true,
+			type: "module",
+			dependencies: runtimeDeps,
+		},
+		null,
+		2,
+	)}\n`,
+);
+
+console.log("staging runtime deps into dist/node_modules/ ...");
+execSync("npm install --omit=dev --no-audit --no-fund --ignore-scripts", {
+	cwd: "dist",
+	stdio: "inherit",
+});
+console.log(`staged ${Object.keys(runtimeDeps).length} runtime deps`);
