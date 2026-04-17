@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { AgentTerminalPanel } from "@/components/detail-panels/agent-terminal-panel";
 import { ClineAgentChatPanel, type ClineAgentChatPanelHandle } from "@/components/detail-panels/cline-agent-chat-panel";
-import { CloudExecutionDetailPanel } from "@/components/detail-panels/cloud-execution-detail-panel";
 import { ColumnContextPanel } from "@/components/detail-panels/column-context-panel";
 import { type DiffLineComment, DiffViewerPanel } from "@/components/detail-panels/diff-viewer-panel";
 import { FileTreePanel } from "@/components/detail-panels/file-tree-panel";
@@ -677,18 +676,16 @@ export function CardDetailView({
 		});
 	}, [isCloudAgentTask, cloudCurrentState, selection.card.id, onSessionSummary]);
 
-	const agentChatPanel = isCloudAgentTask ? (
-		<div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-auto">
-			<CloudExecutionDetailPanel
-				taskId={selection.card.id}
-				timeline={cloudExecDetail.timeline}
-				summary={cloudExecDetail.summary}
-				isLoading={cloudExecDetail.isLoading}
-				isError={cloudExecDetail.isError}
-				onRefetch={cloudExecDetail.refetch}
-			/>
-		</div>
-	) : showClineAgentChatPanel ? (
+	// Cloud-agent tasks reuse the exact same chat surface as local Cline-agent
+	// tasks — "indistinguishable from the UI side." The cloud-specific bits
+	// (provisioning timeline, pod namespace, etc.) live under the hood: the
+	// useCloudExecutionDetail hook + the terminal-state board-movement effect
+	// above still run for cloud_agent tasks, so the card still auto-advances
+	// to the review column when the cloud execution reaches a terminal state.
+	// sendTaskChatMessage (wired into onSendClineChatMessage) routes through
+	// CloudTaskChatService for cloud_agent tasks, so user prompts flow over
+	// the ACP WebSocket just like they do to a local agent process.
+	const agentChatPanel = isCloudAgentTask || showClineAgentChatPanel ? (
 		<ClineAgentChatPanel
 			ref={clineAgentChatPanelRef}
 			taskId={selection.card.id}
