@@ -13,7 +13,6 @@ import {
 	validateExecutionIdentityFidelity,
 } from "../../../src/cloud/cloud-execution-orchestrator";
 import type { PersistedTaskEvent, PersistedTaskExecution } from "../../../src/cloud/cloud-execution-persistence";
-import type { GovernanceClient } from "../../../src/cloud/cloud-governance-client";
 import type { CloudPlatformExecutionClient } from "../../../src/cloud/cloud-platform-execution-client";
 import type {
 	ExecutionCreateRequest,
@@ -171,21 +170,6 @@ const FAST_CONFIG: OrchestratorConfig = {
 	projectId: "test-project",
 };
 
-const autoAuthorizeGovernance: GovernanceClient = {
-	async checkAuthorization() {
-		return { decision: "authorized" as const };
-	},
-	async reserveBudget() {
-		return { reservationId: "res-mock", expiresAt: new Date().toISOString() };
-	},
-	async reportUsage() {
-		return { accepted: true };
-	},
-	async reportAudit() {
-		return { accepted: true };
-	},
-};
-
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -225,14 +209,7 @@ describe("Orchestrator — happy path: queued to running", () => {
 	it("advances policy_check to provisioning via authorized", async () => {
 		const store = createMockStore();
 		const client = createMockExecutionClient();
-		const orch = new CloudExecutionOrchestrator(
-			store,
-			client,
-			FAST_CONFIG,
-			undefined,
-			null,
-			autoAuthorizeGovernance,
-		);
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
 
 		await seedTaskToState(store, "task-1", "policy_check");
 
@@ -272,14 +249,7 @@ describe("Orchestrator — full lifecycle via processTick", () => {
 	it("drives task from queued through provisioning to running in multiple ticks", async () => {
 		const store = createMockStore();
 		const client = createMockExecutionClient();
-		const orch = new CloudExecutionOrchestrator(
-			store,
-			client,
-			FAST_CONFIG,
-			undefined,
-			null,
-			autoAuthorizeGovernance,
-		);
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
 
 		await seedTaskToState(store, "task-1", "queued");
 
@@ -305,14 +275,7 @@ describe("Orchestrator — full lifecycle via processTick", () => {
 	it("processes multiple tasks concurrently", async () => {
 		const store = createMockStore();
 		const client = createMockExecutionClient();
-		const orch = new CloudExecutionOrchestrator(
-			store,
-			client,
-			FAST_CONFIG,
-			undefined,
-			null,
-			autoAuthorizeGovernance,
-		);
+		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
 
 		await seedTaskToState(store, "task-a", "queued");
 		await seedTaskToState(store, "task-b", "policy_check");
@@ -576,11 +539,11 @@ describe("Orchestrator — teardown", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Governance
+// policy_check auto-authorization (governance removed)
 // ---------------------------------------------------------------------------
 
-describe("Orchestrator — governance", () => {
-	it("auto-approves when no governance client configured", async () => {
+describe("Orchestrator — policy_check auto-authorization", () => {
+	it("always auto-authorizes policy_check (governance layer removed)", async () => {
 		const store = createMockStore();
 		const client = createMockExecutionClient();
 		const orch = new CloudExecutionOrchestrator(store, client, FAST_CONFIG);
@@ -590,30 +553,6 @@ describe("Orchestrator — governance", () => {
 		const result = await orch.processTask("task-1");
 		expect(result?.newState).toBe("provisioning");
 		expect(result?.trigger).toBe("authorized");
-	});
-
-	it("denies when governance returns denied", async () => {
-		const store = createMockStore();
-		const client = createMockExecutionClient();
-		const denyGovernance: GovernanceClient = {
-			async checkAuthorization() {
-				return { decision: "denied" as const, reason: "Org limit exceeded" };
-			},
-			async reserveBudget() {
-				return { reservationId: "res-mock", expiresAt: new Date().toISOString() };
-			},
-			async reportUsage() { return { accepted: true }; },
-			async reportAudit() { return { accepted: true }; },
-		};
-		const orch = new CloudExecutionOrchestrator(
-			store, client, FAST_CONFIG, undefined, null, denyGovernance,
-		);
-
-		await seedTaskToState(store, "task-1", "policy_check");
-
-		const result = await orch.processTask("task-1");
-		expect(result?.newState).toBe("failed");
-		expect(result?.trigger).toBe("denied");
 	});
 });
 

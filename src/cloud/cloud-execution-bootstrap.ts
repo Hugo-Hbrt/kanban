@@ -23,7 +23,6 @@ import {
 	type OrchestratorLogger,
 } from "./cloud-execution-orchestrator";
 import { CloudExecutionStore } from "./cloud-execution-persistence";
-import type { GovernanceClient } from "./cloud-governance-client";
 import { type CloudPlatformExecutionClient, CloudPlatformExecutionHttpClient } from "./cloud-platform-execution-client";
 import { type CloudRuntimeClient, DefaultCloudRuntimeClient } from "./cloud-runtime-client";
 
@@ -59,7 +58,6 @@ export interface CloudExecutionRuntime {
 	readonly store: CloudExecutionStore;
 	readonly executionClient: CloudPlatformExecutionClient;
 	readonly runtimeClient: CloudRuntimeClient | null;
-	readonly governanceClient: GovernanceClient | null;
 	readonly capabilitiesClient: CloudCapabilitiesClient;
 	readonly authProvider: CloudAuthProvider;
 	readonly runtimePath: RuntimePathPreference;
@@ -142,12 +140,6 @@ export function bootstrapCloudExecution(
 		logger.info("Bridge runtime path: HTTP CRUD/polling only");
 	}
 
-	// Governance client — no longer wired up. The core-api governance domain
-	// was removed when the execution plane was simplified to direct
-	// kanban→pod polling. The orchestrator's governance branches are
-	// null-guarded and become no-ops.
-	const governanceClient: GovernanceClient | null = null;
-
 	// Orchestrator config
 	const config: OrchestratorConfig = {
 		...DEFAULT_ORCHESTRATOR_CONFIG,
@@ -164,7 +156,6 @@ export function bootstrapCloudExecution(
 		config,
 		logger,
 		null, // concurrency limiter — Phase 2
-		governanceClient,
 		runtimeClient,
 	);
 
@@ -182,7 +173,6 @@ export function bootstrapCloudExecution(
 		storePath,
 		runtimePath,
 		gatewayEnabled: !!runtimeClient,
-		governanceEnabled: !!governanceClient,
 	});
 
 	return {
@@ -190,7 +180,6 @@ export function bootstrapCloudExecution(
 		store,
 		executionClient,
 		runtimeClient,
-		governanceClient,
 		capabilitiesClient,
 		authProvider,
 		runtimePath,

@@ -54,7 +54,6 @@ import {
 } from "./cloud-execution-lifecycle";
 import type { CloudExecutionLogStreamClient } from "./cloud-execution-log-stream";
 import type { EventTriggerSource, PersistedTaskEvent, PersistedTaskExecution } from "./cloud-execution-persistence";
-import type { GovernanceClient } from "./cloud-governance-client";
 import type { CloudPlatformExecutionClient } from "./cloud-platform-execution-client";
 import {
 	DEFAULT_EXECUTION_POLLING_CONFIG,
@@ -328,7 +327,6 @@ export class CloudExecutionOrchestrator {
 	private readonly config: OrchestratorConfig;
 	private readonly logger: OrchestratorLogger;
 	private readonly concurrencyLimiter: ConcurrencyLimiterExtension | null;
-	private readonly governanceClient: GovernanceClient | null;
 	private readonly activeTasks = new Map<string, TaskContext>();
 	private readonly pendingCancellations = new Set<string>();
 	private running = false;
@@ -340,7 +338,6 @@ export class CloudExecutionOrchestrator {
 		config: OrchestratorConfig = DEFAULT_ORCHESTRATOR_CONFIG,
 		logger: OrchestratorLogger = noopLogger,
 		concurrencyLimiter?: ConcurrencyLimiterExtension | null,
-		governanceClient?: GovernanceClient | null,
 		runtimeClient?: CloudRuntimeClient | null,
 	) {
 		this.store = store;
@@ -348,7 +345,6 @@ export class CloudExecutionOrchestrator {
 		this.config = config;
 		this.logger = logger;
 		this.concurrencyLimiter = concurrencyLimiter ?? null;
-		this.governanceClient = governanceClient ?? null;
 		this.runtimeClient = runtimeClient ?? null;
 	}
 
@@ -507,124 +503,15 @@ export class CloudExecutionOrchestrator {
 		});
 	}
 
-	// -- policy_check -> provisioning (governance required) -------------------
+	// -- policy_check -> provisioning ----------------------------------------
 	//
-	// @bridge — Slice 3 governance consolidation
-	//
-	// Primary governance authority is now server-side in core-api (Slice 3).
-	// core-api validates provider/model policy and budget authorization before
-	// accepting execution creation or provisioning requests.
-	//
-	// This client-side governance call is preserved as BRIDGE BEHAVIOR for:
-	//   1. Budget reservation (client-side reservation is still useful for
-	//      local orchestrator state tracking and early denial UX).
-	//   2. Concurrency admission (local orchestrator concern, not core-api's).
-	//   3. Backward compatibility with environments where core-api governance
-	//      integration is not yet deployed.
-	//
-	// Once server-side governance is proven stable, this bridge can be
-	// simplified to a no-op pass-through that only records the transition.
-	// ---------------------------------------------------------------------------
+	// Governance/authorization is no longer enforced in kanban. The core-api
+	// governance layer was removed; CLINE_API_KEY is the single auth gate and
+	// core-api applies any policy decisions server-side on instance provision.
+	// Kanban auto-authorizes and proceeds.
 
 	private async handlePolicyCheck(taskId: string): Promise<TaskStepResult> {
-		if (!this.governanceClient) {
-			// @bridge: No governance client — auto-approve.
-			// Server-side governance in core-api is now the primary authority.
-			// The client-side check is defense-in-depth / bridge only.
-			this.logger.info(
-				"Governance client not configured — auto-approving (server-side governance is primary authority)",
-				{ taskId },
-			);
-			return this.applyTransition(taskId, "policy_check", "authorized", "system", {
-				governanceDecision: "authorized",
-				reason: "governance bypassed — server-side governance is primary authority (Slice 3)",
-				bridgeBehavior: true,
-			});
-		}
-
-		try {
-			const execs = await this.store.readExecutionsForTask(taskId);
-			const latest = execs[execs.length - 1];
-			const meta = latest?.remoteMetadata;
-			const executionMode = latest?.executionMode ?? "cloud_agent";
-
-			// @bridge: Client-side authorization check (defense-in-depth).
-			// core-api now enforces governance server-side on execution creation.
-			const decision = await this.governanceClient.checkAuthorization({
-				taskId,
-				orgId: this.config.orgId ?? "",
-				userId: this.config.userId ?? "",
-				projectId: this.config.projectId ?? "default",
-				executionMode,
-				taskSpec: this.config.defaultTaskSpec ?? { type: "cline-task", image: "cline-runner:latest" },
-				requestedLimits: this.config.requestedLimits ?? { maxComputeSeconds: 1800, maxTokenBudget: 100_000 },
-				executionContext: {
-					repoUrl: meta?.repoUrl ?? "",
-					baseBranch: meta?.baseBranch ?? "",
-					featureBranchIntent: meta?.featureBranch ?? "",
-					worktreeIntent: meta?.worktreePath ?? "",
-				},
-			});
-
-			if (decision.decision === "authorized") {
-				this.logger.info("Policy check authorized (bridge)", { taskId, reason: decision.reason });
-
-				// @bridge: Client-side budget reservation (defense-in-depth).
-				// Useful for local state tracking and early denial UX.
-				let reservationId: string | undefined;
-				try {
-					const limits = this.config.requestedLimits ?? { maxComputeSeconds: 1800, maxTokenBudget: 100_000 };
-					const reservation = await this.governanceClient.reserveBudget({
-						taskId,
-						orgId: this.config.orgId ?? "",
-						maxComputeSeconds: limits.maxComputeSeconds,
-						maxTokenBudget: limits.maxTokenBudget,
-						maxCostUsd: this.config.defaultMaxCostUsd ?? 10.0,
-						executionMode,
-					});
-					reservationId = reservation.reservationId;
-					this.logger.info("Budget reserved (bridge)", {
-						taskId,
-						reservationId,
-						expiresAt: reservation.expiresAt,
-					});
-				} catch (e) {
-					this.logger.warn("Budget reservation failed (bridge), proceeding — server-side governance is primary", {
-						taskId,
-						error: e instanceof Error ? e.message : String(e),
-					});
-				}
-
-				return this.applyTransition(taskId, "policy_check", "authorized", "system", {
-					governanceDecision: "authorized",
-					policySnapshotId: decision.policySnapshotId,
-					reason: decision.reason,
-					reservationId,
-					bridgeBehavior: true,
-				});
-			}
-
-			this.logger.info("Policy check denied (bridge)", { taskId, reason: decision.reason });
-			return this.applyTransition(taskId, "policy_check", "denied", "system", {
-				governanceDecision: "denied",
-				reason: decision.reason,
-				policySnapshotId: decision.policySnapshotId,
-				bridgeBehavior: true,
-			});
-		} catch (e) {
-			// @bridge: On client-side governance error, still deny as defense-in-depth.
-			// Server-side governance will also deny if applicable.
-			this.logger.error("Unexpected governance error (bridge), denying execution", {
-				taskId,
-				error: e instanceof Error ? e.message : String(e),
-			});
-			return this.applyTransition(taskId, "policy_check", "denied", "system", {
-				governanceDecision: "denied",
-				reason: `governance error: ${e instanceof Error ? e.message : String(e)}`,
-				governanceError: true,
-				bridgeBehavior: true,
-			});
-		}
+		return this.applyTransition(taskId, "policy_check", "authorized", "system");
 	}
 
 	// -- provisioning -> running (create execution on cloud-platform) --------
@@ -917,38 +804,6 @@ export class CloudExecutionOrchestrator {
 	 */
 	private async handleTerminal(taskId: string, state: "completed" | "failed" | "canceled"): Promise<TaskStepResult> {
 		this.logger.info("Terminal state reached, initiating teardown", { taskId, state });
-
-		// Emit usage event before teardown (best-effort, never blocks transition)
-		if (this.governanceClient) {
-			try {
-				const execs = await this.store.readExecutionsForTask(taskId);
-				const latest = execs[execs.length - 1];
-				const meta = latest?.remoteMetadata;
-				const reservationId = await this.findReservationId(taskId);
-				await this.governanceClient.reportUsage({
-					taskId,
-					orgId: this.config.orgId ?? "",
-					userId: this.config.userId ?? "",
-					executionMode: latest?.executionMode ?? "cloud_agent",
-					cpuSeconds: latest?.durationSeconds ?? 0,
-					tokensIn: meta?.tokenUsage,
-					reservationId,
-					executionContext: {
-						repoUrl: meta?.repoUrl ?? "",
-						baseBranch: meta?.baseBranch ?? "",
-						featureBranchIntent: meta?.featureBranch ?? "",
-						worktreeIntent: meta?.worktreePath ?? "",
-					},
-				});
-				this.logger.info("Usage event reported", { taskId, state });
-			} catch (e) {
-				this.logger.warn("Usage event reporting failed (best-effort)", {
-					taskId,
-					error: e instanceof Error ? e.message : String(e),
-				});
-			}
-		}
-
 		return this.applyTransition(taskId, state, "auto_teardown", "system");
 	}
 
@@ -1070,34 +925,6 @@ export class CloudExecutionOrchestrator {
 			trigger,
 		});
 
-		// Emit audit event on key lifecycle transitions (best-effort, fire-and-forget)
-		if (this.governanceClient) {
-			this.governanceClient
-				.reportAudit({
-					actor: { type: triggerSource === "user" ? "user" : "system", id: this.config.userId ?? "system" },
-					action: `task.${trigger}`,
-					resource: { type: "task", id: taskId },
-					result: result.to === "failed" || result.to === "canceled" ? "failure" : "success",
-					taskId,
-					orgId: this.config.orgId,
-					userId: this.config.userId,
-					projectId: this.config.projectId,
-					metadata: {
-						executionMode: metadata?.executionMode as string | undefined,
-						repoUrl: metadata?.repoUrl as string | undefined,
-						baseBranch: metadata?.baseBranch as string | undefined,
-						featureBranchIntent: metadata?.featureBranch as string | undefined,
-						policySnapshotId: metadata?.policySnapshotId as string | undefined,
-					},
-				})
-				.catch((e) => {
-					this.logger.warn("Audit event reporting failed (best-effort)", {
-						taskId,
-						error: e instanceof Error ? e.message : String(e),
-					});
-				});
-		}
-
 		return {
 			taskId,
 			previousState: result.from,
@@ -1121,21 +948,6 @@ export class CloudExecutionOrchestrator {
 			this.activeTasks.set(taskId, ctx);
 		}
 		return ctx;
-	}
-
-	/**
-	 * Find the reservationId from the policy_check → provisioning event metadata.
-	 * Scans task events for the `authorized` trigger where reservationId was stored.
-	 */
-	private async findReservationId(taskId: string): Promise<string | undefined> {
-		const events = await this.store.readEventsForTask(taskId);
-		for (let i = events.length - 1; i >= 0; i--) {
-			const evt = events[i];
-			if (evt?.trigger === "authorized" && evt.metadata?.reservationId) {
-				return evt.metadata.reservationId as string;
-			}
-		}
-		return undefined;
 	}
 
 	private cleanupCtx(taskId: string): void {
