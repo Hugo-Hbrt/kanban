@@ -378,7 +378,7 @@ export function applyClineSessionEvent(input: ApplyClineSessionEventInput): void
 				source: "cline-sdk",
 			},
 		};
-		if (isUserAttentionTool && entry.summary.state === "running") {
+		if (isUserAttentionTool && (entry.summary.state === "running" || entry.summary.state === "idle")) {
 			summaryPatch.state = "awaiting_review";
 			summaryPatch.reviewReason = "hook";
 		} else if (!isUserAttentionTool && canReturnToRunning(entry.summary.reviewReason)) {

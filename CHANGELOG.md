@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.63]
+
+- Fixed task detail view being lost on page refresh
+- Fixed API key getting reset when modifying Cline agent settings
+- Fixed Kanban agent starting in thinking state instead of idle
+
 ## [0.1.62]
 
 - Fixed Cline chats on the home screen not resuming correctly from persisted history, causing conversation context to be lost

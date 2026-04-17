@@ -649,6 +649,44 @@ describe("InMemoryClineSessionRuntime", () => {
 		expect(runtime.getTaskSessionId("task-1")).toBeNull();
 	});
 
+	it("clears the live task binding when stop fails and the session no longer exists", async () => {
+		const fakeHost = {
+			start: vi.fn(async (input: { config?: { sessionId?: string } }) => ({
+				sessionId: input.config?.sessionId ?? "session-1",
+				result: {},
+			})),
+			send: vi.fn(async () => ({})),
+			stop: vi.fn(async () => {
+				throw new Error("session not found: session-1");
+			}),
+			abort: vi.fn(async () => {}),
+			delete: vi.fn(async () => true),
+			dispose: vi.fn(async () => {}),
+			get: vi.fn(async () => undefined),
+			list: vi.fn(async () => []),
+			readMessages: vi.fn(async () => []),
+			subscribe: vi.fn(() => () => {}),
+		};
+
+		const runtime = createInMemoryClineSessionRuntime({
+			createSessionHost: async () => fakeHost,
+			createMcpRuntimeService: createNoopMcpRuntimeService,
+		});
+
+		await runtime.startTaskSession({
+			taskId: "task-1",
+			cwd: "/tmp/worktree",
+			prompt: "Investigate startup",
+			providerId: "anthropic",
+			modelId: "claude-sonnet-4-6",
+			systemPrompt: "You are a helpful coding assistant.",
+		});
+
+		await expect(runtime.stopTaskSession("task-1")).rejects.toThrow("session not found: session-1");
+		expect(fakeHost.get).toHaveBeenCalled();
+		expect(runtime.getTaskSessionId("task-1")).toBeNull();
+	});
+
 	it("deletes persisted task sessions when clearing a task session", async () => {
 		const fakeHost = {
 			start: vi.fn(async (input: { config?: { sessionId?: string } }) => ({

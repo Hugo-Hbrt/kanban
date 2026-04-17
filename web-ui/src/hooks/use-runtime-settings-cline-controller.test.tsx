@@ -49,7 +49,9 @@ interface HookSnapshot {
 	setApiKey: (value: string) => void;
 	setBaseUrl: (value: string) => void;
 	setReasoningEffort: (value: string) => void;
-	saveProviderSettings: () => Promise<{ ok: boolean; message?: string }>;
+	saveProviderSettings: (
+		overrides?: Parameters<ReturnType<typeof useRuntimeSettingsClineController>["saveProviderSettings"]>[0],
+	) => Promise<{ ok: boolean; message?: string }>;
 	addCustomProvider: (
 		input: Parameters<ReturnType<typeof useRuntimeSettingsClineController>["addCustomProvider"]>[0],
 	) => Promise<{ ok: boolean; message?: string }>;
@@ -693,6 +695,57 @@ describe("useRuntimeSettingsClineController", () => {
 		expect(requireSnapshot(latestSnapshot).apiKey).toBe("");
 		expect(requireSnapshot(latestSnapshot).apiKeyConfigured).toBe(true);
 		expect(requireSnapshot(latestSnapshot).hasUnsavedChanges).toBe(false);
+	});
+
+	it("does not clear a saved manual api key when saving model-only overrides", async () => {
+		const config = createRuntimeConfigResponse({
+			providerId: "openrouter",
+			oauthProvider: null,
+			modelId: "openrouter/auto",
+			baseUrl: "https://openrouter.ai/api/v1",
+			apiKeyConfigured: true,
+		});
+		let latestSnapshot: HookSnapshot | null = null;
+		saveClineProviderSettingsMock.mockResolvedValue({
+			providerId: "openrouter",
+			modelId: "openrouter/free",
+			baseUrl: "https://openrouter.ai/api/v1",
+			reasoningEffort: null,
+			apiKeyConfigured: true,
+			oauthProvider: null,
+			oauthAccessTokenConfigured: false,
+			oauthRefreshTokenConfigured: false,
+			oauthAccountId: null,
+			oauthExpiresAt: null,
+		});
+
+		await act(async () => {
+			root.render(
+				<HookHarness
+					open={true}
+					workspaceId="workspace-1"
+					selectedAgentId="cline"
+					config={config}
+					onSnapshot={(snapshot) => {
+						latestSnapshot = snapshot;
+					}}
+				/>,
+			);
+			await flushAsyncWork();
+		});
+
+		await act(async () => {
+			expect(await requireSnapshot(latestSnapshot).saveProviderSettings({ modelId: "openrouter/free" })).toEqual({
+				ok: true,
+			});
+		});
+
+		expect(saveClineProviderSettingsMock).toHaveBeenCalledWith("workspace-1", {
+			providerId: "openrouter",
+			modelId: "openrouter/free",
+			baseUrl: "https://openrouter.ai/api/v1",
+			reasoningEffort: null,
+		});
 	});
 
 	it("adds a custom provider and refreshes catalog and models", async () => {

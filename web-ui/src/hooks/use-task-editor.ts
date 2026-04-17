@@ -1,3 +1,4 @@
+import { deriveTaskTitleFromPrompt } from "@runtime-task-title";
 import type { Dispatch, SetStateAction } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -35,8 +36,6 @@ interface CreateTaskOptions {
 
 export interface UseTaskEditorResult {
 	isInlineTaskCreateOpen: boolean;
-	newTaskTitle: string;
-	setNewTaskTitle: Dispatch<SetStateAction<string>>;
 	newTaskPrompt: string;
 	setNewTaskPrompt: Dispatch<SetStateAction<string>>;
 	newTaskImages: TaskImage[];
@@ -55,8 +54,6 @@ export interface UseTaskEditorResult {
 	newTaskClineSettings: RuntimeTaskClineSettings | undefined;
 	setNewTaskClineSettings: Dispatch<SetStateAction<RuntimeTaskClineSettings | undefined>>;
 	editingTaskId: string | null;
-	editTaskTitle: string;
-	setEditTaskTitle: Dispatch<SetStateAction<string>>;
 	editTaskPrompt: string;
 	setEditTaskPrompt: Dispatch<SetStateAction<string>>;
 	editTaskImages: TaskImage[];
@@ -97,7 +94,6 @@ export function useTaskEditor({
 	queueTaskStartAfterEdit,
 }: UseTaskEditorInput): UseTaskEditorResult {
 	const [isInlineTaskCreateOpen, setIsInlineTaskCreateOpen] = useState(false);
-	const [newTaskTitle, setNewTaskTitle] = useState("");
 	const [newTaskPrompt, setNewTaskPrompt] = useState("");
 	const [newTaskImages, setNewTaskImages] = useState<TaskImage[]>([]);
 	const [newTaskStartInPlanMode, setNewTaskStartInPlanMode] = useBooleanLocalStorageValue(
@@ -117,7 +113,6 @@ export function useTaskEditor({
 	const [newTaskBranchRef, setNewTaskBranchRef] = useState("");
 	const [lastCreatedTaskBranchByProjectId, setLastCreatedTaskBranchByProjectId] = useState<Record<string, string>>({});
 	const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
-	const [editTaskTitle, setEditTaskTitle] = useState("");
 	const [editTaskPrompt, setEditTaskPrompt] = useState("");
 	const [editTaskImages, setEditTaskImages] = useState<TaskImage[]>([]);
 	const [editTaskStartInPlanMode, setEditTaskStartInPlanMode] = useState(false);
@@ -199,7 +194,7 @@ export function useTaskEditor({
 		const selection = findCardSelection(board, editingTaskId);
 		if (!selection || selection.column.id !== "backlog") {
 			setEditingTaskId(null);
-			setEditTaskTitle("");
+
 			setEditTaskPrompt("");
 			setEditTaskStartInPlanMode(false);
 			setEditTaskAutoReviewEnabled(false);
@@ -213,7 +208,7 @@ export function useTaskEditor({
 		setEditingTaskId(null);
 		setEditTaskPrompt("");
 		setEditTaskImages([]);
-		setNewTaskTitle("");
+
 		setNewTaskAgentId(undefined);
 		setNewTaskClineSettings(undefined);
 		setIsInlineTaskCreateOpen(true);
@@ -221,7 +216,7 @@ export function useTaskEditor({
 
 	const handleCancelCreateTask = useCallback(() => {
 		setIsInlineTaskCreateOpen(false);
-		setNewTaskTitle("");
+
 		setNewTaskPrompt("");
 		setNewTaskImages([]);
 		setNewTaskBranchRef(resolvedDefaultTaskBranchRef);
@@ -235,12 +230,12 @@ export function useTaskEditor({
 				setSelectedTaskId(null);
 			}
 			setIsInlineTaskCreateOpen(false);
-			setNewTaskTitle("");
+
 			setNewTaskPrompt("");
 			setNewTaskImages([]);
 			const taskPrompt = task.prompt.trim();
 			setEditingTaskId(task.id);
-			setEditTaskTitle(task.title);
+
 			setEditTaskPrompt(taskPrompt);
 			setEditTaskImages(task.images ? task.images.map((image) => ({ ...image })) : []);
 			setEditTaskStartInPlanMode(task.startInPlanMode);
@@ -257,7 +252,7 @@ export function useTaskEditor({
 
 	const handleCancelEditTask = useCallback(() => {
 		setEditingTaskId(null);
-		setEditTaskTitle("");
+
 		setEditTaskPrompt("");
 		setEditTaskStartInPlanMode(false);
 		setEditTaskAutoReviewEnabled(false);
@@ -282,7 +277,8 @@ export function useTaskEditor({
 		const savedTaskId = editingTaskId;
 
 		setBoard((currentBoard) => {
-			const title = editTaskTitle.trim();
+			const currentCard = currentBoard.columns.flatMap((c) => c.cards).find((c) => c.id === savedTaskId);
+			const title = currentCard?.title ?? "";
 			const updated = updateTask(currentBoard, savedTaskId, {
 				title,
 				prompt,
@@ -298,7 +294,7 @@ export function useTaskEditor({
 			return updated.updated ? updated.board : currentBoard;
 		});
 		setEditingTaskId(null);
-		setEditTaskTitle("");
+
 		setEditTaskPrompt("");
 		setEditTaskStartInPlanMode(false);
 		setEditTaskAutoReviewEnabled(false);
@@ -318,7 +314,6 @@ export function useTaskEditor({
 		editTaskPrompt,
 		editTaskImages,
 		editTaskStartInPlanMode,
-		editTaskTitle,
 		editingTaskId,
 		resolvedDefaultTaskBranchRef,
 		setBoard,
@@ -352,7 +347,7 @@ export function useTaskEditor({
 				return null;
 			}
 			const baseRef = newTaskBranchRef || resolvedDefaultTaskBranchRef;
-			const title = newTaskTitle.trim();
+			const title = deriveTaskTitleFromPrompt(prompt);
 			const created = addTaskToColumnWithResult(board, "backlog", {
 				title,
 				prompt,
@@ -378,7 +373,7 @@ export function useTaskEditor({
 					[currentProjectId]: baseRef,
 				}));
 			}
-			setNewTaskTitle("");
+
 			setNewTaskPrompt("");
 			setNewTaskImages([]);
 			setNewTaskBranchRef(baseRef);
@@ -400,7 +395,6 @@ export function useTaskEditor({
 			newTaskClineSettings,
 			newTaskImages,
 			newTaskPrompt,
-			newTaskTitle,
 			newTaskStartInPlanMode,
 			resolvedDefaultTaskBranchRef,
 			selectedAgentId,
@@ -452,7 +446,7 @@ export function useTaskEditor({
 					[currentProjectId]: baseRef,
 				}));
 			}
-			setNewTaskTitle("");
+
 			setNewTaskPrompt("");
 			setNewTaskImages([]);
 			setNewTaskBranchRef(baseRef);
@@ -485,9 +479,9 @@ export function useTaskEditor({
 	const resetTaskEditorState = useCallback(() => {
 		setIsInlineTaskCreateOpen(false);
 		setEditingTaskId(null);
-		setNewTaskTitle("");
+
 		setNewTaskPrompt("");
-		setEditTaskTitle("");
+
 		setEditTaskPrompt("");
 		setEditTaskStartInPlanMode(false);
 		setEditTaskAutoReviewEnabled(false);
@@ -503,8 +497,6 @@ export function useTaskEditor({
 
 	return {
 		isInlineTaskCreateOpen,
-		newTaskTitle,
-		setNewTaskTitle,
 		newTaskPrompt,
 		setNewTaskPrompt,
 		newTaskImages,
@@ -523,8 +515,6 @@ export function useTaskEditor({
 		newTaskClineSettings,
 		setNewTaskClineSettings,
 		editingTaskId,
-		editTaskTitle,
-		setEditTaskTitle,
 		editTaskPrompt,
 		setEditTaskPrompt,
 		editTaskImages,

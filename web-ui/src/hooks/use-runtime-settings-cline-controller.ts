@@ -502,7 +502,7 @@ export function useRuntimeSettingsClineController(
 					? overrides.apiKey?.trim() || null
 					: managedOauthProvider
 						? null
-						: apiKey.trim() || null;
+						: apiKey.trim() || undefined;
 			const nextReasoningEffort =
 				overrides && "reasoningEffort" in overrides ? (overrides.reasoningEffort ?? null) : reasoningEffort || null;
 			const nextRegion =
@@ -538,9 +538,9 @@ export function useRuntimeSettingsClineController(
 				const savedSettings = await saveClineProviderSettings(workspaceId, {
 					providerId: trimmedProviderId,
 					modelId: trimmedModelId,
-					apiKey: trimmedApiKey,
 					baseUrl: trimmedBaseUrl,
 					reasoningEffort: nextReasoningEffort,
+					...(trimmedApiKey !== undefined ? { apiKey: trimmedApiKey } : {}),
 					...(isVertexProvider ? { region: payloadRegion } : {}),
 					...(nextAws !== undefined ? { aws: nextAws } : {}),
 					...(nextGcp !== undefined ? { gcp: nextGcp } : {}),

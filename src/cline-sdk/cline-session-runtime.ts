@@ -104,6 +104,7 @@ export interface ClineSessionRuntime {
 	clearTaskSessions(taskId: string): Promise<void>;
 	getTaskSessionId(taskId: string): string | null;
 	getTaskProviderId(taskId: string): string | null;
+	canRestartTaskSession(taskId: string): boolean;
 	readPersistedTaskSession(taskId: string): Promise<ClinePersistedTaskSessionSnapshot | null>;
 	dispose(): Promise<void>;
 }
@@ -318,8 +319,18 @@ export class InMemoryClineSessionRuntime implements ClineSessionRuntime {
 			return;
 		}
 		const sessionHost = await this.ensureSessionHost();
-		await sessionHost.stop(sessionId);
-		await this.releaseTaskMcpToolBundle(taskId);
+		try {
+			await sessionHost.stop(sessionId);
+			this.clearTaskSessionBinding(taskId, sessionId);
+		} catch (error) {
+			const persistedRecord = await sessionHost.get(sessionId).catch(() => undefined);
+			if (!persistedRecord) {
+				this.clearTaskSessionBinding(taskId, sessionId);
+			}
+			throw error;
+		} finally {
+			await this.releaseTaskMcpToolBundle(taskId);
+		}
 	}
 
 	async abortTaskSession(taskId: string): Promise<void> {
@@ -329,8 +340,18 @@ export class InMemoryClineSessionRuntime implements ClineSessionRuntime {
 			return;
 		}
 		const sessionHost = await this.ensureSessionHost();
-		await sessionHost.abort(sessionId);
-		await this.releaseTaskMcpToolBundle(taskId);
+		try {
+			await sessionHost.abort(sessionId);
+			this.clearTaskSessionBinding(taskId, sessionId);
+		} catch (error) {
+			const persistedRecord = await sessionHost.get(sessionId).catch(() => undefined);
+			if (!persistedRecord) {
+				this.clearTaskSessionBinding(taskId, sessionId);
+			}
+			throw error;
+		} finally {
+			await this.releaseTaskMcpToolBundle(taskId);
+		}
 	}
 
 	async clearTaskSessions(taskId: string): Promise<void> {
@@ -360,6 +381,10 @@ export class InMemoryClineSessionRuntime implements ClineSessionRuntime {
 
 	getTaskProviderId(taskId: string): string | null {
 		return this.lastStartRequestByTaskId.get(taskId)?.providerId ?? null;
+	}
+
+	canRestartTaskSession(taskId: string): boolean {
+		return this.lastStartRequestByTaskId.has(taskId);
 	}
 
 	async readPersistedTaskSession(taskId: string): Promise<ClinePersistedTaskSessionSnapshot | null> {

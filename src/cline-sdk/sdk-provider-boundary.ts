@@ -21,6 +21,7 @@ import {
 	DEFAULT_INTERNAL_IDCS_SCOPES,
 	DEFAULT_INTERNAL_IDCS_URL,
 	ensureCustomProvidersLoaded,
+	getLocalProviderModels,
 	getValidClineCredentials,
 	getValidOcaCredentials,
 	getValidOpenAICodexCredentials,
@@ -63,13 +64,19 @@ export interface SdkProviderCatalogItem {
 	capabilities?: string[];
 }
 
+export interface SdkProviderModel {
+	id: string;
+	name: string;
+	supportsVision?: boolean;
+	supportsAttachments?: boolean;
+	supportsReasoningEffort?: boolean;
+}
+
 export interface SdkUserRemoteConfigResponse {
 	organizationId: string;
 	value: string;
 	enabled: boolean;
 }
-
-export type SdkProviderModelRecord = Record<string, Llms.ModelInfo>;
 
 export type SdkProviderSettings = Llms.ProviderSettings;
 export type SdkCustomProviderCapability = "streaming" | "tools" | "reasoning" | "vision" | "prompt-cache";
@@ -301,12 +308,16 @@ export async function listSdkProviderCatalog(): Promise<SdkProviderCatalogItem[]
 	return await ClineCore.Llms.getAllProviders();
 }
 
-export async function listSdkProviderModels(providerId: string): Promise<SdkProviderModelRecord> {
-	return await ClineCore.Llms.getModelsForProvider(providerId);
-}
-
-export function supportsSdkModelThinking(modelInfo: Llms.ModelInfo): boolean {
-	return modelInfo.capabilities?.includes("reasoning") === true || modelInfo.thinkingConfig != null;
+export async function listSdkProviderModels(providerId: string): Promise<SdkProviderModel[]> {
+	const config = providerManager.getProviderConfig(providerId);
+	const response = await getLocalProviderModels(providerId, config);
+	return response.models.map((model) => ({
+		id: model.id,
+		name: model.name,
+		supportsVision: model.supportsVision,
+		supportsAttachments: model.supportsAttachments,
+		supportsReasoningEffort: model.supportsReasoning,
+	}));
 }
 
 const providerManager = new ProviderSettingsManager();

@@ -41,11 +41,9 @@ import {
 	SDK_DEFAULT_MODEL_ID,
 	SDK_DEFAULT_PROVIDER_ID,
 	type SdkCustomProviderCapability,
-	type SdkProviderModelRecord,
 	type SdkProviderSettings,
 	saveSdkProviderSettings,
 	startClineDeviceAuth as startSdkDeviceAuth,
-	supportsSdkModelThinking,
 	switchSdkClineAccount,
 	updateSdkCustomProvider,
 } from "./sdk-provider-boundary";
@@ -219,17 +217,13 @@ function hasOauthRefreshToken(settings: SdkProviderSettings | null): boolean {
 	return (settings?.auth?.refreshToken?.trim() ?? "").length > 0;
 }
 
-function toRuntimeProviderModel(modelId: string, modelInfo: SdkProviderModelRecord[string]): RuntimeClineProviderModel {
-	const capabilities = new Set(modelInfo.capabilities ?? []);
-	const supportsVision = capabilities.has("images");
-	const supportsAttachments = capabilities.has("files") || supportsVision;
-	const supportsReasoningEffort = supportsSdkModelThinking(modelInfo);
+function toRuntimeProviderModel(model: RuntimeClineProviderModel): RuntimeClineProviderModel {
 	return {
-		id: modelId,
-		name: modelInfo.name?.trim() || modelId,
-		supportsVision: supportsVision || undefined,
-		supportsAttachments: supportsAttachments || undefined,
-		supportsReasoningEffort: supportsReasoningEffort || undefined,
+		id: model.id,
+		name: model.name?.trim() || model.id,
+		supportsVision: model.supportsVision || undefined,
+		supportsAttachments: model.supportsAttachments || undefined,
+		supportsReasoningEffort: model.supportsReasoningEffort || undefined,
 	};
 }
 
@@ -795,11 +789,8 @@ export function createClineProviderService() {
 			const providerModels =
 				normalizedProviderId.length > 0
 					? await listSdkProviderModels(normalizedProviderId)
-							.then((sdkModels) =>
-								Object.entries(sdkModels)
-									.map(([modelId, modelInfo]) => toRuntimeProviderModel(modelId, modelInfo))
-									.sort((left, right) => left.name.localeCompare(right.name)),
-							)
+							.then((sdkModels) => sdkModels.map((model) => toRuntimeProviderModel(model)))
+							.then((sdkModels) => sdkModels.sort((left, right) => left.name.localeCompare(right.name)))
 							.catch(() => [])
 					: [];
 
@@ -810,7 +801,7 @@ export function createClineProviderService() {
 				};
 			}
 
-			const configuredModel = getProviderSettingsSummary().modelId?.trim() ?? "";
+			const configuredModel = getSdkProviderSettings(normalizedProviderId)?.model?.trim() ?? "";
 			if (configuredModel.length > 0) {
 				return {
 					providerId: normalizedProviderId || providerId,
