@@ -3,9 +3,10 @@
 // local e2e testing of kanban's cloud_agent flow without spinning up
 // core-api + cloud-platform + k8s.
 //
-// What it serves (matching the contract in src/cloud/cloud-platform-execution-client.ts
-// and src/cloud/cloud-runtime-client.ts):
+// What it serves (matching the contract in src/cloud/cloud-platform-execution-client.ts,
+// src/cloud/cloud-runtime-client.ts, and src/cloud/cloud-capabilities-client.ts):
 //
+//   GET    /api/v2/cloud-platform/capabilities     → { cloudAgentAllowed, reason }
 //   POST   /api/v2/cloud-platform/instances        → create (provision)
 //   GET    /api/v2/cloud-platform/instances/:id    → status (w/ runtime.connectUrl)
 //   DELETE /api/v2/cloud-platform/instances/:id    → cancel/teardown
@@ -186,6 +187,17 @@ function handleDeleteInstance(res: ServerResponse, instanceId: string) {
 const server = createServer((req, res) => {
 	const url = req.url ?? "/";
 	const method = req.method ?? "GET";
+
+	if (method === "GET" && url === "/api/v2/cloud-platform/capabilities") {
+		return send(
+			res,
+			200,
+			envelopeOk({
+				cloudAgentAllowed: true,
+				reason: "mock-cloud-platform: always-allowed for local dev",
+			}),
+		);
+	}
 
 	if (method === "POST" && url === "/api/v2/cloud-platform/instances") {
 		return handleCreateInstance(req, res);
