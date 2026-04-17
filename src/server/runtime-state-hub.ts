@@ -566,6 +566,34 @@ export function createRuntimeStateHub(deps: CreateRuntimeStateHubDependencies): 
 				broadcastTaskChatMessage(workspaceId, taskId, message);
 			});
 			cloudChatMessageUnsubscribeByWorkspaceId.set(workspaceId, unsubscribe);
+			// Fan summaries out through the same queue the local Cline
+			// service uses — the UI treats cloud and local summaries
+			// identically once they land in `taskSessions`, so board
+			// auto-movement (awaiting_review → review) and review-ready
+			// notifications fire through the same code path.
+			const previousSummariesByTaskId =
+				clinePreviousSummaryByWorkspaceId.get(workspaceId) ?? new Map<string, RuntimeTaskSessionSummary>();
+			clinePreviousSummaryByWorkspaceId.set(workspaceId, previousSummariesByTaskId);
+			const unsubscribeSummary = service.onSummary((summary) => {
+				const previousSummary = previousSummariesByTaskId.get(summary.taskId);
+				previousSummariesByTaskId.set(summary.taskId, summary);
+				queueTaskSessionSummaryBroadcast(workspaceId, summary);
+				if (
+					previousSummary &&
+					previousSummary.state !== "awaiting_review" &&
+					summary.state === "awaiting_review" &&
+					(summary.reviewReason === "hook" ||
+						summary.reviewReason === "attention" ||
+						summary.reviewReason === "error")
+				) {
+					broadcastTaskReadyForReview(workspaceId, summary.taskId);
+				}
+			});
+			const existingUnsub = cloudChatMessageUnsubscribeByWorkspaceId.get(workspaceId);
+			cloudChatMessageUnsubscribeByWorkspaceId.set(workspaceId, () => {
+				existingUnsub?.();
+				unsubscribeSummary();
+			});
 		},
 		broadcastTaskChatMessage,
 		broadcastTaskChatCleared,

@@ -150,4 +150,104 @@ describe("CloudTaskChatService", () => {
 		expect(messages[0].role).toBe("status");
 		expect(messages[0].content).toContain("futuristic_unknown_event");
 	});
+
+	describe("session summary state transitions (mirrors local Cline awaiting_review flow)", () => {
+		it("flips to awaiting_review with reviewReason: attention when agent calls attempt_completion", () => {
+			const { service } = makeService();
+			const summaries: Array<{ state: string; reviewReason: string | null }> = [];
+			service.onSummary((s) => summaries.push({ state: s.state, reviewReason: s.reviewReason }));
+
+			service.ingestInboundEvent("task-1", {
+				type: "tool_call",
+				payload: { name: "attempt_completion", args: { result: "done" } },
+			});
+
+			expect(summaries).toEqual([{ state: "awaiting_review", reviewReason: "attention" }]);
+		});
+
+		it("flips to awaiting_review with reviewReason: hook when agent calls ask_followup_question", () => {
+			const { service } = makeService();
+			const summaries: Array<{ state: string; reviewReason: string | null }> = [];
+			service.onSummary((s) => summaries.push({ state: s.state, reviewReason: s.reviewReason }));
+
+			service.ingestInboundEvent("task-1", {
+				type: "tool_call",
+				payload: { name: "ask_followup_question", args: { question: "which approach?" } },
+			});
+
+			expect(summaries).toEqual([{ state: "awaiting_review", reviewReason: "hook" }]);
+		});
+
+		it("flips to awaiting_review with reviewReason: hook when agent calls plan_mode_respond", () => {
+			const { service } = makeService();
+			const summaries: Array<{ state: string; reviewReason: string | null }> = [];
+			service.onSummary((s) => summaries.push({ state: s.state, reviewReason: s.reviewReason }));
+
+			service.ingestInboundEvent("task-1", {
+				type: "tool_call",
+				payload: { name: "plan_mode_respond", args: { response: "here's the plan" } },
+			});
+
+			expect(summaries).toEqual([{ state: "awaiting_review", reviewReason: "hook" }]);
+		});
+
+		it("does NOT emit a summary patch for ordinary tool calls (e.g. read_file)", () => {
+			const { service } = makeService();
+			const summaries: Array<{ state: string }> = [];
+			service.onSummary((s) => summaries.push({ state: s.state }));
+
+			service.ingestInboundEvent("task-1", {
+				type: "tool_call",
+				payload: { name: "read_file", args: { path: "README.md" } },
+			});
+
+			expect(summaries).toEqual([]);
+		});
+
+		it("user prompt flips awaiting_review back to running (mirrors canReturnToRunning)", () => {
+			const { service } = makeService();
+			const summaries: Array<{ state: string; reviewReason: string | null }> = [];
+			service.onSummary((s) => summaries.push({ state: s.state, reviewReason: s.reviewReason }));
+
+			service.ingestInboundEvent("task-1", {
+				type: "tool_call",
+				payload: { name: "attempt_completion", args: { result: "done" } },
+			});
+			service.sendUserPrompt("task-1", "actually, also do X");
+
+			expect(summaries).toEqual([
+				{ state: "awaiting_review", reviewReason: "attention" },
+				{ state: "running", reviewReason: null },
+			]);
+		});
+
+		it("turn_canceled flips to awaiting_review with reviewReason: interrupted", () => {
+			const { service } = makeService();
+			const summaries: Array<{ state: string; reviewReason: string | null }> = [];
+			service.onSummary((s) => summaries.push({ state: s.state, reviewReason: s.reviewReason }));
+
+			service.ingestInboundEvent("task-1", { type: "turn_canceled", payload: {} });
+
+			expect(summaries).toEqual([{ state: "awaiting_review", reviewReason: "interrupted" }]);
+		});
+
+		it("redundant summary patches do not fan out duplicate events", () => {
+			const { service } = makeService();
+			const count = { n: 0 };
+			service.onSummary(() => {
+				count.n += 1;
+			});
+
+			service.ingestInboundEvent("task-1", {
+				type: "tool_call",
+				payload: { name: "attempt_completion", args: {} },
+			});
+			service.ingestInboundEvent("task-1", {
+				type: "tool_call",
+				payload: { name: "attempt_completion", args: {} },
+			});
+
+			expect(count.n).toBe(1);
+		});
+	});
 });

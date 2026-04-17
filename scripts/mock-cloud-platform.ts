@@ -273,10 +273,36 @@ server.on("upgrade", (req, socket, head) => {
 					payload: { text: `Mock agent received: ${prompt}` },
 				};
 				ws.send(JSON.stringify(reply));
+				// Lightweight triggers so a human tester can exercise state
+				// transitions in the browser without a real Cline backend:
+				//   "/done"  → emit attempt_completion tool_call (→ awaiting_review, reviewReason: attention)
+				//   "/ask"   → emit ask_followup_question tool_call (→ awaiting_review, reviewReason: hook)
+				// Any other prompt just ends the turn.
+				const lower = prompt.toLowerCase();
 				setTimeout(() => {
-					if (ws.readyState === ws.OPEN) {
-						ws.send(JSON.stringify({ type: "turn_completed", payload: {} }));
+					if (ws.readyState !== ws.OPEN) return;
+					if (lower.includes("/done") || lower.includes("/complete")) {
+						ws.send(
+							JSON.stringify({
+								type: "tool_call",
+								payload: {
+									name: "attempt_completion",
+									args: { result: "Mock task complete." },
+								},
+							}),
+						);
+					} else if (lower.includes("/ask")) {
+						ws.send(
+							JSON.stringify({
+								type: "tool_call",
+								payload: {
+									name: "ask_followup_question",
+									args: { question: "Mock followup: which approach?" },
+								},
+							}),
+						);
 					}
+					ws.send(JSON.stringify({ type: "turn_completed", payload: {} }));
 				}, 50);
 			}
 		});
