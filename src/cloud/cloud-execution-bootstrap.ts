@@ -35,7 +35,7 @@ import { CloudTaskChatService } from "./cloud-task-chat-service";
 const ENV = {
 	CLOUD_PLATFORM_BASE_URL: "KANBAN_CLOUD_PLATFORM_BASE_URL",
 	CLOUD_PLATFORM_API_KEY: "KANBAN_CLOUD_PLATFORM_API_KEY",
-	GITHUB_PAT: "KANBAN_GITHUB_PAT",
+	GITHUB_TOKEN: "KANBAN_GITHUB_TOKEN",
 	POD_SCHEME: "KANBAN_POD_SCHEME",
 	POD_PORT: "KANBAN_POD_PORT",
 	CLOUD_EXECUTION_STORE_PATH: "KANBAN_CLOUD_EXECUTION_STORE_PATH",
@@ -114,7 +114,7 @@ export function bootstrapCloudExecution(
 		new CloudPlatformExecutionHttpClient({
 			baseUrl: cloudBaseUrl,
 			authProvider,
-			githubPat: env[ENV.GITHUB_PAT] ?? "",
+			githubToken: env[ENV.GITHUB_TOKEN] ?? "",
 			fetch: overrides?.fetchFn,
 		});
 

@@ -86,13 +86,16 @@ async function setupHubServer() {
 				currentProjectId: workspaceId,
 				projects: [],
 			}),
-			buildWorkspaceStateSnapshot: async () => ({
+			// Shape is richer than we need — the batching logic doesn't exercise
+			// the snapshot contents. Cast through unknown to satisfy the type.
+			buildWorkspaceStateSnapshot: (async () => ({
+				repoPath: workspacePath,
+				statePath: workspacePath,
+				git: { currentBranch: null, defaultBranch: null, branches: [] },
 				board: { columns: [], dependencies: [] },
-				projectMetadata: null,
-				currentBranch: null,
-				repoRoot: null,
-				headStatus: null,
-			}),
+				sessions: {},
+				revision: 0,
+			})) as unknown as Parameters<typeof createRuntimeStateHub>[0]["workspaceRegistry"]["buildWorkspaceStateSnapshot"],
 		},
 	});
 

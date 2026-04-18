@@ -50,7 +50,7 @@ async function main() {
 	const executionClient = new CloudPlatformExecutionHttpClient({
 		baseUrl: MOCK_URL,
 		authProvider,
-		githubPat: "",
+		githubToken: "",
 		provisionPollingConfig: { pollIntervalMs: 200, timeoutMs: 10_000 },
 	});
 	const runtimeClient = new DefaultCloudRuntimeClient({

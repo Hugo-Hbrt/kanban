@@ -79,7 +79,7 @@ export interface CloudPlatformExecutionClientConfig {
 	readonly baseUrl: string;
 	readonly authProvider: CloudAuthProvider;
 	/** Optional GitHub PAT for private-repo cloning inside the pod (PR #6 contract). */
-	readonly githubPat?: string;
+	readonly githubToken?: string;
 	readonly retryConfigs?: Partial<
 		Record<keyof typeof DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS, Partial<ExecutionClientRetryConfig>>
 	>;
@@ -124,7 +124,7 @@ interface CoreInstanceStatus {
 export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionClient {
 	private readonly baseUrl: string;
 	private readonly authProvider: CloudAuthProvider;
-	private readonly githubPat: string;
+	private readonly githubToken: string;
 	private readonly retryConfigs: Record<
 		keyof typeof DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS,
 		ExecutionClientRetryConfig
@@ -138,7 +138,7 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 	constructor(config: CloudPlatformExecutionClientConfig) {
 		this.baseUrl = config.baseUrl.replace(/\/+$/, "");
 		this.authProvider = config.authProvider;
-		this.githubPat = config.githubPat ?? "";
+		this.githubToken = config.githubToken ?? "";
 		this.fetchFn = config.fetch ?? globalThis.fetch;
 		this.delayFn = config.delay ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
 		this.retryConfigs = {
@@ -177,7 +177,7 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 			instanceType: "acp",
 			requestedRuntime,
 		};
-		if (this.githubPat) provisionBody.githubPat = this.githubPat;
+		if (this.githubToken) provisionBody.githubToken = this.githubToken;
 
 		const provisionResp = await this.executeWithRetry(
 			async (sig) =>
