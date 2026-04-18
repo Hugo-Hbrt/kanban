@@ -172,10 +172,27 @@ export function createRuntimeStateHub(deps: CreateRuntimeStateHubDependencies): 
 	};
 
 	const queueTaskSessionSummaryBroadcast = (workspaceId: string, summary: RuntimeTaskSessionSummary) => {
-		const pending =
+		// Batching coalesces redundant updates within a 150ms window to avoid
+		// UI thrash, but we MUST NOT drop intermediate state transitions. A
+		// common case: awaiting_review/hook → running → awaiting_review/attention
+		// all fire within the batch window (mock/live agents both do this).
+		// If we just overwrite, the UI only sees the final state and never
+		// observes the intermediate "running", which is what drives the
+		// Review → In_Progress auto-move. Flush the batch first so the UI
+		// receives every distinct state transition in order.
+		const pending = pendingTaskSessionSummariesByWorkspaceId.get(workspaceId);
+		const previouslyPending = pending?.get(summary.taskId);
+		if (
+			previouslyPending &&
+			(previouslyPending.state !== summary.state ||
+				previouslyPending.reviewReason !== summary.reviewReason)
+		) {
+			flushTaskSessionSummaries(workspaceId);
+		}
+		const nextPending =
 			pendingTaskSessionSummariesByWorkspaceId.get(workspaceId) ?? new Map<string, RuntimeTaskSessionSummary>();
-		pending.set(summary.taskId, summary);
-		pendingTaskSessionSummariesByWorkspaceId.set(workspaceId, pending);
+		nextPending.set(summary.taskId, summary);
+		pendingTaskSessionSummariesByWorkspaceId.set(workspaceId, nextPending);
 		if (taskSessionBroadcastTimersByWorkspaceId.has(workspaceId)) {
 			return;
 		}
