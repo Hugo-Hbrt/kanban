@@ -2,6 +2,7 @@ import { BrowserWindow, shell } from "electron";
 
 import {
 	type PersistedWindowState,
+	isPersistableRuntimePath,
 	loadAllWindowStates,
 	saveAllWindowStates,
 } from "./window-state.js";
@@ -186,7 +187,18 @@ export class WindowRegistry {
 				const currentUrl = entry.window.webContents.getURL();
 				if (currentUrl) {
 					const parsed = new URL(currentUrl);
-					if (parsed.pathname && parsed.pathname !== "/") {
+					// Only persist pathnames from the http(s) runtime. `file://`
+					// URLs (disconnected.html fallback when the runtime crashes,
+					// or Electron's about:blank) have `pathname`s like
+					// `/Users/.../disconnected.html` that look superficially
+					// valid but, when replayed on next launch, point at a
+					// runtime URL that returns 404 "Not Found" and the user
+					// can't escape without nuking ~/Library/Application
+					// Support/@kanban/desktop/window-states.json.
+					if (
+						(parsed.protocol === "http:" || parsed.protocol === "https:") &&
+						isPersistableRuntimePath(parsed.pathname)
+					) {
 						entry.lastViewedPath = parsed.pathname;
 					}
 				}
@@ -239,7 +251,13 @@ export class WindowRegistry {
 		// projectId is only the *initial* project the window was opened to;
 		// the window is not locked to it, so the user may have navigated
 		// elsewhere before quitting.
-		if (entry.lastViewedPath) {
+		//
+		// Defense in depth: the save-time path already rejects non-http(s)
+		// pathnames, but users upgrading from a build that persisted them
+		// will still have `/Users/.../disconnected.html` in their state
+		// file. Validate here so a one-time-bad state auto-heals on next
+		// launch instead of stranding the user on a "Not Found" screen.
+		if (entry.lastViewedPath && isPersistableRuntimePath(entry.lastViewedPath)) {
 			try {
 				const url = new URL(baseUrl);
 				url.pathname = entry.lastViewedPath;

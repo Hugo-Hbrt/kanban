@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	type PersistedWindowState,
 	type WindowState,
+	isPersistableRuntimePath,
 	loadAllWindowStates,
 	loadWindowState,
 	migrateWindowStateIfNeeded,
@@ -387,3 +388,88 @@ describe("edge cases", () => {
 		expect(loaded[1].x).toBe(100);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// lastViewedPath validation — guards against the "Not Found" footgun where
+// a file:// URL's pathname gets replayed on the runtime origin.
+// ---------------------------------------------------------------------------
+
+describe("isPersistableRuntimePath", () => {
+	it.each([
+		["/my-project", true],
+		["/my-project/tasks/abc-123", true],
+		["/workspace%2Fabc", true],
+		["/a/b/c/d", true],
+	])("accepts legitimate runtime path %s", (input, expected) => {
+		expect(isPersistableRuntimePath(input)).toBe(expected);
+	});
+
+	it.each([
+		// file:// URLs from disconnected.html fallback — the original bug.
+		"/Users/someone/main/kanban-desktop/packages/desktop/out/mac-arm64/Kanban.app/Contents/Resources/app.asar/dist/disconnected.html",
+		"/Users/johnchoi1/Library/whatever.html",
+		"/private/var/folders/x/y/z/Kanban.app/Contents/disconnected.html",
+		"/tmp/disconnected.html",
+		"/home/user/kanban/disconnected.html",
+		"/var/folders/abc/disconnected.html",
+		"/opt/kanban/disconnected.html",
+		"/Applications/Kanban.app/Contents/Resources/disconnected.html",
+		// Windows file URL pathnames.
+		"/C:/Users/someone/disconnected.html",
+		"/D:/temp/file.html",
+		// Any .html pathname — the runtime SPA never exposes those.
+		"/index.html",
+		"/some/deep/page.html",
+		// Degenerate inputs.
+		"/",
+		"",
+		"relative/path",
+	])("rejects %s", (input) => {
+		expect(isPersistableRuntimePath(input)).toBe(false);
+	});
+});
+
+describe("loadAllWindowStates heals stale file:// lastViewedPath", () => {
+	it("drops a disconnected.html lastViewedPath from existing on-disk state", () => {
+		// This mirrors the exact shape written by an older build when the
+		// window had been flipped to the local disconnected.html fallback
+		// and then the app was quit. On the next launch, without this
+		// validation, the window would navigate to
+		// http://127.0.0.1:3484/Users/.../disconnected.html → 404.
+		const raw = [
+			{
+				x: 100,
+				y: 200,
+				width: 1400,
+				height: 900,
+				isMaximized: false,
+				projectId: null,
+				lastViewedPath:
+					"/Users/alice/main/kanban-desktop/packages/desktop/out/mac-arm64/Kanban.app/Contents/Resources/app.asar/dist/disconnected.html",
+			},
+		];
+		writeFileSync(resolveMultiWindowStatePath(tmpDir), JSON.stringify(raw), "utf-8");
+
+		const loaded = loadAllWindowStates(tmpDir);
+		expect(loaded).toHaveLength(1);
+		expect(loaded[0].lastViewedPath).toBeUndefined();
+	});
+
+	it("preserves a legitimate lastViewedPath like /<projectId>", () => {
+		const raw = [
+			{
+				x: 0,
+				y: 0,
+				width: 800,
+				height: 600,
+				isMaximized: false,
+				projectId: "proj-a",
+				lastViewedPath: "/proj-a/tasks/task-1",
+			},
+		];
+		writeFileSync(resolveMultiWindowStatePath(tmpDir), JSON.stringify(raw), "utf-8");
+		const loaded = loadAllWindowStates(tmpDir);
+		expect(loaded[0].lastViewedPath).toBe("/proj-a/tasks/task-1");
+	});
+});
+

@@ -52,6 +52,39 @@ function parseWindowState(parsed: Record<string, unknown>): WindowState | undefi
 	};
 }
 
+/**
+ * Whether a string is a sane `lastViewedPath` value to replay on the next
+ * launch by setting it as the pathname on the runtime origin.
+ *
+ * Must be defended at both save-time (so we don't write bad values) and
+ * load-time (so existing bad values from older builds auto-heal instead
+ * of stranding the user on a 404 "Not Found" screen they can't escape
+ * without deleting `window-states.json`).
+ *
+ * The specific footgun this guards against: `webContents.getURL()` on a
+ * window that was flipped to the local disconnected.html fallback returns
+ * a `file:///Users/.../disconnected.html` URL whose `.pathname` looks
+ * superficially like a normal "/…" pathname, but replaying it against
+ * `http://host:port` gets a 404.
+ *
+ * Rules: the pathname must start with `/`, must not look like an absolute
+ * filesystem path (`/Users/`, `/home/`, `/private/`, `/tmp/`, `/var/`,
+ * `/C:/`, etc.), and must not have a `.html` extension — the runtime's
+ * SPA never exposes `.html` routes to the user.
+ */
+export function isPersistableRuntimePath(pathname: string): boolean {
+	if (typeof pathname !== "string" || !pathname.startsWith("/")) return false;
+	if (pathname === "/") return false;
+	if (pathname.toLowerCase().endsWith(".html")) return false;
+	const absFsPrefixes = ["/Users/", "/home/", "/private/", "/tmp/", "/var/", "/opt/", "/Applications/"];
+	for (const prefix of absFsPrefixes) {
+		if (pathname.startsWith(prefix)) return false;
+	}
+	// Windows file URLs surface as `/C:/…`, `/D:/…`, etc.
+	if (/^\/[A-Za-z]:\//.test(pathname)) return false;
+	return true;
+}
+
 function parsePersistedWindowState(raw: Record<string, unknown>): PersistedWindowState | undefined {
 	const base = parseWindowState(raw);
 	if (!base) return undefined;
@@ -59,11 +92,12 @@ function parsePersistedWindowState(raw: Record<string, unknown>): PersistedWindo
 		...base,
 		projectId: typeof raw.projectId === "string" ? raw.projectId : null,
 	};
-	if (typeof raw.lastViewedPath === "string" && raw.lastViewedPath) {
+	if (typeof raw.lastViewedPath === "string" && isPersistableRuntimePath(raw.lastViewedPath)) {
 		state.lastViewedPath = raw.lastViewedPath;
 	}
 	return state;
 }
+
 
 export function migrateWindowStateIfNeeded(userDataPath: string): boolean {
 	const legacyPath = resolveWindowStatePath(userDataPath);
