@@ -42,14 +42,14 @@ describe("RuntimeOrchestrator attached-runtime crash detection", () => {
 			return healthy
 				? ({ ok: true } as Response)
 				: Promise.reject(new Error("ECONNREFUSED"));
-		}) as unknown as typeof fetch;
+		});
 
 		const orchestrator = new RuntimeOrchestrator({
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
 			resolveCliShimPath: () => "/unused",
-			fetchImpl,
+			fetchImpl: fetchImpl as unknown as typeof fetch,
 			attachedProbeIntervalMs: 100,
 			attachedProbeFailureThreshold: 3,
 		});
@@ -139,16 +139,14 @@ describe("RuntimeOrchestrator attached-runtime crash detection", () => {
 	});
 
 	it("stops probing after dispose()", async () => {
-		const fetchImpl = vi.fn(
-			async () => ({ ok: true }) as Response,
-		) as unknown as typeof fetch;
+		const fetchImpl = vi.fn(async () => ({ ok: true }) as Response);
 
 		const orchestrator = new RuntimeOrchestrator({
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
 			resolveCliShimPath: () => "/unused",
-			fetchImpl,
+			fetchImpl: fetchImpl as unknown as typeof fetch,
 			attachedProbeIntervalMs: 100,
 			attachedProbeFailureThreshold: 2,
 		});
@@ -164,16 +162,14 @@ describe("RuntimeOrchestrator attached-runtime crash detection", () => {
 	});
 
 	it("does not start probing when we own the child (post-restart)", async () => {
-		const fetchImpl = vi.fn(
-			async () => ({ ok: true }) as Response,
-		) as unknown as typeof fetch;
+		const fetchImpl = vi.fn(async () => ({ ok: true }) as Response);
 
 		const orchestrator = new RuntimeOrchestrator({
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
 			resolveCliShimPath: () => "/unused",
-			fetchImpl,
+			fetchImpl: fetchImpl as unknown as typeof fetch,
 			attachedProbeIntervalMs: 100,
 			attachedProbeFailureThreshold: 2,
 		});
