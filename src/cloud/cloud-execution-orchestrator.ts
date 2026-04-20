@@ -859,10 +859,42 @@ export class CloudExecutionOrchestrator {
 						// "In Progress" forever. For true multi-turn chat we
 						// don't want this behavior, so it's gated on an env
 						// flag that defaults to ON (matches the current product).
+						// Order matters: ingest the event into the chat service
+						// FIRST so that any `tool_call` (attempt_completion /
+						// ask_followup_question / plan_mode_respond) earlier in
+						// this turn has already flipped the session summary to
+						// `awaiting_review`. We then consult that summary below
+						// before deciding whether `turn_completed` is actually
+						// a task-end (one-shot flow) or just a pause-for-review
+						// (multi-turn flow where the user is about to reply).
+						if (this.cloudTaskChatService) {
+							try {
+								this.cloudTaskChatService.ingestInboundEvent(taskId, msg);
+							} catch (e) {
+								this.logger.warn("Cloud chat service ingest failed", {
+									taskId,
+									error: e instanceof Error ? e.message : String(e),
+								});
+							}
+						}
 						if (msg.type === "turn_completed" && this.completeOnEndTurn) {
 							const payload = msg.payload as Record<string, unknown> | undefined;
 							const stopReason = typeof payload?.stopReason === "string" ? payload.stopReason : null;
-							if (stopReason === null || stopReason === "end_turn") {
+							const summary = this.cloudTaskChatService?.getSessionSummary(taskId) ?? null;
+							// If the chat service has the task in awaiting_review,
+							// the agent is asking the user for input (attempt_completion,
+							// ask_followup_question, plan_mode_respond). Tearing the
+							// pod down now would strand the user — their next
+							// comment would arrive at a dead WebSocket and surface
+							// as "no cloud agent". Keep the pod alive; it will be
+							// reclaimed later by explicit user completion, card
+							// trash/archive, or the idle-teardown path.
+							if (summary?.state === "awaiting_review") {
+								this.logger.info(
+									"ACP turn_completed → keeping pod alive (task awaits user review)",
+									{ taskId, stopReason, reviewReason: summary.reviewReason },
+								);
+							} else if (stopReason === null || stopReason === "end_turn") {
 								ctx.wsTerminalStatus = {
 									status: "succeeded",
 									result: { stopReason },
@@ -876,16 +908,6 @@ export class CloudExecutionOrchestrator {
 								} catch {
 									/* best-effort */
 								}
-							}
-						}
-						if (this.cloudTaskChatService) {
-							try {
-								this.cloudTaskChatService.ingestInboundEvent(taskId, msg);
-							} catch (e) {
-								this.logger.warn("Cloud chat service ingest failed", {
-									taskId,
-									error: e instanceof Error ? e.message : String(e),
-								});
 							}
 						}
 					},

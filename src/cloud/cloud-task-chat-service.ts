@@ -114,6 +114,16 @@ export class CloudTaskChatService {
 		return this.ensureTask(taskId).messages.slice();
 	}
 
+	// Returns a snapshot of the task's current session summary, or `null` if
+	// this service has never seen the task. Used by the orchestrator to decide
+	// whether a `turn_completed` event should finalize the task as succeeded
+	// (one-shot flow) or keep the pod alive (multi-turn flow where the user
+	// is about to send a follow-up after review).
+	getSessionSummary(taskId: string): RuntimeTaskSessionSummary | null {
+		const state = this.tasks.get(taskId);
+		return state ? { ...state.summary } : null;
+	}
+
 	clearTask(taskId: string): void {
 		this.tasks.delete(taskId);
 	}

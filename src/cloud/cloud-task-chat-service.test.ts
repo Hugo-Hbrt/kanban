@@ -292,6 +292,42 @@ describe("CloudTaskChatService", () => {
 			]);
 		});
 
+		it("getSessionSummary reflects awaiting_review after attempt_completion (used by orchestrator to keep pods alive)", () => {
+			const { service } = makeService();
+
+			expect(service.getSessionSummary("task-1")).toBeNull();
+
+			service.ingestInboundEvent("task-1", {
+				type: "tool_call",
+				payload: { name: "attempt_completion", args: { result: "done" } },
+			});
+
+			const summary = service.getSessionSummary("task-1");
+			expect(summary).not.toBeNull();
+			expect(summary?.state).toBe("awaiting_review");
+			expect(summary?.reviewReason).toBe("attention");
+
+			// After a user follow-up, the orchestrator must see "running"
+			// again so subsequent turn_completed events are free to
+			// finalize the task.
+			service.sendUserPrompt("task-1", "actually, also do X");
+			expect(service.getSessionSummary("task-1")?.state).toBe("running");
+		});
+
+		it("getSessionSummary returns an isolated snapshot (mutations don't leak into internal state)", () => {
+			const { service } = makeService();
+			service.ingestInboundEvent("task-1", {
+				type: "tool_call",
+				payload: { name: "attempt_completion", args: {} },
+			});
+			const snap = service.getSessionSummary("task-1");
+			expect(snap).not.toBeNull();
+			// Mutate the snapshot
+			(snap as { state: string }).state = "running";
+			// Internal state is unaffected
+			expect(service.getSessionSummary("task-1")?.state).toBe("awaiting_review");
+		});
+
 		it("redundant summary patches do not fan out duplicate events", () => {
 			const { service } = makeService();
 			const count = { n: 0 };
