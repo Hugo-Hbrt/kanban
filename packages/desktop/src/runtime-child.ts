@@ -20,9 +20,6 @@ import path from "node:path";
 import { buildFilteredEnv } from "./runtime-child-env.js";
 import type { RuntimeChildConfig } from "./runtime-child-config.js";
 
-// Re-export for callers that import both the manager and the env helper.
-export { buildFilteredEnv } from "./runtime-child-env.js";
-
 export interface RuntimeChildManagerEvents {
 	ready: (url: string) => void;
 	error: (message: string) => void;
