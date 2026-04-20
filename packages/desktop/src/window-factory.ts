@@ -89,8 +89,8 @@ export class WindowFactory {
 
 	private attachRendererRecovery(window: BrowserWindow): void {
 		// Distinguish renderer-local failures (retryable) from runtime
-		// unreachability (disconnected screen). Probe /api/health before
-		// deciding how to recover.
+		// unreachability (disconnected screen). Probe the runtime origin
+		// via checkHealth() before deciding how to recover.
 		window.webContents.on(
 			"did-fail-load",
 			(_event, errorCode, errorDescription, _validatedURL, isMainFrame) => {

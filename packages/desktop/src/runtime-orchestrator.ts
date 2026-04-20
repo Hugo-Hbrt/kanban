@@ -64,7 +64,13 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 		return `http://${this.opts.host}:${this.opts.port}`;
 	}
 
-	/** Probes an origin's /api/health endpoint. */
+	/**
+	 * Probes an origin to detect whether a Kanban runtime is listening.
+	 *
+	 * Uses `/` instead of `/api/health` because the CLI runtime doesn't
+	 * implement `/api/health` — it only serves the web UI at `/`. A 2xx
+	 * response from `/` is sufficient proof that a runtime is reachable.
+	 */
 	async checkHealth(origin: string): Promise<boolean> {
 		const fetchFn = this.opts.fetchImpl ?? globalThis.fetch;
 		try {
@@ -73,7 +79,7 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 				() => controller.abort(),
 				this.opts.healthTimeoutMs,
 			);
-			const res = await fetchFn(`${origin}/api/health`, {
+			const res = await fetchFn(`${origin}/`, {
 				signal: controller.signal,
 			});
 			clearTimeout(timer);
