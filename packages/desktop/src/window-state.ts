@@ -85,6 +85,32 @@ export function isPersistableRuntimePath(pathname: string): boolean {
 	return true;
 }
 
+/**
+ * Extracts the pathname from a runtime URL if it's safe to persist or replay.
+ *
+ * Returns null unless the input is a real http(s) URL whose pathname passes
+ * {@link isPersistableRuntimePath}. Used by:
+ *   - window-registry's state-save path, to skip disconnected.html / file://
+ *     URLs that look valid but 404 when replayed against the runtime origin.
+ *   - app-menu's File → New Window handler, to inherit the source window's
+ *     path when it's safe to replay.
+ */
+export function extractPersistablePath(
+	currentUrl: string | undefined | null,
+): string | null {
+	if (!currentUrl) return null;
+	try {
+		const url = new URL(currentUrl);
+		const isHttp = url.protocol === "http:" || url.protocol === "https:";
+		if (isHttp && isPersistableRuntimePath(url.pathname)) {
+			return url.pathname;
+		}
+	} catch {
+		// Malformed URL — fall through to null.
+	}
+	return null;
+}
+
 function parsePersistedWindowState(raw: Record<string, unknown>): PersistedWindowState | undefined {
 	const base = parseWindowState(raw);
 	if (!base) return undefined;
@@ -141,29 +167,6 @@ export function saveAllWindowStates(userDataPath: string, states: PersistedWindo
 	try {
 		const filePath = resolveMultiWindowStatePath(userDataPath);
 		writeFileSync(filePath, JSON.stringify(states, null, "\t"), "utf-8");
-	} catch {
-		// Best-effort — don't crash if userData is read-only.
-	}
-}
-
-/** @deprecated Use {@link loadAllWindowStates} instead. */
-export function loadWindowState(userDataPath: string): WindowState | undefined {
-	try {
-		const filePath = resolveWindowStatePath(userDataPath);
-		if (!existsSync(filePath)) return undefined;
-		const raw = readFileSync(filePath, "utf-8");
-		const parsed = JSON.parse(raw) as Record<string, unknown>;
-		return parseWindowState(parsed);
-	} catch {
-		return undefined;
-	}
-}
-
-/** @deprecated Use {@link saveAllWindowStates} instead. */
-export function saveWindowState(userDataPath: string, state: WindowState): void {
-	try {
-		const filePath = resolveWindowStatePath(userDataPath);
-		writeFileSync(filePath, JSON.stringify(state, null, "\t"), "utf-8");
 	} catch {
 		// Best-effort — don't crash if userData is read-only.
 	}

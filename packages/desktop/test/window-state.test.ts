@@ -5,14 +5,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	type PersistedWindowState,
 	type WindowState,
+	extractPersistablePath,
 	isPersistableRuntimePath,
 	loadAllWindowStates,
-	loadWindowState,
 	migrateWindowStateIfNeeded,
 	resolveMultiWindowStatePath,
 	resolveWindowStatePath,
 	saveAllWindowStates,
-	saveWindowState,
 } from "../src/window-state.js";
 
 // ---------------------------------------------------------------------------
@@ -68,36 +67,6 @@ beforeEach(() => {
 
 afterEach(() => {
 	rmSync(tmpDir, { recursive: true, force: true });
-});
-
-// ---------------------------------------------------------------------------
-// Legacy API (deprecated — backward compat)
-// ---------------------------------------------------------------------------
-
-describe("loadWindowState (legacy)", () => {
-	it("returns undefined when no file exists", () => {
-		expect(loadWindowState(tmpDir)).toBeUndefined();
-	});
-
-	it("round-trips through saveWindowState", () => {
-		saveWindowState(tmpDir, SAMPLE_LEGACY_STATE);
-		const loaded = loadWindowState(tmpDir);
-		expect(loaded).toEqual(SAMPLE_LEGACY_STATE);
-	});
-
-	it("returns undefined for corrupt JSON", () => {
-		writeFileSync(resolveWindowStatePath(tmpDir), "not json", "utf-8");
-		expect(loadWindowState(tmpDir)).toBeUndefined();
-	});
-
-	it("returns undefined for JSON with missing required fields", () => {
-		writeFileSync(
-			resolveWindowStatePath(tmpDir),
-			JSON.stringify({ x: 0, y: 0 }),
-			"utf-8",
-		);
-		expect(loadWindowState(tmpDir)).toBeUndefined();
-	});
 });
 
 // ---------------------------------------------------------------------------
@@ -470,6 +439,107 @@ describe("loadAllWindowStates heals stale file:// lastViewedPath", () => {
 		writeFileSync(resolveMultiWindowStatePath(tmpDir), JSON.stringify(raw), "utf-8");
 		const loaded = loadAllWindowStates(tmpDir);
 		expect(loaded[0].lastViewedPath).toBe("/proj-a/tasks/task-1");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// extractPersistablePath — URL-to-pathname helper shared by window-registry's
+// state-save path and app-menu's File → New Window handler.
+//
+// The key defensive case: when a window shows the local `disconnected.html`
+// fallback, its URL is a `file://` URL whose pathname looks like
+// `/Users/.../disconnected.html`. Replaying that pathname against the
+// runtime origin would strand the window on a 404.
+// ---------------------------------------------------------------------------
+
+describe("extractPersistablePath", () => {
+	// ── Happy path ────────────────────────────────────────────────────
+
+	it("returns the pathname for a normal http runtime URL", () => {
+		expect(extractPersistablePath("http://127.0.0.1:3484/my-project")).toBe(
+			"/my-project",
+		);
+	});
+
+	it("returns the pathname for a normal https runtime URL", () => {
+		expect(extractPersistablePath("https://example.com/project/task-42")).toBe(
+			"/project/task-42",
+		);
+	});
+
+	it("preserves multi-segment pathnames", () => {
+		expect(
+			extractPersistablePath("http://localhost:3484/team/alpha/task/123"),
+		).toBe("/team/alpha/task/123");
+	});
+
+	// ── Guards against the disconnected.html footgun ──────────────────
+
+	it("returns null for a file:// URL pointing at a disconnected.html fallback", () => {
+		const url =
+			"file:///Users/dev/Library/Application%20Support/Kanban/disconnected.html";
+		expect(extractPersistablePath(url)).toBeNull();
+	});
+
+	it("returns null for a file:// URL pointing at a /home/ path (Linux)", () => {
+		const url = "file:///home/dev/.config/Kanban/disconnected.html";
+		expect(extractPersistablePath(url)).toBeNull();
+	});
+
+	it("returns null for any file:// URL regardless of path", () => {
+		expect(extractPersistablePath("file:///tmp/something")).toBeNull();
+	});
+
+	// ── Other defensive cases ─────────────────────────────────────────
+
+	it("returns null for the root pathname (no useful route to inherit)", () => {
+		expect(extractPersistablePath("http://127.0.0.1:3484/")).toBeNull();
+	});
+
+	it("returns null for about:blank", () => {
+		expect(extractPersistablePath("about:blank")).toBeNull();
+	});
+
+	it("returns null for a pathname ending in .html", () => {
+		expect(
+			extractPersistablePath("http://127.0.0.1:3484/foo.html"),
+		).toBeNull();
+	});
+
+	it("returns null for a Windows-style file URL (/C:/…)", () => {
+		expect(
+			extractPersistablePath("http://127.0.0.1:3484/C:/Users/dev/app"),
+		).toBeNull();
+	});
+
+	it("returns null for a malformed URL", () => {
+		expect(extractPersistablePath("not a url")).toBeNull();
+	});
+
+	it("returns null for undefined input", () => {
+		expect(extractPersistablePath(undefined)).toBeNull();
+	});
+
+	it("returns null for null input", () => {
+		expect(extractPersistablePath(null)).toBeNull();
+	});
+
+	it("returns null for empty string input", () => {
+		expect(extractPersistablePath("")).toBeNull();
+	});
+
+	// ── Query strings and fragments are ignored (not part of pathname) ──
+
+	it("strips query strings (not part of the pathname)", () => {
+		expect(
+			extractPersistablePath("http://127.0.0.1:3484/project?foo=bar"),
+		).toBe("/project");
+	});
+
+	it("strips fragments (not part of the pathname)", () => {
+		expect(extractPersistablePath("http://127.0.0.1:3484/project#top")).toBe(
+			"/project",
+		);
 	});
 });
 
