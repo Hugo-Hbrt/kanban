@@ -2,6 +2,7 @@ import { BrowserWindow, shell } from "electron";
 
 import {
 	type PersistedWindowState,
+	extractPersistablePath,
 	isPersistableRuntimePath,
 	loadAllWindowStates,
 	saveAllWindowStates,
@@ -139,10 +140,6 @@ export class WindowRegistry {
 		return this.getVisible().length;
 	}
 
-	getById(windowId: number): WindowEntry | undefined {
-		return this.windows.get(windowId);
-	}
-
 	getFocused(): BrowserWindow | null {
 		const focused = BrowserWindow.getFocusedWindow();
 		if (focused && this.windows.has(focused.id)) {
@@ -166,14 +163,6 @@ export class WindowRegistry {
 		return null;
 	}
 
-	setWindowTitle(windowId: number, projectName: string | null): void {
-		const entry = this.windows.get(windowId);
-		if (!entry || entry.window.isDestroyed()) return;
-		entry.window.setTitle(
-			projectName ? `Kanban — ${projectName}` : "Kanban",
-		);
-	}
-
 	saveAllStates(userDataPath: string): void {
 		const states: PersistedWindowState[] = [];
 		for (const entry of this.windows.values()) {
@@ -183,28 +172,13 @@ export class WindowRegistry {
 				? entry.window.getNormalBounds()
 				: entry.window.getBounds();
 
-			try {
-				const currentUrl = entry.window.webContents.getURL();
-				if (currentUrl) {
-					const parsed = new URL(currentUrl);
-					// Only persist pathnames from the http(s) runtime. `file://`
-					// URLs (disconnected.html fallback when the runtime crashes,
-					// or Electron's about:blank) have `pathname`s like
-					// `/Users/.../disconnected.html` that look superficially
-					// valid but, when replayed on next launch, point at a
-					// runtime URL that returns 404 "Not Found" and the user
-					// can't escape without nuking ~/Library/Application
-					// Support/@kanban/desktop/window-states.json.
-					if (
-						(parsed.protocol === "http:" || parsed.protocol === "https:") &&
-						isPersistableRuntimePath(parsed.pathname)
-					) {
-						entry.lastViewedPath = parsed.pathname;
-					}
-				}
-			} catch {
-				// Best effort — getURL can fail if webContents is gone.
-			}
+			// Only persist runtime http(s) pathnames — skip disconnected.html
+			// and other non-runtime URLs that would 404 on replay. See
+			// extractPersistablePath for the full set of rejection rules.
+			const persistable = extractPersistablePath(
+				entry.window.webContents.getURL(),
+			);
+			if (persistable) entry.lastViewedPath = persistable;
 
 			states.push({
 				x: bounds.x,
@@ -237,13 +211,6 @@ export class WindowRegistry {
 		const url = new URL(baseUrl);
 		url.pathname = `/${encodeURIComponent(projectId)}`;
 		return url.toString();
-	}
-
-	async loadUrlInWindow(windowId: number, baseUrl: string): Promise<void> {
-		const entry = this.windows.get(windowId);
-		if (!entry || entry.window.isDestroyed()) return;
-		const url = WindowRegistry.buildWindowUrl(baseUrl, entry.projectId);
-		await entry.window.loadURL(url);
 	}
 
 	private buildEntryUrl(baseUrl: string, entry: WindowEntry): string {
