@@ -11,6 +11,7 @@ import { Menu, app, shell } from "electron";
 
 import type { RuntimeOrchestrator } from "./runtime-orchestrator.js";
 import type { WindowRegistry } from "./window-registry.js";
+import { isPersistableRuntimePath } from "./window-state.js";
 
 export interface AppMenuOptions {
 	registry: WindowRegistry;
@@ -21,6 +22,35 @@ export interface AppMenuOptions {
 	 * same route.
 	 */
 	onNewWindow: (options: { initialPath: string | null }) => void;
+}
+
+/**
+ * Resolves the pathname a new window should inherit from the currently
+ * focused window.
+ *
+ * Only inherits the path when the focused window is actually on a runtime
+ * page. If the user is currently looking at the `disconnected.html`
+ * fallback (a `file://` URL), its pathname looks superficially like a
+ * runtime route (e.g. `/Users/.../disconnected.html`) — replaying that
+ * against the runtime origin would strand the new window on a 404.
+ *
+ * Guards with the same rules we use for persistence.
+ *
+ * Exported so the logic can be unit-tested without mocking Electron's
+ * `Menu`/`BrowserWindow` surface.
+ */
+export function resolveInheritedPath(currentUrl: string | undefined | null): string | null {
+	if (!currentUrl) return null;
+	try {
+		const url = new URL(currentUrl);
+		const isHttp = url.protocol === "http:" || url.protocol === "https:";
+		if (isHttp && isPersistableRuntimePath(url.pathname)) {
+			return url.pathname;
+		}
+	} catch {
+		// Malformed URL — fall through to null.
+	}
+	return null;
 }
 
 export class AppMenu {
@@ -159,17 +189,10 @@ export class AppMenu {
 
 	private handleNewWindow(): void {
 		const focused = this.opts.registry.getFocused();
-		let initialPath: string | null = null;
-		if (focused && !focused.isDestroyed()) {
-			try {
-				const url = new URL(focused.webContents.getURL());
-				if (url.pathname && url.pathname !== "/") {
-					initialPath = url.pathname;
-				}
-			} catch {
-				// best effort — fall through with null
-			}
-		}
-		this.opts.onNewWindow({ initialPath });
+		const currentUrl =
+			focused && !focused.isDestroyed()
+				? focused.webContents.getURL()
+				: null;
+		this.opts.onNewWindow({ initialPath: resolveInheritedPath(currentUrl) });
 	}
 }
