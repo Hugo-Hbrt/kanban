@@ -18,7 +18,14 @@ import http from "node:http";
 import path from "node:path";
 
 import { buildFilteredEnv } from "./runtime-child-env.js";
-import type { RuntimeChildConfig } from "./runtime-child-config.js";
+
+/** Configuration passed to the CLI subprocess. */
+export interface RuntimeChildConfig {
+	/** Host the runtime HTTP server binds to. */
+	host: string;
+	/** Port the runtime HTTP server binds to. */
+	port: number;
+}
 
 export interface RuntimeChildManagerEvents {
 	ready: (url: string) => void;
@@ -221,8 +228,9 @@ export class RuntimeChildManager extends EventEmitter {
 
 		const env = buildFilteredEnv();
 		env.KANBAN_DESKTOP = "1";
-		const existingNodeOpts = env.NODE_OPTIONS ?? "";
-		env.NODE_OPTIONS = `${existingNodeOpts} --max-old-space-size=${this.opts.maxOldSpaceMb}`.trim();
+		// `buildFilteredEnv()` does not forward NODE_OPTIONS (not in the
+		// allowlist), so we just set ours — no existing-value merge needed.
+		env.NODE_OPTIONS = `--max-old-space-size=${this.opts.maxOldSpaceMb}`;
 
 		const args = ["--no-open", "--port", String(config.port), "--host", config.host];
 

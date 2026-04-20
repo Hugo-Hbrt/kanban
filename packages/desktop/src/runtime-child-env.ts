@@ -80,8 +80,13 @@ function getWindowsExtraPathDirs(): string[] {
 	const programFiles = process.env.ProgramFiles;
 	const programFilesX86 = process.env["ProgramFiles(x86)"];
 	if (appData) dirs.push(join(appData, "npm")); // npm global
-	if (localAppData) dirs.push(join(localAppData, "Programs", "nodejs"));
-	if (localAppData) dirs.push(join(localAppData, "Microsoft", "WinGet", "Packages"));
+	if (localAppData) {
+		dirs.push(join(localAppData, "Programs", "nodejs"));
+		// WinGet places shim executables in `…\WinGet\Links\` (not
+		// `…\WinGet\Packages\`, which holds install directories that
+		// aren't directly on PATH).
+		dirs.push(join(localAppData, "Microsoft", "WinGet", "Links"));
+	}
 	if (programFiles) dirs.push(join(programFiles, "Git", "cmd"));
 	if (programFilesX86) dirs.push(join(programFilesX86, "Git", "cmd"));
 	return dirs;

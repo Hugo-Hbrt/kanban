@@ -11,7 +11,6 @@ import { runDesktopPreflight } from "../src/desktop-preflight.js";
 
 let tempDir: string;
 let preloadPath: string;
-let cliBinaryRawPath: string;
 let cliShimPath: string;
 
 beforeAll(() => {
@@ -20,10 +19,6 @@ beforeAll(() => {
 
 	preloadPath = path.join(tempDir, "preload.js");
 	writeFileSync(preloadPath, "// preload stub", "utf-8");
-
-	// resolveCliPath leaves paths without app.asar unchanged.
-	cliBinaryRawPath = path.join(tempDir, "kanban-cli");
-	writeFileSync(cliBinaryRawPath, "#!/bin/sh\nexit 0", { mode: 0o755 });
 
 	cliShimPath = path.join(tempDir, "kanban");
 	writeFileSync(cliShimPath, "#!/bin/sh\nexit 0", { mode: 0o755 });
@@ -43,7 +38,6 @@ describe("runDesktopPreflight", () => {
 	it("reports ok when all resources exist", () => {
 		const result = runDesktopPreflight({
 			preloadPath,
-			cliBinaryPath: cliBinaryRawPath,
 			cliShimPath,
 			isPackaged: false,
 		});
@@ -52,7 +46,6 @@ describe("runDesktopPreflight", () => {
 		expect(result.failures).toHaveLength(0);
 		expect(result.resources).toEqual({
 			preloadExists: true,
-			cliBinaryExists: true,
 			cliShimExists: true,
 			nodePtyLoadable: null,
 		});
@@ -61,7 +54,6 @@ describe("runDesktopPreflight", () => {
 	it("reports PRELOAD_MISSING when preload does not exist", () => {
 		const result = runDesktopPreflight({
 			preloadPath: path.join(tempDir, "nonexistent-preload.js"),
-			cliBinaryPath: cliBinaryRawPath,
 			cliShimPath,
 			isPackaged: false,
 		});
@@ -71,54 +63,12 @@ describe("runDesktopPreflight", () => {
 		expect(result.failures[0].code).toBe("PRELOAD_MISSING");
 		expect(result.failures[0].message).toContain("nonexistent-preload.js");
 		expect(result.resources.preloadExists).toBe(false);
-		expect(result.resources.cliBinaryExists).toBe(true);
 		expect(result.resources.cliShimExists).toBe(true);
-	});
-
-	it("reports CLI_BINARY_MISSING when CLI binary does not exist", () => {
-		const result = runDesktopPreflight({
-			preloadPath,
-			cliBinaryPath: path.join(tempDir, "nonexistent-cli"),
-			cliShimPath,
-			isPackaged: false,
-		});
-
-		expect(result.ok).toBe(false);
-		expect(result.failures).toHaveLength(1);
-		expect(result.failures[0].code).toBe("CLI_BINARY_MISSING");
-		expect(result.failures[0].message).toContain("nonexistent-cli");
-		expect(result.resources.cliBinaryExists).toBe(false);
-	});
-
-	it("reports CLI_BINARY_MISSING for asar path that resolves to nonexistent unpacked location", () => {
-		const asarDir = path.join(tempDir, "app.asar");
-		mkdirSync(asarDir, { recursive: true });
-		const rawCliPath = path.join(asarDir, "bin", "kanban");
-		mkdirSync(path.dirname(rawCliPath), { recursive: true });
-		writeFileSync(rawCliPath, "#!/bin/sh\nexit 0", { mode: 0o755 });
-
-		const result = runDesktopPreflight({
-			preloadPath,
-			cliBinaryPath: rawCliPath,
-			cliShimPath,
-			isPackaged: true,
-		});
-
-		expect(result.ok).toBe(false);
-		expect(result.failures).toHaveLength(1);
-		expect(result.failures[0].code).toBe("CLI_BINARY_MISSING");
-		expect(result.failures[0].message).toContain("app.asar.unpacked");
-		expect(result.failures[0].details?.rawPath).toBe(rawCliPath);
-		expect(result.failures[0].details?.resolvedPath).toContain("app.asar.unpacked");
-		expect(result.resources.cliBinaryExists).toBe(false);
-
-		rmSync(asarDir, { recursive: true, force: true });
 	});
 
 	it("reports CLI_SHIM_MISSING when CLI shim does not exist", () => {
 		const result = runDesktopPreflight({
 			preloadPath,
-			cliBinaryPath: cliBinaryRawPath,
 			cliShimPath: path.join(tempDir, "nonexistent-kanban"),
 			isPackaged: false,
 		});
@@ -133,28 +83,24 @@ describe("runDesktopPreflight", () => {
 	it("reports multiple failures when several resources are missing", () => {
 		const result = runDesktopPreflight({
 			preloadPath: path.join(tempDir, "nope-preload.js"),
-			cliBinaryPath: path.join(tempDir, "nope-cli"),
 			cliShimPath: path.join(tempDir, "nope-kanban"),
 			isPackaged: false,
 		});
 
 		expect(result.ok).toBe(false);
-		expect(result.failures).toHaveLength(3);
+		expect(result.failures).toHaveLength(2);
 
 		const codes = result.failures.map((f) => f.code);
 		expect(codes).toContain("PRELOAD_MISSING");
-		expect(codes).toContain("CLI_BINARY_MISSING");
 		expect(codes).toContain("CLI_SHIM_MISSING");
 
 		expect(result.resources.preloadExists).toBe(false);
-		expect(result.resources.cliBinaryExists).toBe(false);
 		expect(result.resources.cliShimExists).toBe(false);
 	});
 
 	it("sets nodePtyLoadable to null when checkNodePty is omitted", () => {
 		const result = runDesktopPreflight({
 			preloadPath,
-			cliBinaryPath: cliBinaryRawPath,
 			cliShimPath,
 			isPackaged: false,
 		});
@@ -165,7 +111,6 @@ describe("runDesktopPreflight", () => {
 	it("sets nodePtyLoadable to null when checkNodePty is false", () => {
 		const result = runDesktopPreflight({
 			preloadPath,
-			cliBinaryPath: cliBinaryRawPath,
 			cliShimPath,
 			isPackaged: false,
 			checkNodePty: false,
@@ -177,7 +122,6 @@ describe("runDesktopPreflight", () => {
 	it("checks node-pty when checkNodePty is true", () => {
 		const result = runDesktopPreflight({
 			preloadPath,
-			cliBinaryPath: cliBinaryRawPath,
 			cliShimPath,
 			isPackaged: false,
 			checkNodePty: true,
@@ -191,7 +135,6 @@ describe("runDesktopPreflight", () => {
 	it("classifies missing node-pty as a warning, not a hard failure", () => {
 		const result = runDesktopPreflight({
 			preloadPath,
-			cliBinaryPath: cliBinaryRawPath,
 			cliShimPath,
 			isPackaged: false,
 			checkNodePty: true,
@@ -220,7 +163,6 @@ describe("runDesktopPreflight", () => {
 		const missingPreload = path.join(tempDir, "gone-preload.js");
 		const result = runDesktopPreflight({
 			preloadPath: missingPreload,
-			cliBinaryPath: cliBinaryRawPath,
 			cliShimPath,
 			isPackaged: true,
 		});

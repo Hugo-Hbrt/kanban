@@ -227,7 +227,6 @@ function wireAppLifecycle(): void {
 		const cliShimPath = resolveCliShimPath();
 		const preflight = runDesktopPreflight({
 			preloadPath,
-			cliBinaryPath: cliShimPath,
 			cliShimPath,
 			isPackaged: app.isPackaged,
 		});

@@ -9,18 +9,12 @@
 
 import { existsSync } from "node:fs";
 
-import { resolveCliPath } from "./runtime-child.js";
-
 // ---------------------------------------------------------------------------
 // Public interfaces
 // ---------------------------------------------------------------------------
 
 export interface DesktopPreflightFailure {
-	code:
-		| "PRELOAD_MISSING"
-		| "CLI_BINARY_MISSING"
-		| "CLI_SHIM_MISSING"
-		| "NODE_PTY_UNAVAILABLE";
+	code: "PRELOAD_MISSING" | "CLI_SHIM_MISSING" | "NODE_PTY_UNAVAILABLE";
 	message: string;
 	details?: Record<string, string | boolean | null>;
 }
@@ -28,9 +22,13 @@ export interface DesktopPreflightFailure {
 export interface DesktopPreflightOptions {
 	/** Absolute path to preload.js. */
 	preloadPath: string;
-	/** Path to the Kanban CLI binary BEFORE asar resolution. */
-	cliBinaryPath: string;
-	/** Resolved CLI shim path. */
+	/**
+	 * Path to the Kanban CLI shim script that the runtime manager will spawn.
+	 * In our packaging, this is `Resources/bin/kanban{,.cmd}` — a shell
+	 * script that lives OUTSIDE the asar bundle and execs node against the
+	 * asar-unpacked `cli/cli.js`. Preflight only needs to verify that this
+	 * entry point exists; the shim itself validates the interior binary.
+	 */
 	cliShimPath: string;
 	/** Whether the app is running in a packaged build. */
 	isPackaged: boolean;
@@ -51,7 +49,6 @@ export interface DesktopPreflightResult {
 	warnings: DesktopPreflightFailure[];
 	resources: {
 		preloadExists: boolean;
-		cliBinaryExists: boolean;
 		cliShimExists: boolean;
 		nodePtyLoadable: boolean | null;
 	};
@@ -82,23 +79,7 @@ export function runDesktopPreflight(
 		});
 	}
 
-	// 2. CLI binary — resolve through the same asar-unpacked logic
-	//    that RuntimeChildManager uses at spawn() time.
-	const resolvedCliPath = resolveCliPath(opts.cliBinaryPath);
-	const cliBinaryExists = existsSync(resolvedCliPath);
-	if (!cliBinaryExists) {
-		failures.push({
-			code: "CLI_BINARY_MISSING",
-			message: `CLI binary not found at resolved path: ${resolvedCliPath}`,
-			details: {
-				rawPath: opts.cliBinaryPath,
-				resolvedPath: resolvedCliPath,
-				isPackaged: opts.isPackaged,
-			},
-		});
-	}
-
-	// 3. CLI shim
+	// 2. CLI shim — the spawn entry point (RuntimeChildManager invokes this).
 	const cliShimExists = existsSync(opts.cliShimPath);
 	if (!cliShimExists) {
 		failures.push({
@@ -108,7 +89,7 @@ export function runDesktopPreflight(
 		});
 	}
 
-	// 4. node-pty (optional, warning only). Actually `require()` the module
+	// 3. node-pty (optional, warning only). Actually `require()` the module
 	//    rather than `require.resolve()` — we specifically want to verify
 	//    the native binding loads against the current Electron ABI, not just
 	//    that the package exists on disk.
@@ -135,7 +116,6 @@ export function runDesktopPreflight(
 		warnings,
 		resources: {
 			preloadExists,
-			cliBinaryExists,
 			cliShimExists,
 			nodePtyLoadable,
 		},
