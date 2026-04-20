@@ -130,4 +130,109 @@ describe("CLI shim (packaging level)", () => {
 			}
 		});
 	});
+
+	// ── Shell-shim edge cases (bash-only) ────────────────────────────────
+	// These are the classic failure modes for bundled CLI shims:
+	//   * exit code not propagated → CI green but tool silently failed
+	//   * spaces in the install path → `exec node $CLI_ENTRY` breaks
+	//   * args with spaces / special chars lost by the shim's forwarding
+	// The `exec node "$CLI_ENTRY" "$@"` + `$(cd "$(dirname "$0")" && pwd)`
+	// pattern in build/bin/kanban is correct for all three, but history
+	// has shown these regress silently whenever the shim is touched, so
+	// we exercise them end-to-end.
+	describe("shim shell semantics (macOS/Linux)", () => {
+		/**
+		 * Build an isolated fake Resources/ layout with a custom CLI body
+		 * and return the shim path. Each caller is responsible for cleanup.
+		 */
+		function buildFakeLayout(opts: {
+			cliBody: string;
+			resourcesDirName?: string;
+		}): { resourcesDir: string; shimPath: string } {
+			const name = opts.resourcesDirName ?? `kanban-shim-edge-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+			const resourcesDir = path.join(tmpdir(), name);
+			const binDir = path.join(resourcesDir, "bin");
+			const cliDir = path.join(resourcesDir, "app.asar.unpacked", "cli");
+			mkdirSync(binDir, { recursive: true });
+			mkdirSync(cliDir, { recursive: true });
+
+			writeFileSync(path.join(cliDir, "cli.js"), opts.cliBody, "utf-8");
+
+			const realShimContent = readFileSync(
+				path.join(BUILD_BIN_DIR, "kanban"),
+				"utf-8",
+			);
+			const shimPath = path.join(binDir, "kanban");
+			writeFileSync(shimPath, realShimContent, { mode: 0o755 });
+
+			return { resourcesDir, shimPath };
+		}
+
+		it("propagates the CLI's non-zero exit code to the caller", () => {
+			if (process.platform === "win32") return;
+
+			const { resourcesDir, shimPath } = buildFakeLayout({
+				cliBody: `process.exit(42);`,
+			});
+			try {
+				execFileSync(shimPath, [], { encoding: "utf-8", timeout: 5_000 });
+				expect.unreachable("Shim should have exited with the CLI's status");
+			} catch (error: unknown) {
+				// The `exec` builtin replaces the shell process with node, so
+				// node's exit status becomes the shim's exit status directly.
+				expect((error as { status?: number }).status).toBe(42);
+			} finally {
+				rmSync(resourcesDir, { recursive: true, force: true });
+			}
+		});
+
+		it("works when the install path contains spaces", () => {
+			if (process.platform === "win32") return;
+
+			const { resourcesDir, shimPath } = buildFakeLayout({
+				// Echo the script dir so we can sanity-check it really did
+				// contain a space — not just accidentally run against the
+				// wrong Resources tree.
+				cliBody: `console.log("OK:" + __filename);`,
+				resourcesDirName: `kanban shim with spaces ${Date.now()}`,
+			});
+			try {
+				const output = execFileSync(shimPath, [], {
+					encoding: "utf-8",
+					timeout: 5_000,
+				}).trim();
+				expect(output.startsWith("OK:")).toBe(true);
+				expect(output).toContain(" "); // resolved CLI path kept the space
+				expect(output).toContain(resourcesDir);
+			} finally {
+				rmSync(resourcesDir, { recursive: true, force: true });
+			}
+		});
+
+		it("forwards args containing spaces, quotes, and flag-value pairs intact", () => {
+			if (process.platform === "win32") return;
+
+			const { resourcesDir, shimPath } = buildFakeLayout({
+				cliBody: `process.stdout.write(JSON.stringify(process.argv.slice(2)));`,
+			});
+			try {
+				const args = [
+					"first",
+					"arg with spaces",
+					"--flag=value with spaces",
+					"--",
+					"quoted 'single' and \"double\"",
+				];
+				const output = execFileSync(shimPath, args, {
+					encoding: "utf-8",
+					timeout: 5_000,
+				});
+				// Round-trip via JSON: the CLI's argv[2..] must match what we
+				// passed, byte-for-byte.
+				expect(JSON.parse(output)).toEqual(args);
+			} finally {
+				rmSync(resourcesDir, { recursive: true, force: true });
+			}
+		});
+	});
 });
