@@ -333,10 +333,23 @@ export class CloudExecutionOrchestrator {
 	private autoTrashHandler: ((taskId: string, reason: string) => Promise<void> | void) | null = null;
 	// When true, an ACP `turn_completed` event with stopReason="end_turn" (or
 	// no stopReason) is treated as task success — the WebSocket is closed and
-	// the FSM transitions via `execution_done`. This matches the cloud-agent
-	// one-shot pattern (`cline --yolo` runs, commits, exits). Set to false if
-	// we ever re-introduce true multi-turn chat for cloud tasks.
-	private readonly completeOnEndTurn: boolean = true;
+	// the FSM transitions via `execution_done`.
+	//
+	// Default is `false` because kanban's cloud-agent IS multi-turn chat: the
+	// user expects to send follow-up prompts after the agent finishes a turn.
+	// Inferring "task done" from `turn_completed`+`end_turn` closed the WS on
+	// every turn and the next user prompt surfaced as
+	// "Failed to deliver prompt to cloud instance: no active cloud session".
+	// Real task-end signals are:
+	//   - `attempt_completion` tool_call  → chat service flips to
+	//     `awaiting_review` (handled above, pod stays alive until card trash/
+	//     archive or explicit user confirmation)
+	//   - explicit user cancel / card trash
+	//   - HTTP execution status poll returning a terminal state
+	//   - (future WI-9) idle teardown after N hours of inactivity
+	// The flag is kept, not removed, so one-shot task-runner flows or tests
+	// can opt back in without reintroducing the hazard in the default path.
+	private readonly completeOnEndTurn: boolean = false;
 	private readonly config: OrchestratorConfig;
 	private readonly logger: OrchestratorLogger;
 	private readonly concurrencyLimiter: ConcurrencyLimiterExtension | null;
