@@ -445,6 +445,21 @@ async function startServer(): Promise<{
 	};
 	const cloudRuntime = bootstrapCloudExecution(process.env, cloudLogger);
 	if (cloudRuntime) {
+		// Auto-trash hook: when a cloud execution hits an unrecoverable state
+		// (e.g. "No cloud execution ID — cannot monitor status"), eject the
+		// card from "In Progress" instead of leaving it wedged.
+		const { trashTaskAcrossWorkspaces } = await import("./cloud/cloud-task-auto-trash.js");
+		const { listWorkspaceIndexEntries, loadWorkspaceState, saveWorkspaceState } = await import(
+			"./state/workspace-state.js"
+		);
+		cloudRuntime.orchestrator.setAutoTrashHandler((taskId, reason) =>
+			trashTaskAcrossWorkspaces(taskId, reason, {
+				listWorkspaces: listWorkspaceIndexEntries,
+				loadWorkspace: loadWorkspaceState,
+				saveWorkspace: saveWorkspaceState,
+				logger: cloudLogger,
+			}).then(() => undefined),
+		);
 		cloudRuntime.orchestrator.start();
 		console.log("[kanban] Cloud execution runtime started");
 	}

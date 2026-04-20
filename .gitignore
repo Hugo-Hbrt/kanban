@@ -14,3 +14,4 @@ web-ui/.env.*
 !web-ui/.env.example
 .bots
 data/cloud-executions/
+data/cloud-executions.prev.*/

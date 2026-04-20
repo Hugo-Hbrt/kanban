@@ -80,6 +80,17 @@ export interface CloudPlatformExecutionClientConfig {
 	readonly authProvider: CloudAuthProvider;
 	/** Optional GitHub PAT for private-repo cloning inside the pod (PR #6 contract). */
 	readonly githubToken?: string;
+	/**
+	 * Optional override for the `apiKey` forwarded to the provisioned pod as
+	 * `CLINE_API_KEY`. When unset, the bearer token used to authenticate to
+	 * core-api is forwarded (default). Supplying this lets the caller split
+	 * the control-plane credential (e.g. a local-dev sk_ token accepted by a
+	 * local core-api) from the credential cline inside the pod will use to
+	 * call the inference gateway (which must be accepted by the gateway's
+	 * auth domain). Useful for development against a local core-api while
+	 * pods run on production cloud-platform.
+	 */
+	readonly podApiKey?: string;
 	readonly retryConfigs?: Partial<
 		Record<keyof typeof DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS, Partial<ExecutionClientRetryConfig>>
 	>;
@@ -125,6 +136,7 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 	private readonly baseUrl: string;
 	private readonly authProvider: CloudAuthProvider;
 	private readonly githubToken: string;
+	private readonly podApiKeyOverride: string;
 	private readonly retryConfigs: Record<
 		keyof typeof DEFAULT_EXECUTION_CLIENT_RETRY_CONFIGS,
 		ExecutionClientRetryConfig
@@ -139,6 +151,7 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 		this.baseUrl = config.baseUrl.replace(/\/+$/, "");
 		this.authProvider = config.authProvider;
 		this.githubToken = config.githubToken ?? "";
+		this.podApiKeyOverride = config.podApiKey ?? "";
 		this.fetchFn = config.fetch ?? globalThis.fetch;
 		this.delayFn = config.delay ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
 		this.retryConfigs = {
@@ -158,7 +171,7 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 	async createExecution(request: ExecutionCreateRequest, signal?: AbortSignal): Promise<ExecutionCreateResponse> {
 		const validated = executionCreateRequestSchema.parse(request);
 		const authHeaders = await this.authProvider.getAuthHeaders();
-		const apiKey = extractBearerToken(authHeaders);
+		const apiKey = this.podApiKeyOverride || extractBearerToken(authHeaders);
 
 		const requestedRuntime: Record<string, string> = { transport: "websocket" };
 		if (validated.requestedRuntime?.transport) {

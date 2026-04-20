@@ -330,6 +330,13 @@ export class CloudExecutionOrchestrator {
 	private readonly runtimeClient: CloudRuntimeClient | null;
 	private readonly logStore: CloudExecutionLogStoreInterface | null;
 	private cloudTaskChatService: CloudTaskChatService | null = null;
+	private autoTrashHandler: ((taskId: string, reason: string) => Promise<void> | void) | null = null;
+	// When true, an ACP `turn_completed` event with stopReason="end_turn" (or
+	// no stopReason) is treated as task success — the WebSocket is closed and
+	// the FSM transitions via `execution_done`. This matches the cloud-agent
+	// one-shot pattern (`cline --yolo` runs, commits, exits). Set to false if
+	// we ever re-introduce true multi-turn chat for cloud tasks.
+	private readonly completeOnEndTurn: boolean = true;
 	private readonly config: OrchestratorConfig;
 	private readonly logger: OrchestratorLogger;
 	private readonly concurrencyLimiter: ConcurrencyLimiterExtension | null;
@@ -373,6 +380,15 @@ export class CloudExecutionOrchestrator {
 	// service's sendToTask callback needs to call orchestrator.sendMessageToTask).
 	setCloudTaskChatService(service: CloudTaskChatService | null): void {
 		this.cloudTaskChatService = service;
+	}
+
+	// Late-bind the board auto-trash handler. When the orchestrator detects
+	// a task is in an unrecoverable limbo (e.g. stuck in `running` with no
+	// cloudExecutionId so there's nothing to monitor), it calls this handler
+	// so the kanban UI doesn't leave the card stuck in "In Progress". The
+	// handler is optional — orchestrator behavior is unchanged when unset.
+	setAutoTrashHandler(handler: ((taskId: string, reason: string) => Promise<void> | void) | null): void {
+		this.autoTrashHandler = handler;
 	}
 
 	// Send a RuntimeMessage to the pod for a given task. Returns { ok: false }
@@ -746,8 +762,31 @@ export class CloudExecutionOrchestrator {
 		if (!ctx.cloudExecutionId) {
 			this.logger.error("No cloud execution ID found for running task", { taskId });
 			this.cleanupCtx(taskId);
+			const reason = "No cloud execution ID — cannot monitor status";
+			// Auto-trash the card so it doesn't sit wedged in "In Progress"
+			// with nothing we can do to recover it. Fire-and-forget; the
+			// lifecycle transition still fires even if this handler rejects.
+			if (this.autoTrashHandler) {
+				try {
+					const result = this.autoTrashHandler(taskId, reason);
+					if (result && typeof (result as Promise<void>).catch === "function") {
+						(result as Promise<void>).catch((e) => {
+							this.logger.warn("Auto-trash handler failed", {
+								taskId,
+								error: e instanceof Error ? e.message : String(e),
+							});
+						});
+					}
+				} catch (e) {
+					this.logger.warn("Auto-trash handler threw synchronously", {
+						taskId,
+						error: e instanceof Error ? e.message : String(e),
+					});
+				}
+			}
 			return this.applyTransition(taskId, "running", "execution_error", "system", {
-				error: "No cloud execution ID — cannot monitor status",
+				error: reason,
+				autoTrashed: this.autoTrashHandler !== null,
 			});
 		}
 
@@ -810,6 +849,33 @@ export class CloudExecutionOrchestrator {
 									result: payload?.result,
 									error: payload?.error,
 								};
+							}
+						}
+						// ACP bridge emits `turn_completed` when the agent returns
+						// stopReason on session/prompt. For cloud-agent one-shot
+						// tasks (`cline --yolo` in a pod), that's the natural end
+						// of the task — nobody is going to send a follow-up
+						// prompt and we shouldn't leave the card pinned in
+						// "In Progress" forever. For true multi-turn chat we
+						// don't want this behavior, so it's gated on an env
+						// flag that defaults to ON (matches the current product).
+						if (msg.type === "turn_completed" && this.completeOnEndTurn) {
+							const payload = msg.payload as Record<string, unknown> | undefined;
+							const stopReason = typeof payload?.stopReason === "string" ? payload.stopReason : null;
+							if (stopReason === null || stopReason === "end_turn") {
+								ctx.wsTerminalStatus = {
+									status: "succeeded",
+									result: { stopReason },
+								};
+								this.logger.info("ACP turn_completed → inferring task success", {
+									taskId,
+									stopReason,
+								});
+								try {
+									ctx.wsHandle?.close();
+								} catch {
+									/* best-effort */
+								}
 							}
 						}
 						if (this.cloudTaskChatService) {

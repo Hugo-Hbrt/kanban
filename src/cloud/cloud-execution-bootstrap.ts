@@ -13,6 +13,7 @@
 // should point to core-api's base URL.
 // ---------------------------------------------------------------------------
 
+import { WebSocket as NodeWebSocket } from "ws";
 import { type CloudAuthProvider, EnvironmentCloudAuthProvider } from "./cloud-auth-provider";
 import { CloudBackgroundPoller } from "./cloud-background-poller";
 import { type CloudCapabilitiesClient, CloudCapabilitiesHttpClient } from "./cloud-capabilities-client";
@@ -35,6 +36,7 @@ import { CloudTaskChatService } from "./cloud-task-chat-service";
 const ENV = {
 	CLOUD_PLATFORM_BASE_URL: "KANBAN_CLOUD_PLATFORM_BASE_URL",
 	CLOUD_PLATFORM_API_KEY: "KANBAN_CLOUD_PLATFORM_API_KEY",
+	POD_API_KEY: "KANBAN_POD_API_KEY",
 	GITHUB_TOKEN: "KANBAN_GITHUB_TOKEN",
 	POD_SCHEME: "KANBAN_POD_SCHEME",
 	POD_PORT: "KANBAN_POD_PORT",
@@ -109,12 +111,22 @@ export function bootstrapCloudExecution(
 	const store = new CloudExecutionStore(storePath);
 
 	// Cloud-platform execution client (KB-AUTH-3)
+	// `podApiKey` lets us forward a different credential to the pod (as
+	// CLINE_API_KEY) than the one we use to authenticate to core-api. This
+	// is how a developer can run kanban against a local core-api while the
+	// pod itself runs on production cloud-platform and needs a prod-valid
+	// key to call the inference gateway.
+	const podApiKeyOverride = env[ENV.POD_API_KEY];
+	if (podApiKeyOverride) {
+		logger.info("Pod API key override set — forwarding KANBAN_POD_API_KEY to provisioned pods");
+	}
 	const executionClient: CloudPlatformExecutionClient =
 		overrides?.executionClient ??
 		new CloudPlatformExecutionHttpClient({
 			baseUrl: cloudBaseUrl,
 			authProvider,
 			githubToken: env[ENV.GITHUB_TOKEN] ?? "",
+			podApiKey: podApiKeyOverride,
 			fetch: overrides?.fetchFn,
 		});
 
@@ -138,6 +150,10 @@ export function bootstrapCloudExecution(
 		runtimeClient = new DefaultCloudRuntimeClient({
 			coreApiBaseUrl: cloudBaseUrl,
 			authProvider,
+			// Node 22's native WebSocket lacks `.ping()`, so we use the `ws`
+			// package: it exposes protocol-level ping, which is what keeps GCLB
+			// from killing idle connections while cline is "thinking".
+			WebSocket: NodeWebSocket as unknown as typeof globalThis.WebSocket,
 		});
 		logger.info("Target runtime path enabled: ACP WebSocket", { coreApiBaseUrl: cloudBaseUrl });
 	} else {

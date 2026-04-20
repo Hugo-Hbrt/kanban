@@ -23,6 +23,7 @@
 // established.
 // ---------------------------------------------------------------------------
 
+import { AcpClient } from "./acp-client";
 import type { CloudAuthProvider } from "./cloud-auth-provider";
 
 // ---------------------------------------------------------------------------
@@ -154,10 +155,19 @@ export class DefaultCloudRuntimeClient implements CloudRuntimeClient {
 // WebSocket Handle Implementation
 // ---------------------------------------------------------------------------
 
+// Google Cloud Load Balancer kills idle TCP after ~30s, so the ACP WebSocket
+// to the pod drops with code 1006 whenever the agent is "thinking" (no stdout
+// for a few round-trips). We ping every PING_INTERVAL_MS to keep the LB happy;
+// the bridge uses coder/websocket, which auto-pongs protocol-level pings.
+const PING_INTERVAL_MS = 25_000;
+
 class DefaultRuntimeWebSocketHandle implements RuntimeWebSocketHandle {
 	private ws: WebSocket | null = null;
 	private _state: RuntimeConnectionState = "disconnected";
 	private readonly callbacks: RuntimeConnectionCallbacks;
+	private pingTimer: ReturnType<typeof setInterval> | null = null;
+	private acp: AcpClient | null = null;
+	private acpReady = false;
 
 	constructor(
 		private readonly WS: typeof globalThis.WebSocket,
@@ -174,21 +184,55 @@ class DefaultRuntimeWebSocketHandle implements RuntimeWebSocketHandle {
 	}
 
 	send(message: RuntimeMessage): void {
-		if (this._state !== "connected" || !this.ws) {
+		if (!this.acp || !this.acpReady) {
 			throw new CloudRuntimeError({
-				message: "Cannot send: WebSocket is not connected",
+				message: "Cannot send: ACP session is not ready",
 				statusCode: 0,
 				retryable: false,
 			});
 		}
-		this.ws.send(JSON.stringify(message));
+		// Fire-and-forget from the caller's perspective: the ACP client awaits
+		// the full prompt turn internally and emits `turn_completed` / `turn_canceled`
+		// via the onMessage callback. Surfacing errors here as onError lets the
+		// orchestrator's existing WS-error fallback path take over cleanly.
+		this.acp.send(message).catch((e) => {
+			this.callbacks.onError?.(e instanceof Error ? e : new Error(String(e)), true);
+		});
 	}
 
 	close(): void {
 		this.setState("disconnected");
+		this.stopPingTimer();
+		this.acp?.close();
+		this.acp = null;
+		this.acpReady = false;
 		if (this.ws) {
 			this.ws.close(1000, "client close");
 			this.ws = null;
+		}
+	}
+
+	private startPingTimer(): void {
+		this.stopPingTimer();
+		this.pingTimer = setInterval(() => {
+			const wsAny = this.ws as unknown as { ping?: () => void } | null;
+			if (!wsAny || this._state !== "connected") return;
+			try {
+				if (typeof wsAny.ping === "function") {
+					wsAny.ping();
+				}
+			} catch {
+				// Best-effort; onerror/onclose will surface real issues.
+			}
+		}, PING_INTERVAL_MS);
+		const unref = (this.pingTimer as unknown as { unref?: () => void }).unref;
+		if (typeof unref === "function") unref.call(this.pingTimer);
+	}
+
+	private stopPingTimer(): void {
+		if (this.pingTimer) {
+			clearInterval(this.pingTimer);
+			this.pingTimer = null;
 		}
 	}
 
@@ -210,23 +254,31 @@ class DefaultRuntimeWebSocketHandle implements RuntimeWebSocketHandle {
 		}
 
 		this.ws.onopen = () => {
-			this.setState("connected");
+			this.startPingTimer();
+			// Kick off the ACP handshake. We deliberately do NOT flip the
+			// connection state to "connected" yet — the orchestrator keys its
+			// "send the initial prompt" behavior off onStateChange("connected"),
+			// and dispatching a prompt before initialize/newSession complete
+			// would race against the agent. We only transition to "connected"
+			// after AcpClient.start() resolves; if it rejects we transition to
+			// "error" so the orchestrator's existing fallback logic runs.
+			this.startAcp();
 		};
 
-		this.ws.onmessage = (event) => {
-			try {
-				const message = JSON.parse(String(event.data)) as RuntimeMessage;
-				this.callbacks.onMessage?.(message);
-			} catch (e) {
-				this.callbacks.onError?.(new Error(`Failed to parse message: ${e}`), true);
-			}
-		};
+		// Inbound WS frames are consumed by the ACP client's Stream (see
+		// AcpClient.buildStream, which registers its own "message" listener
+		// via addEventListener). We do NOT parse RuntimeMessages off onmessage
+		// here anymore — the protocol is JSON-RPC, not RuntimeMessage. The
+		// ACP client translates inbound session/update notifications back to
+		// RuntimeMessage shape and fans them out through onMessage.
 
 		this.ws.onerror = (_event) => {
 			this.callbacks.onError?.(new Error("WebSocket error"), true);
 		};
 
 		this.ws.onclose = (event) => {
+			this.stopPingTimer();
+			this.acpReady = false;
 			if (this._state === "disconnected") return; // Intentional close
 			if (event.code === 1000) {
 				this.setState("disconnected");
@@ -238,6 +290,34 @@ class DefaultRuntimeWebSocketHandle implements RuntimeWebSocketHandle {
 				);
 			}
 		};
+	}
+
+	private startAcp(): void {
+		if (!this.ws) return;
+		// `ws` from the browser WebSocket API and the `ws` npm package both
+		// expose addEventListener('message' | 'close' | 'error' | 'open'), so
+		// we can treat the raw WebSocket as the Stream source directly. The
+		// AcpClient only ever uses addEventListener, not EventEmitter-style
+		// .on(), to stay env-agnostic.
+		const wsLike = this.ws as unknown as import("./acp-client").AcpWebSocketLike;
+		this.acp = new AcpClient({
+			ws: wsLike,
+			callbacks: {
+				onMessage: (msg) => this.callbacks.onMessage?.(msg),
+				onError: (err) => this.callbacks.onError?.(err, true),
+			},
+		});
+		this.acp
+			.start()
+			.then(() => {
+				this.acpReady = true;
+				this.setState("connected");
+			})
+			.catch((e) => {
+				this.acpReady = false;
+				this.setState("error");
+				this.callbacks.onError?.(e instanceof Error ? e : new Error(String(e)), true);
+			});
 	}
 
 	private setState(state: RuntimeConnectionState): void {
