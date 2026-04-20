@@ -298,10 +298,22 @@ function wireAppLifecycle(): void {
 
 		// Only hold the quit if we need to cleanly shut down a child we own.
 		// Attached-to-existing-runtime mode has nothing to clean up.
+		//
+		// try/finally guarantees `app.quit()` still runs if shutdown()
+		// rejects — otherwise a rejected shutdown would leave the app
+		// hanging after the user asked it to quit.
 		if (orchestrator.isOwned()) {
 			event.preventDefault();
-			await orchestrator.shutdown();
-			app.quit();
+			try {
+				await orchestrator.shutdown();
+			} catch (err) {
+				console.error(
+					"[desktop] Runtime shutdown error during quit:",
+					err instanceof Error ? err.message : err,
+				);
+			} finally {
+				app.quit();
+			}
 		} else {
 			orchestrator.stopAppNapPrevention();
 		}
