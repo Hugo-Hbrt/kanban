@@ -325,6 +325,51 @@ describe("CloudTaskChatService", () => {
 			]);
 		});
 
+		it("turn_completed flips running → awaiting_review with reviewReason: attention (fixes stuck IN PROGRESS)", () => {
+			// Regression: ACP's cloud cline agent never emits an
+			// `attempt_completion` tool_call — it ends turns with a
+			// plain-text assistant message plus `stopReason: end_turn`.
+			// WI-12 correctly stopped auto-*completing* on end_turn but
+			// left `running` → (nothing), which pinned cloud cards in
+			// "In Progress" forever. This test pins the new behavior:
+			// turn_completed in `running` flips to `awaiting_review`
+			// (not `completed`), so the card moves to Review while the
+			// pod stays alive for a potential user follow-up.
+			const { service } = makeService();
+			const summaries: Array<{ state: string; reviewReason: string | null }> = [];
+			service.onSummary((s) => summaries.push({ state: s.state, reviewReason: s.reviewReason }));
+
+			service.ingestInboundEvent("task-1", {
+				type: "agent_message_chunk",
+				payload: { text: "Created the file." },
+			});
+			service.ingestInboundEvent("task-1", { type: "turn_completed", payload: {} });
+
+			expect(summaries).toEqual([{ state: "awaiting_review", reviewReason: "attention" }]);
+		});
+
+		it("turn_completed does NOT re-flip if already awaiting_review (e.g. attempt_completion fired earlier in same turn)", () => {
+			// If the cline agent DID emit attempt_completion as a
+			// tool_call (e.g. via the LocalClineTaskSessionService
+			// code-path that shares this chat service in some tests),
+			// the summary is already `awaiting_review`. We shouldn't
+			// redundantly re-emit a patch.
+			const { service } = makeService();
+			const summaries: Array<{ state: string; reviewReason: string | null }> = [];
+			service.onSummary((s) => summaries.push({ state: s.state, reviewReason: s.reviewReason }));
+
+			service.ingestInboundEvent("task-1", {
+				type: "tool_call",
+				payload: { name: "attempt_completion", args: { result: "done" } },
+			});
+			service.ingestInboundEvent("task-1", { type: "turn_completed", payload: {} });
+
+			// Single summary event: awaiting_review from attempt_completion.
+			// turn_completed afterwards is a no-op because we're no longer
+			// in `running`.
+			expect(summaries).toEqual([{ state: "awaiting_review", reviewReason: "attention" }]);
+		});
+
 		it("turn_canceled flips to awaiting_review with reviewReason: interrupted", () => {
 			const { service } = makeService();
 			const summaries: Array<{ state: string; reviewReason: string | null }> = [];

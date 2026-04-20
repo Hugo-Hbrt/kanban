@@ -277,6 +277,47 @@ export class CloudTaskChatService {
 			}
 			case "turn_completed": {
 				this.finalizeAssistantMessage(taskId);
+				// Why this flips to `awaiting_review` instead of staying in
+				// `running`:
+				//
+				// Over ACP, the cline agent does NOT emit an
+				// `attempt_completion` tool_call when it finishes a turn —
+				// it just returns a final plain-text assistant message and
+				// signals `stopReason: "end_turn"` (or one of max_tokens /
+				// refusal / max_turn_requests, all of which mean "I've
+				// stopped turning; nothing more is coming until the user
+				// does something"). The header comment above listed
+				// `attempt_completion` as the canonical task-end signal,
+				// but that's only true for the local cline agent; the
+				// cloud path has no such tool_call.
+				//
+				// WI-12 stopped auto-*completing* on end_turn (correct:
+				// completing closes the WS and breaks multi-turn chat),
+				// but it left the card pinned in `running` forever
+				// because nothing else was flipping it. That caused the
+				// "stuck IN PROGRESS" symptom the user hit.
+				//
+				// Flipping to `awaiting_review` is the right intermediate:
+				//   - card moves out of In Progress → Review column
+				//   - pod stays alive (awaiting_review doesn't close the WS)
+				//   - if the user sends a follow-up, sendUserPrompt already
+				//     flips back to `running` (canReturnToRunning parity)
+				//   - if the user explicitly confirms/archives, the card
+				//     goes to Done via the existing review workflow
+				//
+				// `reviewReason: "attention"` matches the local-cline
+				// equivalent of attempt_completion (user must decide:
+				// confirm/continue/retry). The board-movement rules in
+				// the web-ui don't distinguish between attention from
+				// attempt_completion vs attention from turn_completed.
+				const currentState = this.getSessionSummary(taskId)?.state;
+				if (currentState === "running") {
+					this.emitSummaryPatch(taskId, {
+						state: "awaiting_review",
+						reviewReason: "attention",
+						lastHookAt: this.nowFn(),
+					});
+				}
 				return;
 			}
 			case "turn_canceled": {
