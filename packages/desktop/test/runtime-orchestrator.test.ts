@@ -191,3 +191,223 @@ describe("RuntimeOrchestrator attached-runtime crash detection", () => {
 		expect(crashed).not.toHaveBeenCalled();
 	});
 });
+
+describe("RuntimeOrchestrator post-crash recovery probe", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("auto-reattaches when a runtime returns at the last-known origin", async () => {
+		let healthy = true;
+		const fetchImpl = vi.fn(async () => {
+			return healthy
+				? ({ ok: true } as Response)
+				: Promise.reject(new Error("ECONNREFUSED"));
+		}) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 2,
+			recoveryProbeIntervalMs: 200,
+		});
+
+		const crashed = vi.fn();
+		const urlChanges: Array<string | null> = [];
+		orchestrator.on("crashed", crashed);
+		orchestrator.on("url-changed", (url) => urlChanges.push(url));
+
+		// Connect, then simulate the external runtime dying → crash path.
+		await orchestrator.connect();
+		healthy = false;
+		await vi.advanceTimersByTimeAsync(100);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(crashed).toHaveBeenCalledTimes(1);
+		expect(orchestrator.getUrl()).toBeNull();
+
+		// While on the disconnected screen, the recovery probe is polling
+		// the last-known origin. Simulate the user running `kanban` in a
+		// terminal — runtime returns on the same origin.
+		healthy = true;
+
+		// Wait one recovery interval for the probe to notice.
+		await vi.advanceTimersByTimeAsync(200);
+
+		// Orchestrator should have auto-reattached without a second crash.
+		expect(orchestrator.getUrl()).toBe("http://127.0.0.1:3484");
+		expect(orchestrator.isOwned()).toBe(false);
+		expect(crashed).toHaveBeenCalledTimes(1);
+		// The shell's url-changed listener would now reload every window
+		// away from disconnected.html back to the runtime.
+		expect(urlChanges).toEqual([
+			"http://127.0.0.1:3484",
+			null,
+			"http://127.0.0.1:3484",
+		]);
+	});
+
+	it("keeps polling silently while the runtime stays down", async () => {
+		let healthy = true;
+		const fetchImpl = vi.fn(async () => {
+			return healthy
+				? ({ ok: true } as Response)
+				: Promise.reject(new Error("ECONNREFUSED"));
+		}) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 2,
+			recoveryProbeIntervalMs: 200,
+		});
+
+		const crashed = vi.fn();
+		orchestrator.on("crashed", crashed);
+
+		await orchestrator.connect();
+		healthy = false;
+		await vi.advanceTimersByTimeAsync(100);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(crashed).toHaveBeenCalledTimes(1);
+
+		// Runtime never comes back. Recovery probe should keep polling
+		// without re-emitting "crashed" and without accidentally flipping
+		// into a connected state.
+		for (let i = 0; i < 5; i += 1) {
+			await vi.advanceTimersByTimeAsync(200);
+		}
+
+		expect(crashed).toHaveBeenCalledTimes(1);
+		expect(orchestrator.getUrl()).toBeNull();
+	});
+
+	it("stops the recovery probe when the user clicks Restart", async () => {
+		let healthy = true;
+		const fetchImpl = vi.fn(async () => {
+			return healthy
+				? ({ ok: true } as Response)
+				: Promise.reject(new Error("ECONNREFUSED"));
+		}) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 2,
+			recoveryProbeIntervalMs: 200,
+		});
+
+		await orchestrator.connect();
+		healthy = false;
+		await vi.advanceTimersByTimeAsync(100);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(orchestrator.getUrl()).toBeNull();
+
+		// User clicks Restart while still down. The mocked child manager
+		// returns a fixed URL from start(), so restart() flips us into
+		// owned mode — recovery must stop.
+		await orchestrator.restart();
+		expect(orchestrator.isOwned()).toBe(true);
+
+		const callsAfterRestart = (fetchImpl as unknown as ReturnType<typeof vi.fn>)
+			.mock.calls.length;
+
+		// Advance well past several recovery intervals; no more probes.
+		await vi.advanceTimersByTimeAsync(1_000);
+
+		expect(
+			(fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length,
+		).toBe(callsAfterRestart);
+	});
+
+	it("stops the recovery probe after dispose()", async () => {
+		let healthy = true;
+		const fetchImpl = vi.fn(async () => {
+			return healthy
+				? ({ ok: true } as Response)
+				: Promise.reject(new Error("ECONNREFUSED"));
+		}) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 2,
+			recoveryProbeIntervalMs: 200,
+		});
+
+		await orchestrator.connect();
+		healthy = false;
+		await vi.advanceTimersByTimeAsync(100);
+		await vi.advanceTimersByTimeAsync(100);
+
+		const callsBeforeDispose = (
+			fetchImpl as unknown as ReturnType<typeof vi.fn>
+		).mock.calls.length;
+
+		await orchestrator.dispose();
+
+		await vi.advanceTimersByTimeAsync(1_000);
+
+		expect(
+			(fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length,
+		).toBe(callsBeforeDispose);
+	});
+
+	it("does not start recovery when recoveryProbeIntervalMs is 0", async () => {
+		let healthy = true;
+		const fetchImpl = vi.fn(async () => {
+			return healthy
+				? ({ ok: true } as Response)
+				: Promise.reject(new Error("ECONNREFUSED"));
+		}) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 2,
+			recoveryProbeIntervalMs: 0,
+		});
+
+		await orchestrator.connect();
+		healthy = false;
+		await vi.advanceTimersByTimeAsync(100);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(orchestrator.getUrl()).toBeNull();
+
+		const callsAfterCrash = (
+			fetchImpl as unknown as ReturnType<typeof vi.fn>
+		).mock.calls.length;
+
+		// Bring the runtime back — with recovery disabled, nothing watches.
+		healthy = true;
+		await vi.advanceTimersByTimeAsync(1_000);
+
+		expect(
+			(fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length,
+		).toBe(callsAfterCrash);
+		expect(orchestrator.getUrl()).toBeNull();
+	});
+});

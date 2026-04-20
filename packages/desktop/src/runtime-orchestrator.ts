@@ -7,6 +7,8 @@
  *     spawn our own child via RuntimeChildManager.
  *   • Expose a deduplicated `restart()` for user-initiated recovery.
  *   • Re-emit crash events so the shell can flip to a disconnected screen.
+ *   • After a crash, poll the last-known origin so a runtime started from
+ *     the user's terminal (`kanban`) auto-reattaches without a restart.
  *   • Manage the power-save blocker (App Nap prevention) tied to the
  *     runtime's lifetime.
  *
@@ -39,8 +41,14 @@ export interface RuntimeOrchestratorOptions {
 	 * runtime as crashed. Defaults to 3.
 	 */
 	attachedProbeFailureThreshold?: number;
+	/**
+	 * How often the post-crash recovery probe polls the last-known origin
+	 * looking for a runtime to re-appear (ms). Defaults to 2_000. Set to 0
+	 * to disable the feature (e.g. in tests that would otherwise see
+	 * spurious timers after a simulated crash).
+	 */
+	recoveryProbeIntervalMs?: number;
 }
-
 
 interface RuntimeOrchestratorEventMap {
 	/** Emitted whenever the active URL changes (connect, restart, crash). */
@@ -59,6 +67,11 @@ interface RuntimeOrchestratorEventMap {
 const DEFAULT_ATTACHED_PROBE_INTERVAL_MS = 500;
 const DEFAULT_ATTACHED_PROBE_FAILURE_THRESHOLD = 2;
 
+// The disconnected screen advertises "run kanban in any terminal" as a
+// recovery path, so users reasonably expect the desktop to reconnect on
+// its own. 2 s feels snappy without being chatty — the probe costs one
+// fetch per interval and only runs while we're actually disconnected.
+const DEFAULT_RECOVERY_PROBE_INTERVAL_MS = 2_000;
 
 export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMap> {
 	private manager: RuntimeChildManager | null = null;
@@ -68,6 +81,13 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 	private powerSaveBlockerId = -1;
 	private attachedProbeTimer: NodeJS.Timeout | null = null;
 	private attachedProbeFailures = 0;
+	private recoveryProbeTimer: NodeJS.Timeout | null = null;
+	/**
+	 * Last origin we were successfully connected to. Remembered across
+	 * crash → reconnect cycles so the post-crash recovery probe knows
+	 * which URL to watch for a returning runtime.
+	 */
+	private lastKnownOrigin: string | null = null;
 
 	constructor(private readonly opts: RuntimeOrchestratorOptions) {
 		super();
@@ -140,6 +160,10 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 			await this.restartPromise;
 			return;
 		}
+		// A user-initiated restart supersedes any passive recovery attempt.
+		// Stop the recovery timer before teardown so it can't race with the
+		// new child coming up on the same origin.
+		this.stopRecoveryProbe();
 		this.restartPromise = (async () => {
 			if (this.manager) {
 				await this.manager.shutdown().catch(() => {});
@@ -167,6 +191,7 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 
 	/** Final cleanup for `will-quit`. */
 	async dispose(): Promise<void> {
+		this.stopRecoveryProbe();
 		this.stopAttachedProbe();
 		if (this.manager) {
 			await this.manager.dispose().catch(() => {});
@@ -214,8 +239,7 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 				// class of desktop-only packaging failure).
 				console.error(`[desktop] Runtime stderr tail:\n${stderrTail}`);
 			}
-			this.setUrl(null, /* owns */ false);
-			this.emit("crashed");
+			this.handleCrash();
 		});
 
 		manager.on("error", (message: string) => {
@@ -225,7 +249,26 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 		return manager;
 	}
 
+	/**
+	 * Shared crash path used by both owned-child exits and attached-probe
+	 * failure detection. Clears the URL, emits "crashed" so the shell can
+	 * flip to disconnected.html, and kicks off the recovery probe so a
+	 * runtime started from the user's terminal auto-reattaches.
+	 */
+	private handleCrash(): void {
+		this.setUrl(null, /* owns */ false);
+		this.emit("crashed");
+		this.startRecoveryProbe();
+	}
+
 	private setUrl(url: string | null, ownsChild: boolean): void {
+		if (url) {
+			this.lastKnownOrigin = url;
+			// Any successful connection supersedes an in-flight recovery
+			// attempt — whether the user manually restarted, an attach
+			// succeeded, or our own recovery probe just flipped us back.
+			this.stopRecoveryProbe();
+		}
 		this.url = url;
 		this.ownsChild = ownsChild;
 		this.emit("url-changed", url);
@@ -277,8 +320,7 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 					`[desktop] Attached runtime at ${origin} unreachable after ${this.attachedProbeFailures} probes — classifying as crashed.`,
 				);
 				this.stopAttachedProbe();
-				this.setUrl(null, /* owns */ false);
-				this.emit("crashed");
+				this.handleCrash();
 			}
 		};
 
@@ -296,5 +338,53 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 		}
 		this.attachedProbeFailures = 0;
 	}
-}
 
+	/**
+	 * Starts polling the last-known origin looking for a Kanban runtime
+	 * to re-appear (typically because the user ran `kanban` in a terminal).
+	 * On the first healthy probe, flips back into attached mode — the
+	 * existing `url-changed` listener in the shell reloads every window
+	 * away from the disconnected screen.
+	 *
+	 * No-op if we've never connected (nothing to recover to) or if
+	 * `recoveryProbeIntervalMs` is 0.
+	 */
+	private startRecoveryProbe(): void {
+		this.stopRecoveryProbe();
+		const origin = this.lastKnownOrigin;
+		if (!origin) return;
+		const intervalMs =
+			this.opts.recoveryProbeIntervalMs ?? DEFAULT_RECOVERY_PROBE_INTERVAL_MS;
+		if (intervalMs <= 0) return;
+
+		const tick = async (): Promise<void> => {
+			// Stop chasing if anything else reconnected us (user clicked
+			// Restart, deep-link handler forced a re-attach, etc.).
+			if (this.url !== null) {
+				this.stopRecoveryProbe();
+				return;
+			}
+			const healthy = await this.checkHealth(origin);
+			if (this.url !== null) return;
+			if (!healthy) return;
+			console.log(
+				`[desktop] Recovery probe found runtime at ${origin} — auto-attaching.`,
+			);
+			// setUrl() will stop this recovery timer and promote us to
+			// attached-probe mode.
+			this.setUrl(origin, /* owns */ false);
+		};
+
+		this.recoveryProbeTimer = setInterval(() => {
+			void tick();
+		}, intervalMs);
+		this.recoveryProbeTimer.unref?.();
+	}
+
+	private stopRecoveryProbe(): void {
+		if (this.recoveryProbeTimer) {
+			clearInterval(this.recoveryProbeTimer);
+			this.recoveryProbeTimer = null;
+		}
+	}
+}
