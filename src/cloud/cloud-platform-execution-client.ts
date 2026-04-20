@@ -202,6 +202,7 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 				}),
 			this.retryConfigs.createExecution,
 			signal,
+			{ method: "POST", url: "/api/v2/cloud-platform/instances" },
 		);
 		const provisionData = this.unwrapResponse(await provisionResp.json()) as CoreInstanceStatus;
 		if (!provisionData?.instanceId) {
@@ -248,6 +249,7 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 				),
 			this.retryConfigs.getStatus,
 			signal,
+			{ method: "GET", url: `/api/v2/cloud-platform/instances/${executionId}` },
 		);
 		if (response.status === 404) {
 			return this.buildStatusResponse(executionId, "canceled", null, null);
@@ -276,6 +278,7 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 				),
 			this.retryConfigs.cancelExecution,
 			signal,
+			{ method: "DELETE", url: `/api/v2/cloud-platform/instances/${executionId}` },
 		);
 		this.runtimeCache.delete(executionId);
 		this.executionMeta.delete(executionId);
@@ -380,26 +383,64 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 		operation: (signal: AbortSignal) => Promise<Response>,
 		config: ExecutionClientRetryConfig,
 		externalSignal?: AbortSignal,
+		operationContext?: { method: string; url: string },
 	): Promise<Response> {
 		let lastError: unknown;
+		let lastStatus: number | undefined;
+		let attemptsMade = 0;
 		for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
-			if (externalSignal?.aborted) throw new Error("Request aborted");
+			attemptsMade = attempt + 1;
+			if (externalSignal?.aborted) {
+				// Caller-driven abort (e.g. task cancel). Bubble up a clear error,
+				// not a bare "Request aborted" Error that reads the same as an
+				// internal timeout.
+				throw wrapAsExecutionError(
+					new CloudPlatformExecutionError({
+						message: "caller aborted the request",
+						statusCode: 0,
+						retryable: false,
+					}),
+					operationContext,
+					attemptsMade,
+					lastStatus,
+					config,
+				);
+			}
 			if (attempt > 0) {
 				const delay = Math.min(config.baseDelayMs * 2 ** (attempt - 1), config.maxDelayMs);
 				await this.delayFn(delay);
 			}
 			try {
 				const controller = new AbortController();
-				const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
+				let timedOut = false;
+				const timeoutId = setTimeout(() => {
+					timedOut = true;
+					controller.abort();
+				}, config.timeoutMs);
 				const onAbort = () => controller.abort();
 				externalSignal?.addEventListener("abort", onAbort, { once: true });
 				let response: Response;
 				try {
 					response = await operation(controller.signal);
+				} catch (e) {
+					// Distinguish internal-timeout abort from external abort so
+					// the final thrown error can report "timed out after Xms"
+					// rather than the browser/Node default "This operation was
+					// aborted" that kanban surfaced as an opaque chat status.
+					if (timedOut) {
+						throw new CloudPlatformExecutionError({
+							message: `request timed out after ${config.timeoutMs}ms`,
+							statusCode: 0,
+							retryable: true,
+							errorCode: "REQUEST_TIMEOUT",
+						});
+					}
+					throw e;
 				} finally {
 					clearTimeout(timeoutId);
 					externalSignal?.removeEventListener("abort", onAbort);
 				}
+				lastStatus = response.status;
 				if (response.ok || response.status === 204 || response.status === 404) return response;
 				const retryable = isRetryableStatus(response.status);
 				if (!retryable) {
@@ -425,12 +466,63 @@ export class CloudPlatformExecutionHttpClient implements CloudPlatformExecutionC
 					retryable: true,
 				});
 			} catch (err) {
-				if (err instanceof CloudPlatformExecutionError && !err.retryable) throw err;
+				if (err instanceof CloudPlatformExecutionError && !err.retryable) {
+					throw wrapAsExecutionError(err, operationContext, attemptsMade, lastStatus, config);
+				}
 				lastError = err;
 			}
 		}
-		throw lastError;
+		throw wrapAsExecutionError(lastError, operationContext, attemptsMade, lastStatus, config);
 	}
+}
+
+/**
+ * Wrap whatever caused the retry loop to exhaust (AbortError from internal
+ * timeout, a fetch-level network error, a retryable 5xx CloudPlatformExecutionError)
+ * into a single CloudPlatformExecutionError whose message tells the operator
+ * **what** failed, **how many times** it was tried, and **the last HTTP
+ * status seen** (if any). This is the difference between:
+ *
+ *   "This operation was aborted"
+ *
+ * and
+ *
+ *   "POST /api/v2/cloud-platform/instances failed after 3 attempts (last
+ *    status HTTP 502; 30000ms per-attempt timeout): request timed out after 30000ms"
+ *
+ * If the input is already a non-retryable `CloudPlatformExecutionError` the
+ * wrap still fires so the operator gets the URL + attempt count alongside
+ * whatever detailed message the original carried.
+ *
+ * Exported inside the module only (not re-exported from the public surface)
+ * — callers should branch on `err instanceof CloudPlatformExecutionError`.
+ */
+function wrapAsExecutionError(
+	cause: unknown,
+	ctx: { method: string; url: string } | undefined,
+	attempts: number,
+	lastStatus: number | undefined,
+	config: ExecutionClientRetryConfig,
+): CloudPlatformExecutionError {
+	const causeMsg =
+		cause instanceof Error ? cause.message : typeof cause === "string" ? cause : "unknown error";
+	const statusCode =
+		cause instanceof CloudPlatformExecutionError ? cause.statusCode : (lastStatus ?? 0);
+	const errorCode =
+		cause instanceof CloudPlatformExecutionError ? (cause.errorCode ?? undefined) : undefined;
+	const retryable =
+		cause instanceof CloudPlatformExecutionError ? cause.retryable : isRetryableStatus(statusCode);
+	const where = ctx ? `${ctx.method} ${ctx.url}` : "cloud-platform request";
+	const statusPart = lastStatus ? `last status HTTP ${lastStatus}; ` : "";
+	const message =
+		`${where} failed after ${attempts} attempt${attempts === 1 ? "" : "s"} ` +
+		`(${statusPart}${config.timeoutMs}ms per-attempt timeout): ${causeMsg}`;
+	return new CloudPlatformExecutionError({
+		message,
+		statusCode,
+		retryable,
+		errorCode,
+	});
 }
 
 function extractBearerToken(headers: Record<string, string>): string {
