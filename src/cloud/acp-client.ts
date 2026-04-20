@@ -369,11 +369,38 @@ export class AcpClient {
 	private emitToolCall(toolCallId: string): void {
 		const tc = this.toolCalls.get(toolCallId);
 		if (!tc) return;
-		const name = tc.title;
+		// ACP carries three potentially-useful identifiers per tool call:
+		//   - `title`: human-prose label, e.g. "Executing `touch foo`"
+		//   - `kind`:  coarse ACP category, one of read/edit/execute/etc.
+		//   - rawInput: the actual tool args (e.g. `{ command: "…" }`)
+		// Unlike the local cline agent, ACP does NOT surface the specific
+		// cline tool name (`execute_command`, `write_to_file`, …), so the
+		// best we can do for a display name is prefer `kind` when present
+		// (stable, short, mappable) and fall back to `title` (verbose but
+		// always present). Using the full `title` as the display name
+		// — which the previous impl did — caused the web-ui parser to
+		// render "unknown unknown" because the title is free-form prose
+		// that doesn't match any known cline tool.
+		const name = tc.kind || tc.title || "tool";
 		const args = tc.rawInput ?? {};
+		// ACP `content[]` is an array of richer blocks; the cline agent
+		// currently emits a single `{ type: "content", content: { type:
+		// "text", text: "$ …" } }` per tool call (the shell-style preview
+		// of the command). Flatten it to a plain string so downstream
+		// consumers (chat service, web-ui) don't have to know the ACP
+		// envelope shape.
+		const output = extractAcpContentText(tc.content);
 		this.emit({
 			type: "tool_call",
-			payload: { name, args, toolCallId, status: tc.status, kind: tc.kind },
+			payload: {
+				name,
+				args,
+				toolCallId,
+				status: tc.status,
+				kind: tc.kind,
+				title: tc.title,
+				output,
+			},
 		});
 		tc.emitted = true;
 	}
@@ -498,6 +525,46 @@ function safeJson(v: unknown): string {
 	} catch {
 		return String(v).slice(0, 256);
 	}
+}
+
+// Flatten ACP's nested `content[]` array to a single text string.
+//
+// The ACP session-update envelope for tool_call / tool_call_update carries
+// `content` as an array of blocks, each of which can itself wrap a content
+// block:
+//
+//   [
+//     { type: "content", content: { type: "text", text: "$ touch foo" } },
+//     { type: "content", content: { type: "text", text: "ok" } },
+//   ]
+//
+// (Other block `type`s — image, resource_link, diff — exist in the spec but
+// aren't in cline's hot path today.) We concatenate text blocks with
+// newlines, ignore everything else, and return null when there's nothing
+// textual to show so callers can skip emitting an empty "Output:" section.
+// See: https://agentclientprotocol.com/protocol/content
+function extractAcpContentText(content: unknown): string | null {
+	if (!Array.isArray(content) || content.length === 0) return null;
+	const parts: string[] = [];
+	for (const block of content) {
+		if (!block || typeof block !== "object") continue;
+		// Shape 1: { type: "content", content: { type: "text", text: "…" } }
+		const wrapped = (block as { content?: unknown }).content;
+		if (wrapped && typeof wrapped === "object") {
+			const inner = wrapped as { type?: string; text?: string };
+			if (inner.type === "text" && typeof inner.text === "string") {
+				parts.push(inner.text);
+				continue;
+			}
+		}
+		// Shape 2 (future-proof): { type: "text", text: "…" }
+		const flat = block as { type?: string; text?: string };
+		if (flat.type === "text" && typeof flat.text === "string") {
+			parts.push(flat.text);
+		}
+	}
+	const joined = parts.join("\n").trim();
+	return joined.length > 0 ? joined : null;
 }
 
 // Ensure tree-shaken builds keep the Agent type symbol — not used directly,

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { ClineTaskMessage } from "../cline-sdk/cline-session-state";
 import { CloudTaskChatService } from "./cloud-task-chat-service";
 
 function makeService(sendResults: Array<{ ok: boolean; error?: string }> = [{ ok: true }]) {
@@ -91,6 +92,63 @@ describe("CloudTaskChatService", () => {
 		expect(tool?.content).toContain("read_file");
 		expect(tool?.content).toContain("README.md");
 	});
+
+	it("formats tool_call content with `Tool:`/`Input:`/`Output:` prefixes the web-ui parser understands", () => {
+		// Regression test for the 'unknown unknown' rendering bug: before
+		// this fix the tool_call case emitted a single-line `🛠 name(args)`
+		// string which contained neither `Tool:` nor `Input:` anchors, so
+		// the web-ui's parseToolMessageContent always defaulted toolName
+		// to "unknown". Pin the new format so a future simplification of
+		// the ingest path can't silently regress the web-ui rendering.
+		const { service } = makeService();
+		const received: ClineTaskMessage[] = [];
+		service.onMessage((_taskId, msg) => {
+			if (msg.role === "tool") received.push(msg);
+		});
+
+		service.ingestInboundEvent("task-1", {
+			type: "tool_call",
+			payload: {
+				name: "execute",
+				args: { command: "touch /workspace/untitled.md" },
+				output: "$ touch /workspace/untitled.md",
+				status: "completed",
+				toolCallId: "tc-abc",
+			},
+		});
+
+		expect(received).toHaveLength(1);
+		const tool = received[0];
+		expect(tool.content.split("\n")).toEqual([
+			"Tool: execute",
+			"Input:",
+			'{"command":"touch /workspace/untitled.md"}',
+			"Output:",
+			"$ touch /workspace/untitled.md",
+		]);
+		expect(tool.meta?.toolName).toBe("execute");
+		expect(tool.meta?.toolCallId).toBe("tc-abc");
+	});
+
+	it("tool_call omits Input/Output sections when args are empty and no output present", () => {
+		// Keeps the transcript tidy when the cline agent emits a tool_call
+		// with only a title and no rawInput/content (e.g. during mode
+		// switches or for tools whose inputs are implicit). We'd rather
+		// render "Tool: think" than "Tool: think\nInput:\n{}\nOutput:\n".
+		const { service } = makeService();
+		const received: ClineTaskMessage[] = [];
+		service.onMessage((_taskId, msg) => {
+			if (msg.role === "tool") received.push(msg);
+		});
+
+		service.ingestInboundEvent("task-1", {
+			type: "tool_call",
+			payload: { name: "think" },
+		});
+
+		expect(received[0].content).toBe("Tool: think");
+	});
+
 
 	it("isolates messages per task", () => {
 		const { service } = makeService();

@@ -207,11 +207,57 @@ export class CloudTaskChatService {
 				return;
 			}
 			case "tool_call": {
+				// `payload.name` is now the canonical tool-display identifier
+				// (ACP `kind` preferred, then `title`, then "tool"); see
+				// AcpClient.emitToolCall. `title` and `kind` also come through
+				// as explicit fields for richer UI if they differ from `name`.
 				const name = typeof payload.name === "string" ? payload.name : "tool";
+				const title = typeof payload.title === "string" ? payload.title : null;
+				const kind = typeof payload.kind === "string" ? payload.kind : null;
+				const status = typeof payload.status === "string" ? payload.status : null;
+				const toolCallId = typeof payload.toolCallId === "string" ? payload.toolCallId : null;
+				const output = typeof payload.output === "string" ? payload.output : null;
 				const args = payload.args ?? {};
-				const content = `🛠 ${name}(${JSON.stringify(args)})`;
+				// Emit content in the `Tool: X\nInput: Y\nOutput: Z` shape that
+				// the web-ui's `parseToolMessageContent` parser expects — it's
+				// the same format the local cline agent uses for its chat-log
+				// tool messages, so the kanban chat renderer can ingest both
+				// local and cloud transcripts through the same codepath. The
+				// previous single-line `🛠 name(args)` format caused the
+				// parser to hit its "Tool:"-prefix fallback and render the
+				// tool as "unknown".
+				const lines: string[] = [`Tool: ${name}`];
+				const argsText =
+					typeof args === "string" ? args : safeStringifyJson(args);
+				if (argsText && argsText !== "{}" && argsText !== "null") {
+					lines.push("Input:");
+					lines.push(argsText);
+				}
+				if (output) {
+					lines.push("Output:");
+					lines.push(output);
+				}
+				const content = lines.join("\n");
 				this.finalizeAssistantMessage(taskId);
-				const toolMessage = this.createMessageWithMeta(taskId, "tool", content, { toolName: name });
+				// Meta fields are intentionally narrow (see
+				// ClineTaskMessage.meta in cline-sdk/cline-session-state.ts):
+				// toolName + toolCallId only. The richer ACP fields
+				// (title/kind/status) are carried *in* the content string
+				// via the Tool:/Input:/Output: prefixes that the web-ui
+				// parseToolMessageContent parser already understands — that
+				// keeps the message shape identical to what the local cline
+				// agent emits, and sidesteps a web-ui-side rendering change
+				// just to display the cloud-agent's tool output.
+				// `kind`/`status` are intentionally unused here for now;
+				// referenced via `void` so the lexical bindings survive
+				// to document what's available from the payload.
+				void kind;
+				void status;
+				void title;
+				const toolMessage = this.createMessageWithMeta(taskId, "tool", content, {
+					toolName: name,
+					...(toolCallId ? { toolCallId } : {}),
+				});
 				this.appendMessage(taskId, toolMessage);
 
 				if (isCloudCompletionTool(name)) {
@@ -440,4 +486,16 @@ export class CloudTaskChatService {
 
 export function createCloudTaskChatService(options: CloudTaskChatServiceOptions): CloudTaskChatService {
 	return new CloudTaskChatService(options);
+}
+
+// JSON.stringify that never throws and always returns a printable fallback.
+// Used for tool_call `Input:` serialization where we'd rather display
+// "[unserializable]" than crash the whole ingest loop on a circular ref or
+// a BigInt buried in rawInput.
+function safeStringifyJson(value: unknown): string {
+	try {
+		return JSON.stringify(value);
+	} catch {
+		return "[unserializable]";
+	}
 }
