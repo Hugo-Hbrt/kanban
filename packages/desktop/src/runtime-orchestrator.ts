@@ -29,7 +29,18 @@ export interface RuntimeOrchestratorOptions {
 	resolveCliShimPath: () => string;
 	/** Exposed for tests — defaults to `globalThis.fetch`. */
 	fetchImpl?: typeof fetch;
+	/**
+	 * How often to poll an attached (not-owned) runtime for liveness (ms).
+	 * Defaults to 2_000. Set to 0 to disable (e.g. in tests).
+	 */
+	attachedProbeIntervalMs?: number;
+	/**
+	 * Number of consecutive probe failures before we classify an attached
+	 * runtime as crashed. Defaults to 3.
+	 */
+	attachedProbeFailureThreshold?: number;
 }
+
 
 interface RuntimeOrchestratorEventMap {
 	/** Emitted whenever the active URL changes (connect, restart, crash). */
@@ -38,16 +49,30 @@ interface RuntimeOrchestratorEventMap {
 	crashed: [];
 }
 
+// Kept deliberately aggressive — the race we're defending against is that
+// an attached runtime's bundled web-ui may render its OWN "disconnected"
+// React fallback within milliseconds of WebSocket loss. We need to replace
+// that with the native `disconnected.html` fast enough that users don't
+// see a stale message. 500 ms × 2 ≈ ~1 s worst-case flip, versus the
+// healthTimeoutMs budget per probe (3 s), which dominates the observed
+// latency when the TCP connect fails fast (ECONNREFUSED is immediate).
+const DEFAULT_ATTACHED_PROBE_INTERVAL_MS = 500;
+const DEFAULT_ATTACHED_PROBE_FAILURE_THRESHOLD = 2;
+
+
 export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMap> {
 	private manager: RuntimeChildManager | null = null;
 	private url: string | null = null;
 	private ownsChild = false;
 	private restartPromise: Promise<void> | null = null;
 	private powerSaveBlockerId = -1;
+	private attachedProbeTimer: NodeJS.Timeout | null = null;
+	private attachedProbeFailures = 0;
 
 	constructor(private readonly opts: RuntimeOrchestratorOptions) {
 		super();
 	}
+
 
 	/** Current runtime URL, or null if disconnected. */
 	getUrl(): string | null {
@@ -142,11 +167,13 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 
 	/** Final cleanup for `will-quit`. */
 	async dispose(): Promise<void> {
+		this.stopAttachedProbe();
 		if (this.manager) {
 			await this.manager.dispose().catch(() => {});
 			this.manager = null;
 		}
 	}
+
 
 	startAppNapPrevention(): void {
 		if (this.powerSaveBlockerId !== -1) return;
@@ -202,5 +229,72 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 		this.url = url;
 		this.ownsChild = ownsChild;
 		this.emit("url-changed", url);
+
+		// We only poll in attached mode. When we own the child, the
+		// RuntimeChildManager emits "crashed" directly from the process
+		// exit event — no polling needed.
+		if (url && !ownsChild) {
+			this.startAttachedProbe(url);
+		} else {
+			this.stopAttachedProbe();
+		}
+	}
+
+	/**
+	 * Starts polling an attached runtime for liveness. When it fails
+	 * N consecutive times, emit "crashed" so the shell can flip to the
+	 * disconnected screen — same UX as an owned-child crash.
+	 *
+	 * Without this, a user who started the runtime from their terminal
+	 * and then killed it would be stranded on the last-rendered page with
+	 * no visual feedback from the desktop shell, forcing them to rely on
+	 * whatever fallback the web-ui happens to render (which varies by
+	 * version and is historically inconsistent).
+	 */
+	private startAttachedProbe(origin: string): void {
+		this.stopAttachedProbe();
+		const intervalMs =
+			this.opts.attachedProbeIntervalMs ?? DEFAULT_ATTACHED_PROBE_INTERVAL_MS;
+		if (intervalMs <= 0) return;
+
+		const threshold =
+			this.opts.attachedProbeFailureThreshold ??
+			DEFAULT_ATTACHED_PROBE_FAILURE_THRESHOLD;
+		this.attachedProbeFailures = 0;
+
+		const tick = async (): Promise<void> => {
+			// Guard against a stale timer firing after the URL changed.
+			if (this.url !== origin || this.ownsChild) return;
+			const healthy = await this.checkHealth(origin);
+			if (this.url !== origin || this.ownsChild) return;
+			if (healthy) {
+				this.attachedProbeFailures = 0;
+				return;
+			}
+			this.attachedProbeFailures += 1;
+			if (this.attachedProbeFailures >= threshold) {
+				console.error(
+					`[desktop] Attached runtime at ${origin} unreachable after ${this.attachedProbeFailures} probes — classifying as crashed.`,
+				);
+				this.stopAttachedProbe();
+				this.setUrl(null, /* owns */ false);
+				this.emit("crashed");
+			}
+		};
+
+		this.attachedProbeTimer = setInterval(() => {
+			void tick();
+		}, intervalMs);
+		// Don't let the probe keep the Node event loop alive on its own.
+		this.attachedProbeTimer.unref?.();
+	}
+
+	private stopAttachedProbe(): void {
+		if (this.attachedProbeTimer) {
+			clearInterval(this.attachedProbeTimer);
+			this.attachedProbeTimer = null;
+		}
+		this.attachedProbeFailures = 0;
 	}
 }
+
