@@ -151,6 +151,52 @@ describe("CloudTaskChatService", () => {
 		expect(messages[0].content).toContain("futuristic_unknown_event");
 	});
 
+	describe("execution_status handling", () => {
+		it("renders well-formed execution_status as a status chat message", () => {
+			const { service } = makeService();
+			service.ingestInboundEvent("task-1", {
+				type: "execution_status",
+				payload: { status: "provisioning" },
+			});
+			const messages = service.listMessages("task-1");
+			expect(messages).toHaveLength(1);
+			expect(messages[0].role).toBe("status");
+			expect(messages[0].content).toBe("Cloud execution status: provisioning");
+		});
+
+		// Regression: before the fix, execution_status events that arrived
+		// without a string `status` field silently rendered
+		// "Cloud execution status: unknown" to the user. That's confusing to
+		// non-engineers (looks like the system is broken) and invisible to
+		// engineers (it looks like a first-class status value in the log).
+		// Now we log-and-drop.
+		it("drops execution_status events with missing/non-string `status` and logs a warning", () => {
+			const { service } = makeService();
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+			service.ingestInboundEvent("task-1", {
+				type: "execution_status",
+				payload: {},
+			});
+			service.ingestInboundEvent("task-1", {
+				type: "execution_status",
+				payload: { status: 42 },
+			});
+			service.ingestInboundEvent("task-1", {
+				type: "execution_status",
+				payload: { status: "" },
+			});
+
+			expect(service.listMessages("task-1")).toEqual([]);
+			expect(warnSpy).toHaveBeenCalledTimes(3);
+			expect(warnSpy).toHaveBeenCalledWith(
+				"[cloud-chat] execution_status event missing string `status`, dropping",
+				expect.objectContaining({ taskId: "task-1" }),
+			);
+			warnSpy.mockRestore();
+		});
+	});
+
 	describe("session summary state transitions (mirrors local Cline awaiting_review flow)", () => {
 		it("flips to awaiting_review with reviewReason: attention when agent calls attempt_completion", () => {
 			const { service } = makeService();

@@ -234,8 +234,27 @@ export class CloudTaskChatService {
 				return;
 			}
 			case "execution_status": {
-				const status = typeof payload.status === "string" ? payload.status : "unknown";
-				const statusMessage = this.createMessage(taskId, "status", `Cloud execution status: ${status}`);
+				// `execution_status` is reserved for task-lifecycle signals
+				// (provisioning / ready / succeeded / failed / canceled / etc.),
+				// each of which must carry a non-empty string `status`. If we
+				// see one without it, something upstream is malformed —
+				// surfacing a literal "Cloud execution status: unknown" to the
+				// user is worse than useless (it confuses non-engineers and
+				// hides the bug from engineers). Log-and-drop instead so the
+				// break is visible in logs but not the transcript.
+				const rawStatus = payload.status;
+				if (typeof rawStatus !== "string" || rawStatus.length === 0) {
+					console.warn(
+						"[cloud-chat] execution_status event missing string `status`, dropping",
+						{ taskId, payload },
+					);
+					return;
+				}
+				const statusMessage = this.createMessage(
+					taskId,
+					"status",
+					`Cloud execution status: ${rawStatus}`,
+				);
 				this.appendMessage(taskId, statusMessage);
 				return;
 			}
@@ -349,9 +368,29 @@ export class CloudTaskChatService {
 	// assistant message per turn, emitting an updated message on every chunk
 	// so the UI can re-render in place. The message object is re-created on
 	// each chunk (not mutated) so subscribers see immutable snapshots.
+	// Dedupe: cline streams both incremental partials AND a final consolidated
+	// "full turn" chunk. If we naively `+=` we double the assistant reply.
+	//   (a) chunk identical to buffer → pure dup, skip
+	//   (b) chunk starts with buffer  → cumulative replacement (final arrives
+	//       as the entire accumulated text), replace buffer with chunk
+	//   (c) buffer ends with chunk    → tail dup from a retransmit, skip
+	//   (d) otherwise                 → true incremental, append
 	private appendAssistantChunk(taskId: string, chunk: string): void {
 		const state = this.ensureTask(taskId);
-		state.activeAssistantBuffer += chunk;
+		if (chunk.length === 0) {
+			return;
+		}
+		if (state.activeAssistantBuffer.length === 0) {
+			state.activeAssistantBuffer = chunk;
+		} else if (chunk === state.activeAssistantBuffer) {
+			return;
+		} else if (chunk.startsWith(state.activeAssistantBuffer)) {
+			state.activeAssistantBuffer = chunk;
+		} else if (state.activeAssistantBuffer.endsWith(chunk)) {
+			return;
+		} else {
+			state.activeAssistantBuffer += chunk;
+		}
 		if (state.activeAssistantMessageId === null) {
 			const assistant = this.createMessage(taskId, "assistant", state.activeAssistantBuffer);
 			state.activeAssistantMessageId = assistant.id;

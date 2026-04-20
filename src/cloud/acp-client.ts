@@ -343,20 +343,24 @@ export class AcpClient {
 			case "config_option_update":
 			case "session_info_update":
 			case "usage_update": {
-				// These carry session-level metadata, not chat content. We
-				// surface them as status lines so they're visible while we
-				// decide whether/how to render them properly.
-				this.emit({
-					type: "execution_status",
-					payload: { status: kind, detail: safeJson(update) },
-				});
+				// These carry Cline-side session metadata (e.g. plan-mode
+				// toggle, token usage counters, capability announcements),
+				// not execution lifecycle events. They were previously
+				// emitted as `execution_status` chat messages, which
+				// leaked internal ACP kinds into the user-visible
+				// transcript (e.g. `Cloud execution status: plan` when the
+				// agent entered plan mode). The kind is already logged via
+				// `[acp] session/update ⇠` above, which is sufficient for
+				// debugging without polluting chat. See:
+				// https://agentclientprotocol.com/protocol/session-update
 				return;
 			}
 			default: {
-				this.emit({
-					type: "execution_status",
-					payload: { status: "unknown_session_update", kind, detail: safeJson(update) },
-				});
+				// Unknown session-update kinds: log-and-drop rather than
+				// surfacing as a chat status line. We keep the info-level
+				// log (already written above) so new ACP kinds are
+				// discoverable without shipping them to users as
+				// "Cloud execution status: unknown_session_update".
 				return;
 			}
 		}
