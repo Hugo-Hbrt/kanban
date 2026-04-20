@@ -28,14 +28,14 @@ export interface RuntimeChildConfig {
 }
 
 export interface RuntimeChildManagerEvents {
-	ready: (url: string) => void;
-	error: (message: string) => void;
+	ready: [url: string];
+	error: [message: string];
 	/**
 	 * Emitted when the subprocess exits without a prior `shutdown()` call.
 	 * `stderrTail` is the last ~8 KB of child stderr, for diagnosing
 	 * startup failures.
 	 */
-	crashed: (exitCode: number | null, signal: string | null, stderrTail: string) => void;
+	crashed: [exitCode: number | null, signal: string | null, stderrTail: string];
 }
 
 export interface RuntimeChildManagerOptions {
@@ -124,31 +124,7 @@ function waitForReady(
 	});
 }
 
-/**
- * Typed event overloads via declaration merging. Zero runtime cost; gives
- * `on`/`once`/`off`/`emit` proper signatures without a third-party typed
- * emitter package.
- */
-export interface RuntimeChildManager {
-	on<E extends keyof RuntimeChildManagerEvents>(
-		event: E,
-		listener: RuntimeChildManagerEvents[E],
-	): this;
-	once<E extends keyof RuntimeChildManagerEvents>(
-		event: E,
-		listener: RuntimeChildManagerEvents[E],
-	): this;
-	off<E extends keyof RuntimeChildManagerEvents>(
-		event: E,
-		listener: RuntimeChildManagerEvents[E],
-	): this;
-	emit<E extends keyof RuntimeChildManagerEvents>(
-		event: E,
-		...args: Parameters<RuntimeChildManagerEvents[E]>
-	): boolean;
-}
-
-export class RuntimeChildManager extends EventEmitter {
+export class RuntimeChildManager extends EventEmitter<RuntimeChildManagerEvents> {
 	private readonly opts: {
 		cliPath: string;
 		shutdownTimeoutMs: number;
@@ -216,10 +192,6 @@ export class RuntimeChildManager extends EventEmitter {
 
 	get running(): boolean {
 		return this.child !== null;
-	}
-
-	get pid(): number | null {
-		return this.child?.pid ?? null;
 	}
 
 	private async spawnChild(config: RuntimeChildConfig): Promise<string> {
