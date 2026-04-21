@@ -258,9 +258,57 @@ export class CloudTaskChatService {
 					toolName: name,
 					...(toolCallId ? { toolCallId } : {}),
 				});
-				this.appendMessage(taskId, toolMessage);
+				// WI-21: dedupe re-emits of the same tool_call.
+				//
+				// WI-15 (fix "unknown unknown" rendering) made the ACP client
+				// re-emit a tool_call on terminal status so the UI can update
+				// from "pending" to "completed" with the final output text.
+				// Without dedupe that produces two separate tool-use entries
+				// in the chat for a single underlying tool invocation — the
+				// original pending snapshot, then the completed one below
+				// it. Both claim the same toolCallId, so the UI can't even
+				// infer they're siblings.
+				//
+				// The fix mirrors how `appendAssistantChunk` handles streaming
+				// text updates: find an existing message with the same
+				// meta.toolCallId, replace its content+meta in place, and
+				// emit as an update (not an append). The message.id is
+				// preserved so subscribers can update rather than append.
+				//
+				// If no toolCallId is present on the incoming event we can't
+				// safely dedupe (no correlation key) and fall through to
+				// append — same as the pre-fix behavior for that edge case.
+				let replaced = false;
+				if (toolCallId) {
+					const state = this.ensureTask(taskId);
+					const idx = state.messages.findIndex(
+						(m) => m.role === "tool" && m.meta?.toolCallId === toolCallId,
+					);
+					if (idx !== -1) {
+						const updated: ClineTaskMessage = {
+							...state.messages[idx],
+							content,
+							meta: toolMessage.meta,
+						};
+						state.messages[idx] = updated;
+						this.emitMessage(taskId, updated);
+						replaced = true;
+					}
+				}
+				if (!replaced) {
+					this.appendMessage(taskId, toolMessage);
+				}
 
+				// Attention-tool hooks fire on every tool_call (including
+				// re-emits). This is intentional and idempotent: the summary
+				// patch writes the same state+reviewReason each time and
+				// just bumps lastHookAt. Firing on the completed re-emit is
+				// especially important when the pending emit landed before
+				// the user-attention tool had its final output — the
+				// terminal emit is the authoritative "this tool finished"
+				// moment.
 				if (isCloudCompletionTool(name)) {
+
 					this.emitSummaryPatch(taskId, {
 						state: "awaiting_review",
 						reviewReason: "attention",
