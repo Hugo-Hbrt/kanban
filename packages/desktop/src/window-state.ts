@@ -106,7 +106,7 @@ export function extractPersistablePath(
 			return url.pathname;
 		}
 	} catch {
-		// Malformed URL — fall through to null.
+		/* malformed URL */
 	}
 	return null;
 }

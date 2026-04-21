@@ -9,10 +9,6 @@
 
 import { existsSync } from "node:fs";
 
-// ---------------------------------------------------------------------------
-// Public interfaces
-// ---------------------------------------------------------------------------
-
 export interface DesktopPreflightFailure {
 	code: "PRELOAD_MISSING" | "CLI_SHIM_MISSING" | "NODE_PTY_UNAVAILABLE";
 	message: string;
@@ -30,7 +26,6 @@ export interface DesktopPreflightOptions {
 	 * entry point exists; the shim itself validates the interior binary.
 	 */
 	cliShimPath: string;
-	/** Whether the app is running in a packaged build. */
 	isPackaged: boolean;
 	/** When true, attempt to verify that node-pty can be loaded. Defaults to false. */
 	checkNodePty?: boolean;
@@ -53,10 +48,6 @@ export interface DesktopPreflightResult {
 		nodePtyLoadable: boolean | null;
 	};
 }
-
-// ---------------------------------------------------------------------------
-// Implementation
-// ---------------------------------------------------------------------------
 
 // This module is compiled to CommonJS (see tsconfig.build.json), so the
 // `require` global below is available at runtime. If the compile target

@@ -11,21 +11,10 @@
 import type { BrowserWindow } from "electron";
 import { dialog } from "electron";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/** Dependencies injected for testability. */
 export interface OAuthRelayDeps {
-	/** The fetch implementation to use (defaults to global `fetch`). */
 	fetch: typeof globalThis.fetch;
-	/** Returns the main BrowserWindow, or null if unavailable. */
 	getMainWindow: () => BrowserWindow | null;
 }
-
-// ---------------------------------------------------------------------------
-// relayOAuthCallback
-// ---------------------------------------------------------------------------
 
 /**
  * Relay an OAuth callback to the runtime server with retry logic.
@@ -52,7 +41,7 @@ export async function relayOAuthCallback(
 			});
 			if (response.ok) return;
 		} catch {
-			/* retry */
+			/* swallow and retry on next iteration */
 		}
 		if (attempt < retries) await new Promise((r) => setTimeout(r, 1_000));
 	}

@@ -18,49 +18,25 @@
  *      complete the token exchange
  */
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** The protocol scheme registered with the OS (without the "://" suffix). */
 export const KANBAN_PROTOCOL = "kanban";
-
-/** The pathname expected for OAuth callbacks. */
 export const OAUTH_CALLBACK_PATH = "/oauth/callback";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-/** OAuth-specific parameters extracted from a kanban:// callback URL. */
 export interface OAuthCallbackParams {
-	/** The authorization code returned by the provider. */
 	code: string | null;
-	/** The state parameter for CSRF verification. */
 	state: string | null;
-	/** An error code if the provider denied the request. */
 	error: string | null;
-	/** A human-readable error description. */
 	errorDescription: string | null;
 }
 
-/** Structured result from parsing a kanban:// URL. */
 export interface ParsedProtocolUrl {
-	/** The raw URL string that was parsed. */
 	raw: string;
-	/** The pathname portion (e.g. "/oauth/callback"). */
 	pathname: string;
-	/** The full search params map. */
 	searchParams: URLSearchParams;
 	/** Whether this URL matches the OAuth callback path. */
 	isOAuthCallback: boolean;
 	/** OAuth params — only meaningful when `isOAuthCallback` is true. */
 	oauth: OAuthCallbackParams;
 }
-
-// ---------------------------------------------------------------------------
-// Parsing
-// ---------------------------------------------------------------------------
 
 /**
  * Parse a `kanban://` URL into a structured result.
@@ -78,7 +54,6 @@ export function parseProtocolUrl(raw: string): ParsedProtocolUrl | null {
 		return null;
 	}
 
-	// Only accept kanban: scheme.
 	if (url.protocol !== `${KANBAN_PROTOCOL}:`) {
 		return null;
 	}
@@ -108,10 +83,6 @@ export function parseProtocolUrl(raw: string): ParsedProtocolUrl | null {
 	};
 }
 
-// ---------------------------------------------------------------------------
-// Protocol registration
-// ---------------------------------------------------------------------------
-
 /**
  * Minimal subset of `Electron.App` needed for protocol registration.
  *
@@ -139,10 +110,6 @@ export function registerProtocol(electronApp: ElectronAppLike): boolean {
 	}
 	return electronApp.setAsDefaultProtocolClient(KANBAN_PROTOCOL);
 }
-
-// ---------------------------------------------------------------------------
-// URL extraction from argv (Windows/Linux)
-// ---------------------------------------------------------------------------
 
 /**
  * Extract a `kanban://` URL from a process argv array.

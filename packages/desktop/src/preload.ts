@@ -13,12 +13,8 @@ import { contextBridge, ipcRenderer } from "electron";
  * main-process capabilities that can't go through the runtime HTTP/WS layer.
  */
 const desktopApi = {
-	/** Returns the platform the desktop app is running on. */
 	platform: process.platform,
 
-	/**
-	 * Open a new Electron window locked to the given project.
-	 */
 	openProjectWindow(projectId: string): void {
 		ipcRenderer.send("open-project-window", projectId);
 	},

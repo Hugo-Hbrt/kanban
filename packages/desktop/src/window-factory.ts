@@ -148,10 +148,6 @@ export class WindowFactory {
 	}
 }
 
-/**
- * Composes the URL a new window should load from a runtime URL plus the
- * caller's optional projectId / initialPath.
- */
 function buildWindowUrl(
 	runtimeUrl: string,
 	options: CreateWindowOptions,
