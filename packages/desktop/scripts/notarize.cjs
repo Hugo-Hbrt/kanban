@@ -35,15 +35,23 @@ function checkEnvironment(env) {
 
 /**
  * Determine whether notarization should run based on platform and environment.
- * @param {string} platformName — electron-builder platform name (e.g. "mac", "win", "linux")
+ *
+ * NOTE ON PLATFORM NAMING: electron-builder's afterSign hook receives
+ * `context.electronPlatformName`, which is the **Electron** platform string
+ * (`"darwin"`, `"win32"`, `"linux"`) — *not* the electron-builder config name
+ * (`"mac"`, `"win"`, `"linux"`). On macOS builds this value is always
+ * `"darwin"`. We compare against `"darwin"` here; comparing against `"mac"`
+ * would silently skip notarization on every real macOS build.
+ *
+ * @param {string} platformName — electronPlatformName from afterSign context (e.g. "darwin", "win32", "linux")
  * @param {Record<string, string | undefined>} env
  * @returns {{ shouldNotarize: true } | { shouldNotarize: false; reason: string }}
  */
 function shouldNotarize(platformName, env) {
-	if (platformName !== "mac") {
+	if (platformName !== "darwin") {
 		return {
 			shouldNotarize: false,
-			reason: `Skipping notarization: platform is "${platformName}", not "mac".`,
+			reason: `Skipping notarization: platform is "${platformName}", not "darwin".`,
 		};
 	}
 

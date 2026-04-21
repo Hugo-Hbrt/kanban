@@ -94,17 +94,23 @@ describe("shouldNotarize", () => {
 		APPLE_TEAM_ID: "ABC1234567",
 	};
 
-	it("returns shouldNotarize true for mac with full env", () => {
-		const result = shouldNotarize("mac", fullEnv);
+	// NOTE: The platform string passed to shouldNotarize is
+	// `context.electronPlatformName` from electron-builder's afterSign hook.
+	// It is the **Electron** platform name ("darwin"/"win32"/"linux"), NOT the
+	// electron-builder config alias ("mac"/"win"/"linux"). Tests use the
+	// actual runtime contract, not the config-file aliases.
+
+	it("returns shouldNotarize true for darwin (macOS) with full env", () => {
+		const result = shouldNotarize("darwin", fullEnv);
 		expect(result).toEqual({ shouldNotarize: true });
 	});
 
-	it("skips notarization for win platform", () => {
-		const result = shouldNotarize("win", fullEnv);
+	it("skips notarization for win32 platform", () => {
+		const result = shouldNotarize("win32", fullEnv);
 		expect(result.shouldNotarize).toBe(false);
 		if (!result.shouldNotarize) {
-			expect(result.reason).toContain("win");
-			expect(result.reason).toContain("not \"mac\"");
+			expect(result.reason).toContain("win32");
+			expect(result.reason).toContain("not \"darwin\"");
 		}
 	});
 
@@ -116,8 +122,20 @@ describe("shouldNotarize", () => {
 		}
 	});
 
-	it("skips notarization when env vars are missing on mac", () => {
-		const result = shouldNotarize("mac", {});
+	// Regression guard: the electron-builder config alias "mac" must NOT be
+	// treated as the runtime platform string. If this test ever starts
+	// passing, it means someone re-introduced the "mac" check — which would
+	// silently disable notarization on every real macOS release build.
+	it("treats the config alias \"mac\" as a non-matching platform (regression guard)", () => {
+		const result = shouldNotarize("mac", fullEnv);
+		expect(result.shouldNotarize).toBe(false);
+		if (!result.shouldNotarize) {
+			expect(result.reason).toContain("not \"darwin\"");
+		}
+	});
+
+	it("skips notarization when env vars are missing on darwin", () => {
+		const result = shouldNotarize("darwin", {});
 		expect(result.shouldNotarize).toBe(false);
 		if (!result.shouldNotarize) {
 			expect(result.reason).toContain("missing env vars");
@@ -127,7 +145,7 @@ describe("shouldNotarize", () => {
 
 	it("skips notarization when only some env vars are set", () => {
 		const partialEnv = { APPLE_ID: "dev@example.com" };
-		const result = shouldNotarize("mac", partialEnv);
+		const result = shouldNotarize("darwin", partialEnv);
 		expect(result.shouldNotarize).toBe(false);
 		if (!result.shouldNotarize) {
 			expect(result.reason).toContain("APPLE_ID_PASSWORD");
