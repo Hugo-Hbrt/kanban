@@ -155,7 +155,7 @@ ipcMain.on("restart-runtime", async () => {
 		console.error(`[desktop] Failed to restart runtime: ${msg}`);
 		dialog.showErrorBox(
 			"Kanban Startup Error",
-			`Failed to start runtime:\n\n${msg}`,
+			`Failed to restart runtime:\n\n${msg}`,
 		);
 	}
 });
@@ -234,7 +234,7 @@ function wireAppLifecycle(): void {
 			console.error(`[desktop] Failed to start runtime: ${msg}`);
 			dialog.showErrorBox(
 				"Kanban Startup Error",
-				`Failed to start the runtime:\n\n${msg}`,
+				`Failed to start runtime:\n\n${msg}`,
 			);
 		}
 
