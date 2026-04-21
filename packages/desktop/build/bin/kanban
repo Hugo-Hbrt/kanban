@@ -1,0 +1,22 @@
+#!/bin/bash
+# Kanban CLI shim — bundled with the desktop app.
+#
+# Spawned by the desktop main process (as `cliPath`) and also placed on the
+# PATH of agent sessions so hooks can invoke `kanban` by name. Executes the
+# pre-built CLI bundle that ships alongside the app at
+# Resources/app.asar.unpacked/cli/cli.js — the unpacked location lets
+# cli.js's ESM resolution walk up to Resources/app.asar.unpacked/node_modules/
+# for node-pty (the one native runtime dep).
+#
+# See electron-builder.yml `files` + `asarUnpack` for how cli.js gets there.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+RESOURCES_DIR="$(dirname "$SCRIPT_DIR")"
+CLI_ENTRY="$RESOURCES_DIR/app.asar.unpacked/cli/cli.js"
+
+if [ ! -f "$CLI_ENTRY" ]; then
+  echo "error: Kanban CLI not found at $CLI_ENTRY" >&2
+  exit 1
+fi
+
+exec node "$CLI_ENTRY" "$@"
