@@ -19,11 +19,8 @@ import path from "node:path";
 
 import { buildFilteredEnv } from "./runtime-child-env.js";
 
-/** Configuration passed to the CLI subprocess. */
 export interface RuntimeChildConfig {
-	/** Host the runtime HTTP server binds to. */
 	host: string;
-	/** Port the runtime HTTP server binds to. */
 	port: number;
 }
 
@@ -39,7 +36,6 @@ export interface RuntimeChildManagerEvents {
 }
 
 export interface RuntimeChildManagerOptions {
-	/** Path to the Kanban CLI binary (e.g. `Resources/bin/kanban`). */
 	cliPath: string;
 	/** Graceful-shutdown grace period before force-kill. Default: 5 000 ms. */
 	shutdownTimeoutMs?: number;
@@ -53,7 +49,6 @@ export interface RuntimeChildManagerOptions {
 	 * Node process, so generous headroom matters for multi-agent workloads.
 	 */
 	maxOldSpaceMb?: number;
-	/** Injected `child_process.spawn` for tests. */
 	spawnFn?: typeof spawn;
 }
 
@@ -71,24 +66,23 @@ export function resolveCliPath(rawPath: string): string {
 	);
 }
 
-/** Kill a process tree. Uses `taskkill /T /F` on Windows. */
+// Uses `taskkill /T /F` on Windows to walk the grandchild tree.
 function treeKill(pid: number, signal: NodeJS.Signals = "SIGTERM"): void {
 	if (process.platform === "win32") {
 		try {
 			execSync(`taskkill /T /F /PID ${pid}`, { stdio: "ignore" });
 		} catch {
-			/* already dead */
+			/* process already dead */
 		}
 	} else {
 		try {
 			process.kill(pid, signal);
 		} catch {
-			/* ESRCH */
+			/* process already dead (ESRCH) */
 		}
 	}
 }
 
-/** Poll an HTTP endpoint until it responds or the deadline is reached. */
 function waitForReady(
 	host: string,
 	port: number,
@@ -151,7 +145,6 @@ export class RuntimeChildManager extends EventEmitter<RuntimeChildManagerEvents>
 		};
 	}
 
-	/** Start the CLI subprocess. Resolves with the runtime URL when reachable. */
 	async start(config: RuntimeChildConfig): Promise<string> {
 		if (this.disposed) throw new Error("RuntimeChildManager has been disposed");
 		if (this.child) throw new Error("Child process is already running");
@@ -159,7 +152,7 @@ export class RuntimeChildManager extends EventEmitter<RuntimeChildManagerEvents>
 		return this.spawnChild(config);
 	}
 
-	/** Graceful shutdown via SIGTERM; force-kills after shutdownTimeoutMs. */
+	// Graceful shutdown via SIGTERM; force-kills after shutdownTimeoutMs.
 	async shutdown(): Promise<void> {
 		if (!this.child) return;
 		this.shutdownRequested = true;
@@ -183,7 +176,6 @@ export class RuntimeChildManager extends EventEmitter<RuntimeChildManagerEvents>
 		});
 	}
 
-	/** Dispose: kill child and prevent further use. */
 	async dispose(): Promise<void> {
 		this.disposed = true;
 		await this.shutdown();
