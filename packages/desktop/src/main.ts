@@ -31,10 +31,6 @@ import { RuntimeOrchestrator } from "./runtime-orchestrator.js";
 import { WindowFactory } from "./window-factory.js";
 import { WindowRegistry } from "./window-registry.js";
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 const BACKGROUND_COLOR = "#1F2428";
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 3484;
@@ -43,10 +39,7 @@ const HEALTH_TIMEOUT_MS = 3_000;
 const preloadPath = path.join(import.meta.dirname, "preload.js");
 const disconnectedHtmlPath = path.join(import.meta.dirname, "disconnected.html");
 
-// ---------------------------------------------------------------------------
-// Electron runtime tweaks (must run before `app.whenReady()`)
-// ---------------------------------------------------------------------------
-
+// These two calls must run before `app.whenReady()`.
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
 registerProtocol(app);
 
@@ -56,10 +49,7 @@ if (process.env.KANBAN_DESKTOP_USER_DATA) {
 	app.setPath("userData", process.env.KANBAN_DESKTOP_USER_DATA);
 }
 
-// ---------------------------------------------------------------------------
-// Helper modules — instantiated at module load, wired after lock acquisition
-// ---------------------------------------------------------------------------
-
+// Helper modules — instantiated at module load, wired after lock acquisition.
 let isQuitting = false;
 
 const registry = new WindowRegistry();
@@ -97,10 +87,6 @@ orchestrator.on("url-changed", (url) => {
 });
 orchestrator.on("crashed", () => windowFactory.showDisconnectedScreen());
 
-// ---------------------------------------------------------------------------
-// Deep-link handling (kanban:// URLs — OAuth callbacks)
-// ---------------------------------------------------------------------------
-
 function handleProtocolUrl(raw: string): void {
 	const parsed = parseProtocolUrl(raw);
 	const runtimeUrl = orchestrator.getUrl();
@@ -129,10 +115,6 @@ app.on("open-url", (event, url) => {
 	handleProtocolUrl(url);
 });
 
-// ---------------------------------------------------------------------------
-// CLI shim path — packaged vs dev
-// ---------------------------------------------------------------------------
-
 function resolveCliShimPath(): string {
 	if (app.isPackaged) {
 		const shimName = process.platform === "win32" ? "kanban.cmd" : "kanban";
@@ -142,10 +124,6 @@ function resolveCliShimPath(): string {
 		process.platform === "win32" ? "kanban-dev.cmd" : "kanban-dev";
 	return path.join(import.meta.dirname, "..", "build", "bin", devShimName);
 }
-
-// ---------------------------------------------------------------------------
-// --project <id> / --project=<id> parsing for single-instance forwarding
-// ---------------------------------------------------------------------------
 
 function parseProjectFromArgv(argv: string[]): string | null {
 	for (let i = 0; i < argv.length; i++) {
@@ -161,10 +139,6 @@ function parseProjectFromArgv(argv: string[]): string | null {
 	}
 	return null;
 }
-
-// ---------------------------------------------------------------------------
-// IPC bridge (renderer → main, exposed via preload.ts)
-// ---------------------------------------------------------------------------
 
 ipcMain.on("open-project-window", (_event, projectId: string) => {
 	if (typeof projectId === "string" && projectId) {
@@ -185,10 +159,6 @@ ipcMain.on("restart-runtime", async () => {
 		);
 	}
 });
-
-// ---------------------------------------------------------------------------
-// Single-instance lock + second-instance dispatch
-// ---------------------------------------------------------------------------
 
 const gotTheLock = app.requestSingleInstanceLock();
 
@@ -215,15 +185,10 @@ if (!gotTheLock) {
 	wireAppLifecycle();
 }
 
-// ---------------------------------------------------------------------------
-// App lifecycle — startup + shutdown
-// ---------------------------------------------------------------------------
-
 function wireAppLifecycle(): void {
 	app.whenReady().then(async () => {
 		await mkdir(app.getPath("userData"), { recursive: true }).catch(() => {});
 
-		// ── Preflight ─────────────────────────────────────────────────
 		const cliShimPath = resolveCliShimPath();
 		const preflight = runDesktopPreflight({
 			preloadPath,
@@ -248,7 +213,6 @@ function wireAppLifecycle(): void {
 			console.warn(`[desktop] Preflight warning [${warning.code}]: ${warning.message}`);
 		}
 
-		// ── Create windows ────────────────────────────────────────────
 		const persistedStates = WindowRegistry.loadPersistedWindows(
 			app.getPath("userData"),
 		);
@@ -263,7 +227,6 @@ function wireAppLifecycle(): void {
 		menu.rebuild();
 		orchestrator.startAppNapPrevention();
 
-		// ── Connect to runtime ────────────────────────────────────────
 		try {
 			await orchestrator.connect();
 		} catch (error) {

@@ -230,7 +230,7 @@ export class WindowRegistry {
 				url.pathname = entry.lastViewedPath;
 				return url.toString();
 			} catch {
-				// Fall through.
+				/* fall through */
 			}
 		}
 		if (entry.projectId) {
