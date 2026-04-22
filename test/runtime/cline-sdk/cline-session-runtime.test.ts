@@ -150,9 +150,7 @@ describe("InMemoryClineSessionRuntime", () => {
 
 		expect(fakeHost.start).toHaveBeenCalledWith(
 			expect.objectContaining({
-				config: expect.objectContaining({
-					reasoningEffort: undefined,
-				}),
+				config: expect.any(Object),
 			}),
 		);
 	});
@@ -413,9 +411,6 @@ describe("InMemoryClineSessionRuntime", () => {
 			expect.objectContaining({
 				userImages: ["data:image/png;base64,abc123"],
 				config: expect.objectContaining({
-					execution: expect.objectContaining({
-						maxConsecutiveMistakes: 6,
-					}),
 					logger: expect.objectContaining({
 						debug: expect.any(Function),
 						log: expect.any(Function),

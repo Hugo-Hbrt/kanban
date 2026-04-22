@@ -2,8 +2,18 @@
 	"extends": "../../tsconfig.base.json",
 	"compilerOptions": {
 		"noEmit": true,
-		"types": ["node"]
+		"types": [
+			"node",
+			"vitest/globals"
+		]
 	},
-	"include": ["src/**/*.ts", "test/**/*.ts"],
-	"exclude": ["dist", "out", "node_modules"]
+	"include": [
+		"src/**/*.ts",
+		"test/**/*.ts"
+	],
+	"exclude": [
+		"dist",
+		"out",
+		"node_modules"
+	]
 }

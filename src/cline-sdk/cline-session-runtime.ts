@@ -198,26 +198,20 @@ export class InMemoryClineSessionRuntime implements ClineSessionRuntime {
 		let startResult: Awaited<ReturnType<ClineSessionHostBoundary["start"]>>;
 		try {
 			startResult = await sessionHost.start({
-				config: {
-					sessionId: requestedSessionId,
-					providerId: request.providerId,
-					modelId: request.modelId,
-					apiKey: request.apiKey?.trim() || undefined,
-					baseUrl: request.baseUrl?.trim() || undefined,
-					reasoningEffort:
-						request.reasoningEffort === null
-							? ("none" as ClineSdkStartSessionInput["config"]["reasoningEffort"])
-							: (request.reasoningEffort ?? undefined),
-					cwd: request.cwd,
-					mode: resolvedMode,
-					enableTools: true,
-					enableSpawnAgent: false,
-					enableAgentTeams: false,
-					...(hasMcpExtraTools ? { disableMcpSettingsTools: true } : {}),
-					execution: {
-						maxConsecutiveMistakes: DEFAULT_CLINE_MAX_CONSECUTIVE_MISTAKES,
-					},
-					systemPrompt: request.systemPrompt,
+			config: {
+				sessionId: requestedSessionId,
+				providerId: request.providerId,
+				modelId: request.modelId,
+				apiKey: request.apiKey?.trim() || undefined,
+				baseUrl: request.baseUrl?.trim() || undefined,
+				// SDK 0.0.35 removed reasoningEffort and execution from RuntimeSessionConfig
+				cwd: request.cwd,
+				mode: resolvedMode,
+				enableTools: true,
+				enableSpawnAgent: false,
+				enableAgentTeams: false,
+				...(hasMcpExtraTools ? { disableMcpSettingsTools: true } : {}),
+				systemPrompt: request.systemPrompt,
 					logger: createKanbanClineLogger({
 						runtime: "kanban",
 						taskId: request.taskId,
@@ -231,9 +225,9 @@ export class InMemoryClineSessionRuntime implements ClineSessionRuntime {
 				initialMessages: request.initialMessages,
 				interactive: true,
 				userImages: toSdkUserImages(request.images),
-				localRuntime: request.userInstructionWatcher
-					? { userInstructionWatcher: request.userInstructionWatcher }
-					: undefined,
+				// SDK 0.0.35+ flattened `localRuntime.userInstructionWatcher`
+				// onto the top-level StartSessionInput.
+				userInstructionWatcher: request.userInstructionWatcher,
 				requestToolApproval: request.requestToolApproval,
 			});
 		} catch (error) {
