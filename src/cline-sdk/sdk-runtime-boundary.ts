@@ -234,7 +234,6 @@ export type ClineSdkToolApprovalResult = ToolApprovalResult;
 export async function createClineSdkSessionHost(): Promise<ClineSdkSessionHost> {
 	return await ClineCore.create({
 		backendMode: "auto",
-		rpc: { autoStart: true },
 		telemetry: getCliTelemetryService(),
 	});
 }
