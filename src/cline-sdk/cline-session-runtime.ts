@@ -19,6 +19,7 @@ import {
 	type ClineSdkToolApprovalResult,
 	type ClineSdkUserInstructionWatcher,
 	createClineSdkSessionHost,
+	splitCoreSessionConfig,
 } from "./sdk-runtime-boundary";
 
 const DEFAULT_CLINE_MAX_CONSECUTIVE_MISTAKES = 6;
@@ -197,14 +198,16 @@ export class InMemoryClineSessionRuntime implements ClineSessionRuntime {
 		const sessionHost = await this.ensureSessionHost();
 		let startResult: Awaited<ReturnType<ClineSessionHostBoundary["start"]>>;
 		try {
-			startResult = await sessionHost.start({
-			config: {
+			// SDK 0.0.35 uses splitCoreSessionConfig to separate RuntimeSessionConfig
+			// (transport-safe narrow fields) from LocalRuntimeStartOptions (logger, execution, etc.)
+			const { config, localRuntime } = splitCoreSessionConfig({
 				sessionId: requestedSessionId,
 				providerId: request.providerId,
 				modelId: request.modelId,
 				apiKey: request.apiKey?.trim() || undefined,
 				baseUrl: request.baseUrl?.trim() || undefined,
-				// SDK 0.0.35 removed reasoningEffort and execution from RuntimeSessionConfig
+				reasoningEffort:
+					request.reasoningEffort === null ? ("none" as any) : (request.reasoningEffort ?? undefined),
 				cwd: request.cwd,
 				mode: resolvedMode,
 				enableTools: true,
@@ -212,22 +215,29 @@ export class InMemoryClineSessionRuntime implements ClineSessionRuntime {
 				enableAgentTeams: false,
 				...(hasMcpExtraTools ? { disableMcpSettingsTools: true } : {}),
 				systemPrompt: request.systemPrompt,
-					logger: createKanbanClineLogger({
-						runtime: "kanban",
-						taskId: request.taskId,
-						requestedSessionId,
-						providerId: request.providerId,
-						modelId: request.modelId,
-					}),
-					...(hasMcpExtraTools ? { extraTools: mcpToolBundle?.tools ?? [] } : {}),
+				logger: createKanbanClineLogger({
+					runtime: "kanban",
+					taskId: request.taskId,
+					requestedSessionId,
+					providerId: request.providerId,
+					modelId: request.modelId,
+				}),
+				execution: {
+					maxConsecutiveMistakes: DEFAULT_CLINE_MAX_CONSECUTIVE_MISTAKES,
 				},
+				...(hasMcpExtraTools ? { extraTools: mcpToolBundle?.tools ?? [] } : {}),
+			});
+
+			startResult = await sessionHost.start({
+				config,
 				prompt: request.prompt,
 				initialMessages: request.initialMessages,
 				interactive: true,
 				userImages: toSdkUserImages(request.images),
-				// SDK 0.0.35+ flattened `localRuntime.userInstructionWatcher`
-				// onto the top-level StartSessionInput.
-				userInstructionWatcher: request.userInstructionWatcher,
+				localRuntime: {
+					...localRuntime,
+					userInstructionWatcher: request.userInstructionWatcher,
+				},
 				requestToolApproval: request.requestToolApproval,
 			});
 		} catch (error) {

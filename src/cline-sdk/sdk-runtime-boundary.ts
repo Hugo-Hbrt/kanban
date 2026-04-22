@@ -24,7 +24,7 @@ import type * as Llms from "@clinebot/llms";
 import { CLINE_BUILTIN_SLASH_COMMANDS } from "./cline-slash-commands";
 import { getCliTelemetryService } from "./cline-telemetry-service";
 
-export { TelemetryLoggerSink, TelemetryService } from "@clinebot/core";
+export { splitCoreSessionConfig, TelemetryLoggerSink, TelemetryService } from "@clinebot/core";
 
 export type ClineSdkSessionHost = SessionHost;
 export type ClineSdkBasicLogger = BasicLogger;
@@ -296,13 +296,14 @@ export async function resolveClineSdkSystemPrompt(input: {
 	providerId: string;
 	rules?: string;
 }): Promise<string> {
-	// The Cline SDK can run against non-Cline providers too, but only the
-	// "cline" provider expects the extra workspace metadata block that powers
-	// its repo-aware behavior in the same way the official CLI does.
-	const shouldAppendWorkspaceMetadata = input.providerId === "cline";
-	const workspaceMetadata = shouldAppendWorkspaceMetadata ? await buildWorkspaceMetadata(input.cwd) : "";
-	// SDK switched from object-param to positional args; signature is
-	// `(ide, cwd, providerId, metadata?, rules?, platform?)`. See
-	// node_modules/@clinebot/core/dist/prompt/default-system.d.ts.
-	return getClineDefaultSystemPrompt("Kanban", input.cwd, input.providerId, workspaceMetadata, input.rules ?? "");
+	// getClineDefaultSystemPrompt (alias for buildClineSystemPrompt) now takes
+	// a single options object. See node_modules/@clinebot/shared/dist/prompt/cline.d.ts
+	const workspaceMetadata = await buildWorkspaceMetadata(input.cwd);
+	return getClineDefaultSystemPrompt({
+		ide: "Kanban",
+		rootPath: input.cwd,
+		providerId: input.providerId,
+		metadata: workspaceMetadata,
+		rules: input.rules ?? "",
+	});
 }
