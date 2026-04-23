@@ -45,6 +45,19 @@ const child = spawn(electronPath, [resolve(desktopRoot, "dist", "main.js"), ...e
 	cwd: desktopRoot,
 });
 
+// Surface spawn-time failures (missing binary, EACCES on the Electron
+// helper, etc.) instead of letting them manifest as a silent no-output
+// exit. Without this handler, a failed spawn emits only the 'error'
+// event and never calls the 'close' handler above, so the process would
+// exit 0 without a clue as to what went wrong.
+child.on("error", (err) => {
+	console.error(
+		`Failed to launch Electron at ${electronPath}:`,
+		err instanceof Error ? err.message : err,
+	);
+	process.exit(1);
+});
+
 child.on("close", (code, signal) => {
 	if (code !== null) {
 		process.exit(code);
