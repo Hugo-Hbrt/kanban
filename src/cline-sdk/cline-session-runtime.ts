@@ -19,7 +19,6 @@ import {
 	type ClineSdkToolApprovalResult,
 	type ClineSdkUserInstructionWatcher,
 	createClineSdkSessionHost,
-	splitCoreSessionConfig,
 } from "./sdk-runtime-boundary";
 
 const DEFAULT_CLINE_MAX_CONSECUTIVE_MISTAKES = 6;
@@ -198,46 +197,43 @@ export class InMemoryClineSessionRuntime implements ClineSessionRuntime {
 		const sessionHost = await this.ensureSessionHost();
 		let startResult: Awaited<ReturnType<ClineSessionHostBoundary["start"]>>;
 		try {
-			// SDK 0.0.35 uses splitCoreSessionConfig to separate RuntimeSessionConfig
-			// (transport-safe narrow fields) from LocalRuntimeStartOptions (logger, execution, etc.)
-			const { config, localRuntime } = splitCoreSessionConfig({
-				sessionId: requestedSessionId,
-				providerId: request.providerId,
-				modelId: request.modelId,
-				apiKey: request.apiKey?.trim() || undefined,
-				baseUrl: request.baseUrl?.trim() || undefined,
-				reasoningEffort:
-					request.reasoningEffort === null ? ("none" as any) : (request.reasoningEffort ?? undefined),
-				cwd: request.cwd,
-				mode: resolvedMode,
-				enableTools: true,
-				enableSpawnAgent: false,
-				enableAgentTeams: false,
-				...(hasMcpExtraTools ? { disableMcpSettingsTools: true } : {}),
-				systemPrompt: request.systemPrompt,
-				logger: createKanbanClineLogger({
-					runtime: "kanban",
-					taskId: request.taskId,
-					requestedSessionId,
+			startResult = await sessionHost.start({
+				config: {
+					sessionId: requestedSessionId,
 					providerId: request.providerId,
 					modelId: request.modelId,
-				}),
-				execution: {
-					maxConsecutiveMistakes: DEFAULT_CLINE_MAX_CONSECUTIVE_MISTAKES,
+					apiKey: request.apiKey?.trim() || undefined,
+					baseUrl: request.baseUrl?.trim() || undefined,
+					reasoningEffort:
+						request.reasoningEffort === null
+							? ("none" as ClineSdkStartSessionInput["config"]["reasoningEffort"])
+							: (request.reasoningEffort ?? undefined),
+					cwd: request.cwd,
+					mode: resolvedMode,
+					enableTools: true,
+					enableSpawnAgent: false,
+					enableAgentTeams: false,
+					...(hasMcpExtraTools ? { disableMcpSettingsTools: true } : {}),
+					execution: {
+						maxConsecutiveMistakes: DEFAULT_CLINE_MAX_CONSECUTIVE_MISTAKES,
+					},
+					systemPrompt: request.systemPrompt,
+					logger: createKanbanClineLogger({
+						runtime: "kanban",
+						taskId: request.taskId,
+						requestedSessionId,
+						providerId: request.providerId,
+						modelId: request.modelId,
+					}),
+					...(hasMcpExtraTools ? { extraTools: mcpToolBundle?.tools ?? [] } : {}),
 				},
-				...(hasMcpExtraTools ? { extraTools: mcpToolBundle?.tools ?? [] } : {}),
-			});
-
-			startResult = await sessionHost.start({
-				config,
 				prompt: request.prompt,
 				initialMessages: request.initialMessages,
 				interactive: true,
 				userImages: toSdkUserImages(request.images),
-				localRuntime: {
-					...localRuntime,
-					userInstructionWatcher: request.userInstructionWatcher,
-				},
+				localRuntime: request.userInstructionWatcher
+					? { userInstructionWatcher: request.userInstructionWatcher }
+					: undefined,
 				requestToolApproval: request.requestToolApproval,
 			});
 		} catch (error) {
