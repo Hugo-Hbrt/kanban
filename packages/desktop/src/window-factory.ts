@@ -18,7 +18,10 @@ import { BrowserWindow, dialog } from "electron";
 
 import type { RuntimeOrchestrator } from "./runtime-orchestrator.js";
 import { WindowRegistry } from "./window-registry.js";
-import type { PersistedWindowState } from "./window-state.js";
+import {
+	type PersistedWindowState,
+	isPersistableRuntimePath,
+} from "./window-state.js";
 
 export interface WindowFactoryOptions {
 	preloadPath: string;
@@ -174,7 +177,17 @@ function buildWindowUrl(
 		return WindowRegistry.buildWindowUrl(runtimeUrl, options.projectId);
 	}
 	if (options.initialPath) {
-		if (!isSafeInitialPath(options.initialPath)) {
+		// Two-layer defence: `isSafeInitialPath` rejects malformed or
+		// scheme-ish values (`//foo`, `/file:/…`) that could escape the
+		// runtime origin; `isPersistableRuntimePath` rejects values that
+		// would resolve to 404 against the runtime (filesystem-looking
+		// paths, `.html` routes). This matches the guard in
+		// `window-registry.buildEntryUrl` so any future caller passing an
+		// untrusted path gets the same treatment.
+		if (
+			!isSafeInitialPath(options.initialPath) ||
+			!isPersistableRuntimePath(options.initialPath)
+		) {
 			console.warn(
 				`[desktop] Ignoring unsafe initialPath: ${options.initialPath}`,
 			);
