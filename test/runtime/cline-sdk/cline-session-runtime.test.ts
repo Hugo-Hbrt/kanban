@@ -107,15 +107,11 @@ describe("InMemoryClineSessionRuntime", () => {
 			expect.objectContaining({
 				config: expect.objectContaining({
 					disableMcpSettingsTools: true,
-				}),
-				localRuntime: expect.objectContaining({
-					configOverrides: expect.objectContaining({
-						extraTools: expect.arrayContaining([
-							expect.objectContaining({
-								name: "mock__echo",
-							}),
-						]),
-					}),
+					extraTools: expect.arrayContaining([
+						expect.objectContaining({
+							name: "mock__echo",
+						}),
+					]),
 				}),
 			}),
 		);
@@ -414,13 +410,11 @@ describe("InMemoryClineSessionRuntime", () => {
 		expect(fakeHost.start).toHaveBeenCalledWith(
 			expect.objectContaining({
 				userImages: ["data:image/png;base64,abc123"],
-				localRuntime: expect.objectContaining({
-					configOverrides: expect.objectContaining({
-						logger: expect.objectContaining({
-							debug: expect.any(Function),
-							log: expect.any(Function),
-							error: expect.any(Function),
-						}),
+				config: expect.objectContaining({
+					logger: expect.objectContaining({
+						debug: expect.any(Function),
+						log: expect.any(Function),
+						error: expect.any(Function),
 					}),
 				}),
 			}),
