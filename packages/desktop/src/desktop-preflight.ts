@@ -2,9 +2,12 @@
  * Desktop preflight validation — checks that critical packaged/dev resources
  * exist before the app gets deep into boot.
  *
- * Run this early in the app.whenReady() boot path so that missing preload
- * scripts, CLI binaries, or CLI shims fail deterministically with
- * actionable messages rather than opaque late-boot crashes.
+ * Run this early in the app.whenReady() boot path so that a missing preload
+ * script or CLI shim fails deterministically with an actionable message
+ * rather than an opaque late-boot crash. An additional soft probe verifies
+ * that the bundled `node-pty` native binding loads against Electron's ABI;
+ * a failure there is a warning (terminal feature degradation), not a boot
+ * blocker.
  */
 
 import { existsSync } from "node:fs";
