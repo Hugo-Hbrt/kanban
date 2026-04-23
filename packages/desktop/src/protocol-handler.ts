@@ -86,8 +86,9 @@ export function parseProtocolUrl(raw: string): ParsedProtocolUrl | null {
 /**
  * Minimal subset of `Electron.App` needed for protocol registration.
  *
- * Keeps this module testable without importing the full Electron types at
- * runtime — mirrors the pattern used in auth.ts.
+ * Kept as a local interface (rather than importing `Electron.App`) so
+ * this module is testable in a plain Node.js environment without the
+ * Electron runtime.
  */
 export interface ElectronAppLike {
 	setAsDefaultProtocolClient(protocol: string): boolean;

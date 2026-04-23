@@ -33,12 +33,14 @@ export interface RuntimeOrchestratorOptions {
 	fetchImpl?: typeof fetch;
 	/**
 	 * How often to poll an attached (not-owned) runtime for liveness (ms).
-	 * Defaults to 2_000. Set to 0 to disable (e.g. in tests).
+	 * Defaults to {@link DEFAULT_ATTACHED_PROBE_INTERVAL_MS} (500). Set to 0
+	 * to disable (e.g. in tests).
 	 */
 	attachedProbeIntervalMs?: number;
 	/**
 	 * Number of consecutive probe failures before we classify an attached
-	 * runtime as crashed. Defaults to 3.
+	 * runtime as crashed. Defaults to
+	 * {@link DEFAULT_ATTACHED_PROBE_FAILURE_THRESHOLD} (2).
 	 */
 	attachedProbeFailureThreshold?: number;
 	/**
@@ -92,7 +94,6 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 	constructor(private readonly opts: RuntimeOrchestratorOptions) {
 		super();
 	}
-
 
 	/** Current runtime URL, or null if disconnected. */
 	getUrl(): string | null {
@@ -202,7 +203,6 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 			this.manager = null;
 		}
 	}
-
 
 	startAppNapPrevention(): void {
 		if (this.powerSaveBlockerId !== -1) return;
