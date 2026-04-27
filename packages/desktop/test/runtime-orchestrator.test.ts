@@ -1,0 +1,1089 @@
+import { EventEmitter } from "node:events";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("electron", () => ({
+	powerSaveBlocker: {
+		start: vi.fn(() => 1),
+		stop: vi.fn(),
+	},
+}));
+
+// EventEmitter-based stub — lets owned-mode tests emit "crashed" on the
+// instance the orchestrator created internally.
+const childManagers: FakeChildManager[] = [];
+
+class FakeChildManager extends EventEmitter {
+	constructor() {
+		super();
+		childManagers.push(this);
+	}
+	async start(): Promise<string> {
+		return "http://127.0.0.1:3484";
+	}
+	async shutdown(): Promise<void> {}
+	async dispose(): Promise<void> {}
+}
+
+vi.mock("../src/runtime-child.js", () => ({
+	RuntimeChildManager: FakeChildManager,
+}));
+
+const { RuntimeOrchestrator } = await import("../src/runtime-orchestrator.js");
+
+describe("RuntimeOrchestrator attached-runtime crash detection", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		// Module-level array; reset per-test so future assertions on
+		// `childManagers.length` don't see leakage from earlier tests.
+		childManagers.length = 0;
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("emits 'crashed' when attached runtime fails probes past threshold", async () => {
+		let healthy = true;
+		const fetchImpl = vi.fn(async () => {
+			return healthy
+				? ({ ok: true } as Response)
+				: Promise.reject(new Error("ECONNREFUSED"));
+		});
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 3,
+		});
+
+		const crashed = vi.fn();
+		orchestrator.on("crashed", crashed);
+
+		// Initial probe succeeds (before attaching).
+		await orchestrator.connect();
+		expect(orchestrator.getUrl()).toBe("http://127.0.0.1:3484");
+		expect(orchestrator.isOwned()).toBe(false);
+
+		// Simulate the external runtime dying.
+		healthy = false;
+
+		// Advance time, flushing each probe's async work between ticks.
+		for (let i = 0; i < 3; i += 1) {
+			await vi.advanceTimersByTimeAsync(100);
+		}
+
+		expect(crashed).toHaveBeenCalledTimes(1);
+		expect(orchestrator.getUrl()).toBeNull();
+	});
+
+	it("does not emit 'crashed' while attached runtime stays healthy", async () => {
+		const fetchImpl = vi.fn(
+			async () => ({ ok: true }) as Response,
+		) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 2,
+		});
+
+		const crashed = vi.fn();
+		orchestrator.on("crashed", crashed);
+
+		await orchestrator.connect();
+
+		for (let i = 0; i < 5; i += 1) {
+			await vi.advanceTimersByTimeAsync(100);
+		}
+
+		expect(crashed).not.toHaveBeenCalled();
+		expect(orchestrator.getUrl()).toBe("http://127.0.0.1:3484");
+	});
+
+	it("resets failure count after a transient probe failure recovers", async () => {
+		let healthy = true;
+		const fetchImpl = vi.fn(async () => {
+			return healthy
+				? ({ ok: true } as Response)
+				: Promise.reject(new Error("ECONNREFUSED"));
+		}) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 3,
+		});
+
+		const crashed = vi.fn();
+		orchestrator.on("crashed", crashed);
+
+		await orchestrator.connect();
+
+		// Two failures, then recover, then two failures again — should NOT crash.
+		healthy = false;
+		await vi.advanceTimersByTimeAsync(100);
+		await vi.advanceTimersByTimeAsync(100);
+		healthy = true;
+		await vi.advanceTimersByTimeAsync(100);
+		healthy = false;
+		await vi.advanceTimersByTimeAsync(100);
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(crashed).not.toHaveBeenCalled();
+	});
+
+	it("stops probing after dispose()", async () => {
+		const fetchImpl = vi.fn(async () => ({ ok: true }) as Response);
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 2,
+		});
+
+		await orchestrator.connect();
+		const callsBeforeDispose = fetchImpl.mock.calls.length;
+
+		await orchestrator.dispose();
+
+		await vi.advanceTimersByTimeAsync(500);
+		// No additional probes after dispose.
+		expect(fetchImpl.mock.calls.length).toBe(callsBeforeDispose);
+	});
+
+	it("skips overlapping probe ticks when checkHealth hangs longer than the interval", async () => {
+		// Hold each fetch open until manually resolved so we can simulate
+		// a slow runtime that takes longer than the probe interval.
+		const pendingResolvers: Array<(r: Response) => void> = [];
+		const fetchImpl = vi.fn(
+			() =>
+				new Promise<Response>((resolve) => {
+					pendingResolvers.push(resolve);
+				}),
+		) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 10_000,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 5,
+		});
+
+		// Initial connect → first fetch resolves OK.
+		const connectPromise = orchestrator.connect();
+		await vi.advanceTimersByTimeAsync(0);
+		pendingResolvers.shift()?.({ ok: true } as Response);
+		await connectPromise;
+
+		const callsAfterConnect = (
+			fetchImpl as unknown as ReturnType<typeof vi.fn>
+		).mock.calls.length;
+
+		// Advance through 5 probe intervals while the in-flight tick is
+		// still pending. With the guard in place, only one new fetch is
+		// issued — additional intervals see the in-flight flag and skip.
+		for (let i = 0; i < 5; i += 1) {
+			await vi.advanceTimersByTimeAsync(100);
+		}
+
+		const callsDuringHang = (fetchImpl as unknown as ReturnType<typeof vi.fn>)
+			.mock.calls.length - callsAfterConnect;
+		expect(callsDuringHang).toBe(1);
+
+		// Resolve the hung tick; subsequent intervals should now issue
+		// fresh probes (one per tick).
+		pendingResolvers.shift()?.({ ok: true } as Response);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(
+			(fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length,
+		).toBeGreaterThan(callsAfterConnect + 1);
+
+		// Drain any remaining hung promises so the test cleanup doesn't
+		// leak unresolved fetches.
+		while (pendingResolvers.length > 0) {
+			pendingResolvers.shift()?.({ ok: true } as Response);
+		}
+	});
+
+	it("does not start probing when we own the child (post-restart)", async () => {
+		const fetchImpl = vi.fn(async () => ({ ok: true }) as Response);
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 2,
+		});
+
+		await orchestrator.connect();
+		// After connect() we're in attached mode; a restart flips us to owned.
+		await orchestrator.restart();
+		expect(orchestrator.isOwned()).toBe(true);
+
+		const crashed = vi.fn();
+		orchestrator.on("crashed", crashed);
+		const callsAfterRestart = fetchImpl.mock.calls.length;
+
+		await vi.advanceTimersByTimeAsync(500);
+
+		// Owned mode relies on child manager "crashed" events, not our
+		// probe. So no extra fetch calls.
+		expect(fetchImpl.mock.calls.length).toBe(callsAfterRestart);
+		expect(crashed).not.toHaveBeenCalled();
+	});
+});
+
+describe("RuntimeOrchestrator post-crash recovery probe", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		childManagers.length = 0;
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("auto-reattaches when a runtime returns at the last-known origin", async () => {
+		let healthy = true;
+		const fetchImpl = vi.fn(async () => {
+			return healthy
+				? ({ ok: true } as Response)
+				: Promise.reject(new Error("ECONNREFUSED"));
+		}) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 2,
+			recoveryProbeIntervalMs: 200,
+		});
+
+		const crashed = vi.fn();
+		const urlChanges: Array<string | null> = [];
+		orchestrator.on("crashed", crashed);
+		orchestrator.on("url-changed", (url) => urlChanges.push(url));
+
+		// Connect, then simulate the external runtime dying → crash path.
+		await orchestrator.connect();
+		healthy = false;
+		await vi.advanceTimersByTimeAsync(100);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(crashed).toHaveBeenCalledTimes(1);
+		expect(orchestrator.getUrl()).toBeNull();
+
+		// While on the disconnected screen, the recovery probe is polling
+		// the last-known origin. Simulate the user running `kanban` in a
+		// terminal — runtime returns on the same origin.
+		healthy = true;
+
+		// Wait one recovery interval for the probe to notice.
+		await vi.advanceTimersByTimeAsync(200);
+
+		// Orchestrator should have auto-reattached without a second crash.
+		expect(orchestrator.getUrl()).toBe("http://127.0.0.1:3484");
+		expect(orchestrator.isOwned()).toBe(false);
+		expect(crashed).toHaveBeenCalledTimes(1);
+		// The shell's url-changed listener would now reload every window
+		// away from disconnected.html back to the runtime.
+		expect(urlChanges).toEqual([
+			"http://127.0.0.1:3484",
+			null,
+			"http://127.0.0.1:3484",
+		]);
+	});
+
+	it("keeps polling silently while the runtime stays down", async () => {
+		let healthy = true;
+		const fetchImpl = vi.fn(async () => {
+			return healthy
+				? ({ ok: true } as Response)
+				: Promise.reject(new Error("ECONNREFUSED"));
+		}) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 2,
+			recoveryProbeIntervalMs: 200,
+		});
+
+		const crashed = vi.fn();
+		orchestrator.on("crashed", crashed);
+
+		await orchestrator.connect();
+		healthy = false;
+		await vi.advanceTimersByTimeAsync(100);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(crashed).toHaveBeenCalledTimes(1);
+
+		// Runtime never comes back. Recovery probe should keep polling
+		// without re-emitting "crashed" and without accidentally flipping
+		// into a connected state.
+		for (let i = 0; i < 5; i += 1) {
+			await vi.advanceTimersByTimeAsync(200);
+		}
+
+		expect(crashed).toHaveBeenCalledTimes(1);
+		expect(orchestrator.getUrl()).toBeNull();
+	});
+
+	it("stops the recovery probe when the user clicks Restart", async () => {
+		let healthy = true;
+		const fetchImpl = vi.fn(async () => {
+			return healthy
+				? ({ ok: true } as Response)
+				: Promise.reject(new Error("ECONNREFUSED"));
+		}) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 2,
+			recoveryProbeIntervalMs: 200,
+		});
+
+		await orchestrator.connect();
+		healthy = false;
+		await vi.advanceTimersByTimeAsync(100);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(orchestrator.getUrl()).toBeNull();
+
+		// User clicks Restart while still down. The mocked child manager
+		// returns a fixed URL from start(), so restart() flips us into
+		// owned mode — recovery must stop.
+		await orchestrator.restart();
+		expect(orchestrator.isOwned()).toBe(true);
+
+		const callsAfterRestart = (fetchImpl as unknown as ReturnType<typeof vi.fn>)
+			.mock.calls.length;
+
+		// Advance well past several recovery intervals; no more probes.
+		await vi.advanceTimersByTimeAsync(1_000);
+
+		expect(
+			(fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length,
+		).toBe(callsAfterRestart);
+	});
+
+	it("stops the recovery probe after dispose()", async () => {
+		let healthy = true;
+		const fetchImpl = vi.fn(async () => {
+			return healthy
+				? ({ ok: true } as Response)
+				: Promise.reject(new Error("ECONNREFUSED"));
+		}) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 2,
+			recoveryProbeIntervalMs: 200,
+		});
+
+		await orchestrator.connect();
+		healthy = false;
+		await vi.advanceTimersByTimeAsync(100);
+		await vi.advanceTimersByTimeAsync(100);
+
+		const callsBeforeDispose = (
+			fetchImpl as unknown as ReturnType<typeof vi.fn>
+		).mock.calls.length;
+
+		await orchestrator.dispose();
+
+		await vi.advanceTimersByTimeAsync(1_000);
+
+		expect(
+			(fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length,
+		).toBe(callsBeforeDispose);
+	});
+
+	it("clears URL when restart's spawn fails so the shell isn't left pointing at a dead origin", async () => {
+		const fetchImpl = vi.fn(
+			async () => ({ ok: true }) as Response,
+		) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 0,
+			recoveryProbeIntervalMs: 0,
+		});
+
+		childManagers.length = 0;
+		await orchestrator.connect();
+		// Attached-mode on connect; restart flips to owned with the first
+		// FakeChildManager instance. Arrange the second instance (created
+		// inside restart's startOwnRuntime) to throw from start().
+		await orchestrator.restart();
+		expect(orchestrator.isOwned()).toBe(true);
+		expect(orchestrator.getUrl()).toBe("http://127.0.0.1:3484");
+
+		const failOnStart = vi
+			.spyOn(FakeChildManager.prototype, "start")
+			.mockRejectedValueOnce(new Error("port in use"));
+
+		await expect(orchestrator.restart()).rejects.toThrow("port in use");
+
+		// The failed restart must not leave a stale URL pointing at the
+		// runtime we just killed.
+		expect(orchestrator.getUrl()).toBeNull();
+		expect(orchestrator.isOwned()).toBe(false);
+
+		failOnStart.mockRestore();
+	});
+
+	it("clears URL when restart's spawn fails directly from attached mode", async () => {
+		// Edge case to the previous test: user is attached to an external
+		// runtime (no owned manager) and triggers restart from the renderer.
+		// The shutdown branch is skipped, so the URL clear must happen
+		// unconditionally — otherwise getUrl() would keep returning the old
+		// attached origin after the spawn throws.
+		const fetchImpl = vi.fn(
+			async () => ({ ok: true }) as Response,
+		) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 0,
+			recoveryProbeIntervalMs: 0,
+		});
+
+		childManagers.length = 0;
+		await orchestrator.connect();
+		expect(orchestrator.isOwned()).toBe(false);
+		expect(orchestrator.getUrl()).toBe("http://127.0.0.1:3484");
+
+		const failOnStart = vi
+			.spyOn(FakeChildManager.prototype, "start")
+			.mockRejectedValueOnce(new Error("port in use"));
+
+		await expect(orchestrator.restart()).rejects.toThrow("port in use");
+
+		expect(orchestrator.getUrl()).toBeNull();
+		expect(orchestrator.isOwned()).toBe(false);
+
+		failOnStart.mockRestore();
+	});
+
+	it("starts recovery probe on owned-child crash event", async () => {
+		const fetchImpl = vi.fn(
+			async () => ({ ok: true }) as Response,
+		) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 0,
+			recoveryProbeIntervalMs: 200,
+		});
+
+		const crashed = vi.fn();
+		orchestrator.on("crashed", crashed);
+
+		childManagers.length = 0;
+		await orchestrator.connect();
+		// Attached-mode on connect; restart to flip into owned mode.
+		await orchestrator.restart();
+		expect(orchestrator.isOwned()).toBe(true);
+		const ownedManager = childManagers.at(-1);
+		expect(ownedManager).toBeDefined();
+
+		// Simulate the child process crashing.
+		ownedManager?.emit("crashed", 1, null, "segfault\n");
+
+		expect(crashed).toHaveBeenCalledTimes(1);
+		expect(orchestrator.getUrl()).toBeNull();
+
+		// Recovery probe should be polling the last-known origin.
+		await vi.advanceTimersByTimeAsync(200);
+		expect(orchestrator.getUrl()).toBe("http://127.0.0.1:3484");
+		expect(orchestrator.isOwned()).toBe(false);
+		expect(crashed).toHaveBeenCalledTimes(1);
+	});
+
+	it("invalidates an in-flight recovery probe when restart() fires mid-fetch", async () => {
+		// Regression test for the lifecycle race where `restart()` calls
+		// `stopRecoveryProbe()` (clearing the timer) but a tick that has
+		// already advanced past the timer-fire and is awaiting
+		// `checkHealth()` keeps running. During `restart()`, `this.url` is
+		// intentionally null until `startOwnRuntime()` resolves, so the
+		// existing post-await `url !== null` guard inside the tick can't
+		// distinguish "still crashed" from "mid-restart". A late-arriving
+		// healthy resolution would `setUrl(oldOrigin, false)` and — if the
+		// spawn then fails — leave the orchestrator stuck attached to the
+		// dead old origin even though restart rejected.
+		//
+		// The fix is the per-probe generation token; this test holds a
+		// recovery `checkHealth` open across a failing restart and asserts
+		// the orchestrator settles disconnected, not stale-attached.
+		const pendingResolvers: Array<(r: Response) => void> = [];
+		let mode: "ok" | "fail" | "hold" = "ok";
+
+		const fetchImpl = vi.fn(async () => {
+			if (mode === "fail") throw new Error("ECONNREFUSED");
+			if (mode === "hold") {
+				return new Promise<Response>((resolve) => {
+					pendingResolvers.push(resolve);
+				});
+			}
+			return { ok: true } as Response;
+		}) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 10_000,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 2,
+			recoveryProbeIntervalMs: 200,
+		});
+
+		childManagers.length = 0;
+
+		// Connect → attached mode at the default origin.
+		await orchestrator.connect();
+		expect(orchestrator.getUrl()).toBe("http://127.0.0.1:3484");
+
+		// Crash via attached probe.
+		mode = "fail";
+		await vi.advanceTimersByTimeAsync(100);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(orchestrator.getUrl()).toBeNull();
+
+		// Recovery probe ticks; we hold its checkHealth open so the tick
+		// is suspended awaiting fetch.
+		mode = "hold";
+		await vi.advanceTimersByTimeAsync(200);
+		expect(pendingResolvers.length).toBe(1);
+
+		// User clicks Restart while the recovery tick is mid-flight, and
+		// the spawn fails (port in use, missing CLI shim, etc.). Without
+		// invalidation, the recovery tick's late `setUrl(oldOrigin, false)`
+		// would re-attach behind restart's back.
+		const failOnStart = vi
+			.spyOn(FakeChildManager.prototype, "start")
+			.mockRejectedValueOnce(new Error("port in use"));
+
+		const urlChanges: Array<string | null> = [];
+		orchestrator.on("url-changed", (u) => urlChanges.push(u));
+
+		const restartPromise = orchestrator.restart();
+		// Resolve the held recovery fetch healthy, simulating the worst-case
+		// timing: stale tick reports the old origin alive while restart is
+		// in its window of `url === null`.
+		pendingResolvers.shift()?.({ ok: true } as Response);
+		await expect(restartPromise).rejects.toThrow("port in use");
+
+		expect(orchestrator.getUrl()).toBeNull();
+		expect(orchestrator.isOwned()).toBe(false);
+		// No transient flash to the old origin during the restart window —
+		// the only `url-changed` payload should be `null` (the setUrl(null)
+		// hoist inside restart).
+		expect(urlChanges.filter((u) => u !== null)).toEqual([]);
+
+		failOnStart.mockRestore();
+	});
+
+	it("ignores additional crashed/error events after handleCrash detaches the dead manager", async () => {
+		// `handleCrash` removes listeners on the dead manager before
+		// nulling the reference. Without that, a child cleanup path
+		// emitting another `crashed` (or `error`) event would re-enter
+		// `handleCrash`, double-counting the failure and resetting the
+		// recovery probe mid-flight.
+		const fetchImpl = vi.fn(
+			async () => ({ ok: true }) as Response,
+		) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 0,
+			recoveryProbeIntervalMs: 200,
+		});
+
+		const crashed = vi.fn();
+		orchestrator.on("crashed", crashed);
+
+		childManagers.length = 0;
+		await orchestrator.connect();
+		await orchestrator.restart();
+		expect(orchestrator.isOwned()).toBe(true);
+		const ownedManager = childManagers.at(-1);
+		expect(ownedManager).toBeDefined();
+
+		// First crash → handleCrash runs once.
+		ownedManager?.emit("crashed", 1, null, "first\n");
+		expect(crashed).toHaveBeenCalledTimes(1);
+
+		// Subsequent events on the same (now-detached) manager must be
+		// ignored. Without the detach in handleCrash, both would re-enter
+		// and double-count the failure. We attach a sink before emitting
+		// `error` because Node's EventEmitter throws "Unhandled error" if
+		// no listener exists — that throw itself proves the orchestrator's
+		// listener is gone, but we want to also assert no re-entry into
+		// handleCrash beyond it.
+		ownedManager?.on("error", () => {});
+		ownedManager?.emit("crashed", 1, null, "second\n");
+		ownedManager?.emit("error", "post-cleanup error");
+
+		expect(crashed).toHaveBeenCalledTimes(1);
+	});
+
+	it("clears state on shutdown so getUrl()/isOwned() reflect disconnected", async () => {
+		// Regression test for the public-API postcondition: after
+		// `await shutdown()` the orchestrator must look disconnected, not
+		// stuck pointing at the dead origin we just killed. Otherwise a
+		// later `setUrl(sameOrigin, true)` would skip the `url-changed`
+		// emit because the no-op-transition guard sees no change, and
+		// any code path that does `if (!this.manager)` (like
+		// `startOwnRuntime`) would reuse the dead manager.
+		const fetchImpl = vi.fn(
+			async () => ({ ok: true }) as Response,
+		) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 0,
+			recoveryProbeIntervalMs: 0,
+		});
+
+		childManagers.length = 0;
+		await orchestrator.connect();
+		// connect() lands in attached mode; restart() flips to owned via
+		// the FakeChildManager's fixed-URL start().
+		await orchestrator.restart();
+		expect(orchestrator.isOwned()).toBe(true);
+		expect(orchestrator.getUrl()).toBe("http://127.0.0.1:3484");
+
+		const urlChanges: Array<string | null> = [];
+		orchestrator.on("url-changed", (u) => urlChanges.push(u));
+
+		await orchestrator.shutdown();
+
+		expect(orchestrator.getUrl()).toBeNull();
+		expect(orchestrator.isOwned()).toBe(false);
+		// Exactly one transition: owned-origin → null.
+		expect(urlChanges).toEqual([null]);
+
+		// Sanity: probes don't fire after shutdown.
+		const callsAfterShutdown = (
+			fetchImpl as unknown as ReturnType<typeof vi.fn>
+		).mock.calls.length;
+		await vi.advanceTimersByTimeAsync(1_000);
+		expect(
+			(fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length,
+		).toBe(callsAfterShutdown);
+	});
+
+	it("clears URL before manager.shutdown() so getUrl() doesn't return the dead origin mid-restart", async () => {
+		// Regression test for the mid-restart stale-URL window:
+		// `restart()` must clear the URL *before* awaiting
+		// `manager.shutdown()`, not after. Otherwise during the multi-second
+		// graceful shutdown of the child, `getUrl()` keeps returning the
+		// origin we're about to kill — anything that opens a window or
+		// reloads during that window would point at a dying runtime.
+		const fetchImpl = vi.fn(
+			async () => ({ ok: true }) as Response,
+		) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 0,
+			recoveryProbeIntervalMs: 0,
+		});
+
+		await orchestrator.connect();
+		await orchestrator.restart();
+		expect(orchestrator.isOwned()).toBe(true);
+		expect(orchestrator.getUrl()).toBe("http://127.0.0.1:3484");
+
+		// Hold the next manager.shutdown() open so we can observe the
+		// orchestrator's state mid-await. `!` because TS can't track the
+		// assignment through the Promise executor closure.
+		let releaseShutdown!: () => void;
+		const shutdownHeld = new Promise<void>((resolve) => {
+			releaseShutdown = resolve;
+		});
+		const shutdownSpy = vi
+			.spyOn(FakeChildManager.prototype, "shutdown")
+			.mockImplementationOnce(() => shutdownHeld);
+
+		// Kick off restart but don't await yet.
+		const restartPromise = orchestrator.restart();
+		// Yield enough microtasks for restart to enter the shutdown await.
+		await vi.advanceTimersByTimeAsync(0);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// The fix: URL must already be null even though shutdown hasn't
+		// resolved. Without the hoist, getUrl() would still report the
+		// pre-restart origin here.
+		expect(orchestrator.getUrl()).toBeNull();
+		expect(orchestrator.isOwned()).toBe(false);
+
+		// Release shutdown; restart proceeds to startOwnRuntime which
+		// flips us into owned mode at the same default origin.
+		releaseShutdown();
+		await restartPromise;
+
+		expect(orchestrator.getUrl()).toBe("http://127.0.0.1:3484");
+		expect(orchestrator.isOwned()).toBe(true);
+		shutdownSpy.mockRestore();
+	});
+
+	it("clears state on dispose so getUrl()/isOwned() match shutdown semantics", async () => {
+		// Symmetric to the shutdown postcondition test — `dispose()` is
+		// the other terminal lifecycle method and consumers should not
+		// have to remember which one clears state.
+		const fetchImpl = vi.fn(
+			async () => ({ ok: true }) as Response,
+		) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 0,
+			recoveryProbeIntervalMs: 0,
+		});
+
+		childManagers.length = 0;
+		await orchestrator.connect();
+		await orchestrator.restart();
+		expect(orchestrator.isOwned()).toBe(true);
+
+		const urlChanges: Array<string | null> = [];
+		orchestrator.on("url-changed", (u) => urlChanges.push(u));
+
+		await orchestrator.dispose();
+
+		expect(orchestrator.getUrl()).toBeNull();
+		expect(orchestrator.isOwned()).toBe(false);
+		expect(urlChanges).toEqual([null]);
+	});
+
+	it("dispose() during attached-mode connect() health check skips setUrl and doesn't spawn", async () => {
+		// Reviewer-flagged race: connect() awaits checkHealth(); the
+		// continuation (setUrl on success or startOwnRuntime on failure)
+		// must not run if a teardown landed during the await. Without the
+		// `terminated` flag, this scenario would leave a disposed
+		// orchestrator pointing at the attached origin with the attached
+		// probe ticking in the background.
+		const pendingResolvers: Array<(r: Response) => void> = [];
+		const fetchImpl = vi.fn(
+			() =>
+				new Promise<Response>((resolve) => {
+					pendingResolvers.push(resolve);
+				}),
+		) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 10_000,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 100,
+			recoveryProbeIntervalMs: 200,
+		});
+
+		const urlChanges: Array<string | null> = [];
+		orchestrator.on("url-changed", (u) => urlChanges.push(u));
+
+		// Start connect; the health-check fetch is now suspended.
+		const connectPromise = orchestrator.connect();
+		await vi.advanceTimersByTimeAsync(0);
+		expect(pendingResolvers.length).toBe(1);
+
+		// dispose() lands while checkHealth is suspended. With drain it
+		// will await connectPromise; we resolve the held fetch so the
+		// continuation runs and bails on the flag.
+		const disposePromise = orchestrator.dispose();
+		// Resolve the held health-check as healthy — worst case for the
+		// race: continuation would `setUrl(origin, false)` without the
+		// guard.
+		pendingResolvers.shift()?.({ ok: true } as Response);
+		await connectPromise;
+		await disposePromise;
+
+		expect(orchestrator.getUrl()).toBeNull();
+		expect(orchestrator.isOwned()).toBe(false);
+		// No URL-changed emit ever fired (no transient flash to the
+		// attached origin and back to null).
+		expect(urlChanges).toEqual([]);
+		// And no children were spawned.
+		expect(childManagers.length).toBe(0);
+	});
+
+	it("dispose() during connect()'s startOwnRuntime() does not leak an orphan child", async () => {
+		// Reviewer-flagged race: connect() falls through to
+		// startOwnRuntime() when checkHealth fails; if dispose() runs while
+		// manager.start() is suspended, the spawn must either be skipped
+		// (if dispose lands before start begins) or the just-spawned child
+		// must be cleaned up directly (if start completes after dispose
+		// began). Without this, a slow startup + user quit leaves an orphan
+		// runtime process running with no orchestrator owner.
+		const fetchImpl = vi.fn(
+			async () => Promise.reject(new Error("ECONNREFUSED")),
+		) as unknown as typeof fetch;
+
+		// Hold manager.start() open so we can fire dispose() mid-spawn.
+		let releaseStart!: (url: string) => void;
+		const startHeld = new Promise<string>((resolve) => {
+			releaseStart = resolve;
+		});
+		const startSpy = vi
+			.spyOn(FakeChildManager.prototype, "start")
+			.mockImplementationOnce(() => startHeld);
+		const shutdownSpy = vi.spyOn(FakeChildManager.prototype, "shutdown");
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 0,
+			recoveryProbeIntervalMs: 0,
+		});
+
+		const urlChanges: Array<string | null> = [];
+		orchestrator.on("url-changed", (u) => urlChanges.push(u));
+
+		// Connect: checkHealth rejects → falls through to startOwnRuntime.
+		const connectPromise = orchestrator.connect();
+		// Yield enough microtasks for the IIFE to enter
+		// startOwnRuntime's `await manager.start(...)`.
+		await vi.advanceTimersByTimeAsync(0);
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(childManagers.length).toBe(1);
+
+		// dispose() lands mid-spawn. It awaits connectPromise; we then
+		// release the spawn so the suspended IIFE resumes.
+		const disposePromise = orchestrator.dispose();
+		await Promise.resolve();
+		releaseStart("http://127.0.0.1:3484");
+		await connectPromise;
+		await disposePromise;
+
+		// The just-spawned child was cleaned up directly inside
+		// startOwnRuntime (not via the dispose path's manager.dispose,
+		// because dispose's drain unblocks *after* startOwnRuntime sees
+		// terminated=true and runs its own shutdown). Either way the
+		// orphan must have been shut down once.
+		expect(shutdownSpy).toHaveBeenCalledTimes(1);
+		expect(orchestrator.getUrl()).toBeNull();
+		expect(orchestrator.isOwned()).toBe(false);
+		// No URL-changed for the spawned-then-killed origin.
+		expect(urlChanges).toEqual([]);
+		// No second child created.
+		expect(childManagers.length).toBe(1);
+
+		startSpy.mockRestore();
+		shutdownSpy.mockRestore();
+	});
+
+	it("shutdown() during restart() drains restartPromise and prevents post-teardown spawn", async () => {
+		// Reviewer-flagged race: shutdown() previously didn't await
+		// restartPromise, so restart()'s continuation could call
+		// startOwnRuntime() *after* shutdown ran teardown. With the drain
+		// + `terminated` flag, the restart IIFE bails post-await without
+		// spawning a new child, and shutdown's own teardown finds no
+		// dangling manager.
+		const fetchImpl = vi.fn(
+			async () => ({ ok: true }) as Response,
+		) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 0,
+			recoveryProbeIntervalMs: 0,
+		});
+
+		// Connect + restart to land in owned mode with a real (mocked)
+		// child manager.
+		await orchestrator.connect();
+		await orchestrator.restart();
+		expect(orchestrator.isOwned()).toBe(true);
+		const childCountAfterRestart = childManagers.length;
+
+		// Hold the next manager.shutdown() open, then trigger restart()
+		// (which awaits manager.shutdown), then trigger shutdown() while
+		// restart is suspended in that await.
+		let releaseShutdown!: () => void;
+		const shutdownHeld = new Promise<void>((resolve) => {
+			releaseShutdown = resolve;
+		});
+		const shutdownSpy = vi
+			.spyOn(FakeChildManager.prototype, "shutdown")
+			.mockImplementationOnce(() => shutdownHeld);
+
+		const restartPromise = orchestrator.restart();
+		// Yield microtasks until restart enters its manager.shutdown await.
+		await vi.advanceTimersByTimeAsync(0);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// shutdown() lands while restart is suspended. It will:
+		//   1. set terminated=true
+		//   2. await restartPromise (currently held)
+		//   3. tear down (which finds manager already null'd by restart)
+		const shutdownPromise = orchestrator.shutdown();
+		await Promise.resolve();
+		await Promise.resolve();
+
+		// Release the held manager.shutdown — restart resumes, sees
+		// terminated, bails before startOwnRuntime. No new manager spawned.
+		releaseShutdown();
+		await restartPromise;
+		await shutdownPromise;
+
+		expect(orchestrator.getUrl()).toBeNull();
+		expect(orchestrator.isOwned()).toBe(false);
+		// Critical: no second child spawned by restart's continuation.
+		expect(childManagers.length).toBe(childCountAfterRestart);
+		shutdownSpy.mockRestore();
+	});
+
+	it("idempotent shutdown(): second call after drain is a no-op", async () => {
+		// Belt-and-suspenders for the `terminated` latch — a second
+		// shutdown/dispose call must not re-run any teardown side effects.
+		const fetchImpl = vi.fn(
+			async () => ({ ok: true }) as Response,
+		) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 0,
+			recoveryProbeIntervalMs: 0,
+		});
+
+		await orchestrator.connect();
+		await orchestrator.restart();
+
+		const ownedManager = childManagers.at(-1);
+		const managerShutdownSpy = vi.spyOn(ownedManager!, "shutdown");
+
+		await orchestrator.shutdown();
+		expect(managerShutdownSpy).toHaveBeenCalledTimes(1);
+
+		await orchestrator.shutdown();
+		await orchestrator.dispose();
+		// Only the first shutdown actually tore down the child.
+		expect(managerShutdownSpy).toHaveBeenCalledTimes(1);
+		expect(orchestrator.getUrl()).toBeNull();
+	});
+
+	it("does not start recovery when recoveryProbeIntervalMs is 0", async () => {
+		let healthy = true;
+		const fetchImpl = vi.fn(async () => {
+			return healthy
+				? ({ ok: true } as Response)
+				: Promise.reject(new Error("ECONNREFUSED"));
+		}) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 2,
+			recoveryProbeIntervalMs: 0,
+		});
+
+		await orchestrator.connect();
+		healthy = false;
+		await vi.advanceTimersByTimeAsync(100);
+		await vi.advanceTimersByTimeAsync(100);
+		expect(orchestrator.getUrl()).toBeNull();
+
+		const callsAfterCrash = (
+			fetchImpl as unknown as ReturnType<typeof vi.fn>
+		).mock.calls.length;
+
+		// Bring the runtime back — with recovery disabled, nothing watches.
+		healthy = true;
+		await vi.advanceTimersByTimeAsync(1_000);
+
+		expect(
+			(fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length,
+		).toBe(callsAfterCrash);
+		expect(orchestrator.getUrl()).toBeNull();
+	});
+});
