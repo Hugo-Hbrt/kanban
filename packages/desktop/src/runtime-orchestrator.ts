@@ -277,12 +277,27 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 				// became *running* with a real child after the await
 				// resolved), and by the time their drain unblocks they've
 				// already moved past the manager-teardown branch.
-				await this.manager.shutdown().catch(() => {});
-				this.manager.removeAllListeners("crashed");
-				this.manager.removeAllListeners("error");
-				this.manager = null;
+				//
+				// Capture the manager reference before the await for the
+				// same reason as `dispose()`: a `crashed` event during
+				// `manager.shutdown()` re-enters `handleCrash`, which sets
+				// `this.manager = null`. Without the local capture, the
+				// post-await listener-removal would throw `Cannot read
+				// properties of null` — silently swallowed by the drain's
+				// `.catch(() => {})` in shutdown/dispose, but still wrong:
+				// the listener-removal never runs, leaving stale
+				// `crashed`/`error` listeners attached to the doomed
+				// manager. The `this.manager === manager` re-check before
+				// nulling guards against racing with anybody else who
+				// already replaced the field.
+				const manager = this.manager;
+				await manager.shutdown().catch(() => {});
+				manager.removeAllListeners("crashed");
+				manager.removeAllListeners("error");
+				if (this.manager === manager) this.manager = null;
 				return;
 			}
+
 			this.setUrl(url, /* owns */ true);
 		} catch (err) {
 			// On spawn failure, drop the rejected manager so the next

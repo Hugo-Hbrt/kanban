@@ -1192,4 +1192,140 @@ describe("RuntimeOrchestrator dispose() vs late crash events", () => {
 		await expect(orchestrator.dispose()).resolves.toBeUndefined();
 		expect(orchestrator.getUrl()).toBeNull();
 	});
+
+	it("orphan-cleanup branch in startOwnRuntime survives crash mid-await on manager.shutdown()", async () => {
+		// Models the third site of the same race pattern (sister to the
+		// `dispose()` and `shutdown()` cases above): `dispose()` lands
+		// while `manager.start()` is still spawning. When `start()`
+		// resolves, `startOwnRuntime()` sees `terminated === true` and
+		// enters the orphan-cleanup branch, which awaits
+		// `manager.shutdown()` and then calls `removeAllListeners` on
+		// the manager. If `handleCrash()` fires synchronously during
+		// that shutdown await — nulling `this.manager` — the post-await
+		// listener-removal would throw on the now-null reference. The
+		// throw is silently swallowed by the IIFE's outer
+		// `.catch(() => {})` in the connect/restart drain, so the bug
+		// doesn't crash the app — but the listener-removal never runs,
+		// leaving the orphan-cleanup branch silently incomplete.
+		//
+		// Mutation-verifying this is subtle because `handleCrash` *also*
+		// calls `removeAllListeners` on the same manager before nulling
+		// the reference, so listener counts hit 0 either way. The test
+		// distinguishes the two paths by collecting unhandled rejections
+		// from the connect IIFE's `.catch(() => {})` boundary: with the
+		// bug, the post-await `this.manager.removeAllListeners(...)`
+		// throws TypeError; the catch in the IIFE swallows it but it
+		// shows up if you instrument before the catch. We instrument by
+		// rejecting from `manager.shutdown` itself and watching the
+		// orchestrator's downstream behavior — and additionally by
+		// counting how many distinct call sites invoke
+		// `removeAllListeners` on the doomed manager.
+		const fetchImpl = vi.fn(
+			async () => Promise.reject(new Error("ECONNREFUSED")),
+		) as unknown as typeof fetch;
+
+		// Hold manager.start() so dispose() can land mid-spawn.
+		let releaseStart!: (url: string) => void;
+		const startHeld = new Promise<string>((resolve) => {
+			releaseStart = resolve;
+		});
+		const startSpy = vi
+			.spyOn(FakeChildManager.prototype, "start")
+			.mockImplementationOnce(() => startHeld);
+
+		// shutdown() — invoked by the orphan-cleanup branch — fires a
+		// crashed event mid-await. handleCrash() will set
+		// `this.manager = null` synchronously, modeling the exact race
+		// the local-capture fix is meant to handle.
+		let crashedDuringShutdown = false;
+		const shutdownSpy = vi
+			.spyOn(FakeChildManager.prototype, "shutdown")
+			.mockImplementationOnce(async function (
+				this: InstanceType<typeof FakeChildManager>,
+			) {
+				this.emit("crashed", 0, null, "");
+				crashedDuringShutdown = true;
+				await Promise.resolve();
+			});
+
+		// Spy on the EventEmitter's `removeAllListeners` so we can
+		// distinguish the buggy and fixed paths. With the fix:
+		//   handleCrash → 2 calls ("crashed", "error")
+		//   orphan cleanup (on captured local) → 2 calls ("crashed", "error")
+		//   total: 4 invocations
+		// Without the fix:
+		//   handleCrash → 2 calls
+		//   orphan cleanup → throws on the FIRST `this.manager.removeAllListeners(...)`
+		//                    because `this.manager` is null → 0 successful calls
+		//   total: 2 invocations
+		// The exact 4-vs-2 count makes this a true mutation-killing assertion.
+		const removeAllListenersSpy = vi.spyOn(
+			FakeChildManager.prototype,
+			"removeAllListeners",
+		);
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => "/unused",
+			fetchImpl,
+			attachedProbeIntervalMs: 0,
+			recoveryProbeIntervalMs: 0,
+		});
+
+		const connectPromise = orchestrator.connect();
+		// Let connect() reach `await manager.start(...)`.
+		await vi.advanceTimersByTimeAsync(0);
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(childManagers.length).toBe(1);
+		const manager = childManagers[0];
+
+		// Reset the spy AFTER setup — there may be incidental
+		// removeAllListeners calls during construction we don't care
+		// about. Now we measure only the teardown calls.
+		removeAllListenersSpy.mockClear();
+
+		// Dispose lands mid-spawn → drains connect → start resolves →
+		// startOwnRuntime sees terminated=true → enters orphan-cleanup
+		// → awaits manager.shutdown() (which emits `crashed`) →
+		// post-await listener removal must NOT throw on the
+		// now-`this.manager === null` field.
+		const disposePromise = orchestrator.dispose();
+		await Promise.resolve();
+		releaseStart("http://127.0.0.1:3484");
+		await connectPromise;
+		await expect(disposePromise).resolves.toBeUndefined();
+
+		// Sanity: the race window was actually hit, not bypassed by
+		// some test-ordering accident.
+		expect(crashedDuringShutdown).toBe(true);
+
+		// Mutation-killing assertion: orphan cleanup must invoke
+		// `removeAllListeners` for both events on the captured manager
+		// local *after* handleCrash already cleaned up. Total of 4
+		// invocations across the doomed manager (2 from handleCrash, 2
+		// from orphan cleanup). Without the local-capture fix, the
+		// orphan cleanup's first `this.manager.removeAllListeners(...)`
+		// throws before either event-name call lands, dropping the
+		// total to 2.
+		const callsOnDoomedManager = removeAllListenersSpy.mock.calls.filter(
+			(_args, idx) => removeAllListenersSpy.mock.instances[idx] === manager,
+		);
+		expect(callsOnDoomedManager.length).toBe(4);
+		const eventNames = callsOnDoomedManager.map((c) => c[0]).sort();
+		expect(eventNames).toEqual(["crashed", "crashed", "error", "error"]);
+
+		// Final state: orchestrator is fully torn down.
+		expect(orchestrator.getUrl()).toBeNull();
+		expect(orchestrator.isOwned()).toBe(false);
+
+		removeAllListenersSpy.mockRestore();
+		startSpy.mockRestore();
+		shutdownSpy.mockRestore();
+	});
+
 });
+
