@@ -1420,7 +1420,88 @@ describe("RuntimeOrchestrator dispose() vs late crash events", () => {
 	// shape elsewhere in this file's review history.
 	// -----------------------------------------------------------------
 
+	// -----------------------------------------------------------------
+	// restart() must silence the dying manager's listeners before
+	// awaiting its shutdown. If the child times out and gets SIGKILL'd
+	// during graceful shutdown, the manager fires a final `crashed`
+	// event — and during `restart()` `terminated` is still false, so
+	// `handleCrash` would emit a spurious top-level `"crashed"` event
+	// (UI dialog) and arm a recovery probe that's instantly cancelled
+	// by the imminent `startOwnRuntime()`.
+	// -----------------------------------------------------------------
+
+	it("does not emit a spurious 'crashed' event when the child crashes during restart's shutdown", async () => {
+		const fetchImpl = vi.fn(
+			async () => ({ ok: true }) as Response,
+		) as unknown as typeof fetch;
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => process.execPath,
+			fetchImpl,
+			attachedProbeIntervalMs: 0,
+			recoveryProbeIntervalMs: 200,
+		});
+
+		// Land in owned mode with a real (mocked) child manager.
+		await orchestrator.connect();
+		await orchestrator.restart();
+		expect(orchestrator.isOwned()).toBe(true);
+
+		const ownedManager = childManagers.at(-1);
+		expect(ownedManager).toBeDefined();
+
+		// Simulate the worst case: graceful shutdown times out → child
+		// gets SIGKILL'd → manager emits `crashed` from inside its own
+		// shutdown(). Without the listener-detach fix, this re-enters
+		// `handleCrash` with `terminated === false` (we're mid-restart,
+		// not mid-shutdown) and emits a spurious top-level `crashed`.
+		const crashedSpy = vi.fn();
+		const urlChanges: Array<string | null> = [];
+		orchestrator.on("crashed", crashedSpy);
+		orchestrator.on("url-changed", (u) => urlChanges.push(u));
+
+		const shutdownSpy = vi
+			.spyOn(FakeChildManager.prototype, "shutdown")
+			.mockImplementationOnce(async function (
+				this: InstanceType<typeof FakeChildManager>,
+			) {
+				// Fire crashed mid-shutdown, exactly the SIGKILL-after-timeout
+				// case greptile flagged.
+				this.emit("crashed", -1, "SIGKILL", "");
+			});
+
+		await orchestrator.restart();
+
+		// Mutation-killing assertion: no spurious top-level `crashed`
+		// event reached listeners. With the bug (listeners still
+		// attached during shutdown await), this would be 1.
+		expect(crashedSpy).not.toHaveBeenCalled();
+
+		// Restart still completed normally — orchestrator is back in
+		// owned mode at the same origin.
+		expect(orchestrator.isOwned()).toBe(true);
+		expect(orchestrator.getUrl()).toBe("http://127.0.0.1:3484");
+
+		// And the recovery probe wasn't armed mid-restart (no spurious
+		// fetches to the lastKnownOrigin during the restart window).
+		// Advance well past the recovery interval; if the bug re-armed
+		// the probe, it would have fired before startOwnRuntime resolved.
+		const callsAfterRestart = (
+			fetchImpl as unknown as ReturnType<typeof vi.fn>
+		).mock.calls.length;
+		await vi.advanceTimersByTimeAsync(500);
+		expect(
+			(fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length,
+		).toBe(callsAfterRestart);
+
+		shutdownSpy.mockRestore();
+	});
+
 	it("emits url-changed exactly once per public-API URL transition (contract-lock)", async () => {
+
 
 		const fetchImpl = vi.fn(async () => ({ ok: false }) as Response);
 		const orchestrator = new RuntimeOrchestrator({

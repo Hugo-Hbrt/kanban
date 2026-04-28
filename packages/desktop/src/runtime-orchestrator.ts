@@ -162,16 +162,31 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 			// shutdown branch below is skipped entirely.
 			this.setUrl(null, /* owns */ false);
 			if (this.manager) {
-				await this.manager.shutdown().catch((err) => {
+				// Detach `crashed` / `error` listeners *before* awaiting
+				// `manager.shutdown()`. If the child times out and gets
+				// SIGKILL'd, the manager fires a final `crashed` event
+				// during graceful shutdown — and during `restart()` the
+				// `terminated` flag is still false, so `handleCrash` would
+				// emit a spurious `"crashed"` to listeners (e.g. a UI
+				// dialog) and arm a recovery probe that immediately gets
+				// cancelled by the imminent `startOwnRuntime()`. The
+				// distinguishing semantics of restart vs crash is "I
+				// asked for this teardown" — and that's encoded by
+				// silencing the listeners up front.
+				const dyingManager = this.manager;
+				dyingManager.removeAllListeners("crashed");
+				dyingManager.removeAllListeners("error");
+				this.manager = null;
+				await dyingManager.shutdown().catch((err) => {
 					console.warn(
 						"[desktop] Runtime shutdown during restart failed:",
 						err instanceof Error ? err.message : err,
 					);
 				});
-				this.manager = null;
 			}
 			if (this.terminated) return;
 			await this.startOwnRuntime();
+
 		})().finally(() => {
 			this.restartPromise = null;
 		});
