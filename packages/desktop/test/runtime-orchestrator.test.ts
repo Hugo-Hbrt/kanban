@@ -1420,17 +1420,95 @@ describe("RuntimeOrchestrator dispose() vs late crash events", () => {
 	// shape elsewhere in this file's review history.
 	// -----------------------------------------------------------------
 
-	// -----------------------------------------------------------------
-	// restart() must silence the dying manager's listeners before
-	// awaiting its shutdown. If the child times out and gets SIGKILL'd
-	// during graceful shutdown, the manager fires a final `crashed`
-	// event — and during `restart()` `terminated` is still false, so
-	// `handleCrash` would emit a spurious top-level `"crashed"` event
-	// (UI dialog) and arm a recovery probe that's instantly cancelled
-	// by the imminent `startOwnRuntime()`.
-	// -----------------------------------------------------------------
+	// handleCrash must arm recovery BEFORE setUrl(null)'s synchronous
+	// emit, so a re-entrant restart() from a url-changed listener can
+	// stop the just-armed probe instead of racing with handleCrash to
+	// re-arm it after restart already cleaned up.
+	it("arms recovery before the synchronous url-changed(null) emit so a re-entrant restart can stop it", async () => {
+		let healthy = true;
+		const fetchImpl = vi.fn(async () => {
+			return healthy
+				? ({ ok: true } as Response)
+				: Promise.reject(new Error("ECONNREFUSED"));
+		});
+
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => process.execPath,
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+			attachedProbeIntervalMs: 100,
+			attachedProbeFailureThreshold: 2,
+			recoveryProbeIntervalMs: 50,
+		});
+
+		childManagers.length = 0;
+		await orchestrator.connect();
+
+		// Hold the next manager.start() so the spawn window stays open
+		// long enough for any leaked recovery probe (bug case) to tick.
+		let releaseStart!: (url: string) => void;
+		const startHeld = new Promise<string>((resolve) => {
+			releaseStart = resolve;
+		});
+		const startSpy = vi
+			.spyOn(FakeChildManager.prototype, "start")
+			.mockImplementationOnce(() => startHeld);
+
+		// Mutation-killing signal: the `owned` flag at each emission.
+		// Fix: third event is {origin, owned: true} from startOwnRuntime.
+		// Bug: leaked recovery probe emits {origin, owned: false} during
+		// the spawn window, and startOwnRuntime's setUrl(url, true) is
+		// then suppressed by the no-op-on-same-URL guard inside setUrl.
+		const events: Array<{ url: string | null; owned: boolean }> = [];
+		let restartPromise: Promise<void> | null = null;
+		orchestrator.on("url-changed", (u) => {
+			events.push({ url: u, owned: orchestrator.isOwned() });
+			if (u === null && restartPromise === null) {
+				// Synchronous re-entry — restart's sync prefix
+				// (stopRecoveryProbe) runs inside this emit.
+				restartPromise = orchestrator.restart();
+			}
+		});
+
+		// Crash the attached runtime → handleCrash runs.
+		healthy = false;
+		await vi.advanceTimersByTimeAsync(100);
+		await vi.advanceTimersByTimeAsync(100);
+
+		// Bring origin back so any leaked probe (bug) finds it healthy.
+		healthy = true;
+
+		// Tick past the recovery interval while spawn is held. Bug:
+		// leaked probe fires here and emits url-changed(origin, false).
+		await vi.advanceTimersByTimeAsync(50);
+		await vi.advanceTimersByTimeAsync(50);
+		await vi.advanceTimersByTimeAsync(50);
+
+		// Release spawn → startOwnRuntime resolves → setUrl(url, true).
+		releaseStart("http://127.0.0.1:3484");
+		// Drain restart's full pipeline including the post-await
+		// setUrl(url, true). Without awaiting this, the assertions
+		// would race the spawn's continuation.
+		await restartPromise;
+
+		// Mutation signal — the `owned` flag on the final emit.
+		//   FIX:  events = [{null,false}, {url,true}]   ← startOwnRuntime
+		//   BUG:  events = [{null,false}, {url,false}]  ← leaked recovery
+		//         probe re-attaches before spawn lands; startOwnRuntime's
+		//         setUrl(url, true) is then no-op'd by the same-URL guard.
+		expect(events).toEqual([
+			{ url: null, owned: false },
+			{ url: "http://127.0.0.1:3484", owned: true },
+		]);
+
+		startSpy.mockRestore();
+	});
+
 
 	it("does not emit a spurious 'crashed' event when the child crashes during restart's shutdown", async () => {
+
 		const fetchImpl = vi.fn(
 			async () => ({ ok: true }) as Response,
 		) as unknown as typeof fetch;

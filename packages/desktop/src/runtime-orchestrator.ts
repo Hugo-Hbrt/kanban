@@ -399,29 +399,31 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 	}
 
 	private handleCrash(): void {
-		// Detach listeners from the dead manager before dropping the
-		// reference. Without this, an in-flight `error` event from the
-		// child cleanup path could still re-enter `handleCrash` after we've
-		// already started recovery, double-counting the failure.
+		// Detach listeners on the dead manager before dropping it so a
+		// stray `error` from child cleanup can't re-enter `handleCrash`.
 		if (this.manager) {
 			this.manager.removeAllListeners("crashed");
 			this.manager.removeAllListeners("error");
 		}
 		this.manager = null;
-		// Don't restart the recovery probe or emit `crashed` once teardown
-		// has begun. The child's own SIGTERM cleanup races with `dispose()`
-		// — its `crashed` event can land between the moment `dispose()` set
-		// `terminated = true` and the moment it nulled the manager (since
-		// `manager.dispose()` itself awaits the cleanup). Without this
-		// guard, the recovery probe would re-arm against a torn-down
-		// orchestrator (leaking the unref'd interval) and the `crashed`
-		// event would surface to listeners that already moved on. Still
-		// drop the URL so any post-crash `getUrl()` reflects reality.
-		this.setUrl(null, /* owns */ false);
-		if (this.terminated) return;
+		if (this.terminated) {
+			// Teardown raced with the child's own crash; clear URL but
+			// don't arm recovery or emit `crashed` to a torn-down owner.
+			this.setUrl(null, /* owns */ false);
+			return;
+		}
+		// Arm recovery BEFORE the synchronous `setUrl(null)` emit. A
+		// `url-changed` listener that calls `restart()` synchronously
+		// must see an already-armed probe to stop — otherwise its
+		// `stopRecoveryProbe()` runs first, then handleCrash arms a
+		// fresh probe AFTER restart cleaned up, and that stray probe
+		// can re-attach to the dead origin during restart's spawn
+		// window before `startOwnRuntime` lands the new URL.
 		this.startRecoveryProbe();
+		this.setUrl(null, /* owns */ false);
 		this.emit("crashed");
 	}
+
 
 
 	private setUrl(url: string | null, ownsChild: boolean): void {
