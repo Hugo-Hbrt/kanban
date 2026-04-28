@@ -111,9 +111,16 @@ function handleProtocolUrl(raw: string): void {
 	}
 
 	const focusedWindow = registry.getFocused();
+	// Late-bind the dialog target: relayOAuthCallback retries up to 3 times
+	// with 1s delays (~3s total worst case). The user can switch focus during
+	// that window, so the failure dialog should attach to whatever window
+	// they're looking at when it actually appears, not to the snapshot we
+	// captured at protocol-receive time. The window-restore below still uses
+	// the snapshot — that's intentional, the restore is a one-shot reaction
+	// to the deep-link arriving and should target the window that received it.
 	relayOAuthCallback(relayTarget.toString(), {
 		fetch: globalThis.fetch,
-		getMainWindow: () => focusedWindow,
+		getMainWindow: () => registry.getFocused(),
 	}).catch((err) => console.error("[desktop] OAuth relay error:", err));
 
 
@@ -122,6 +129,7 @@ function handleProtocolUrl(raw: string): void {
 		focusedWindow.show();
 		focusedWindow.focus();
 	}
+
 }
 
 app.on("open-url", (event, url) => {

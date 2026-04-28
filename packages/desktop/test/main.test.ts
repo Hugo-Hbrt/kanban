@@ -143,3 +143,33 @@ describe("restart-runtime IPC concurrency", () => {
 		expect(handlerSlice).toMatch(/\.finally\(\(\)\s*=>\s*\{\s*activeRestart\s*=\s*null/);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// OAuth relay: late-bound dialog focus
+//
+// `relayOAuthCallback` retries up to 3 times with 1s delays — worst case
+// ~3 seconds before the failure dialog renders. If main.ts hands the relay
+// a closure that captures the focused window at protocol-receive time
+// (`getMainWindow: () => focusedWindow`), and the user switches focus
+// during those retries, the dialog attaches to the wrong window. The
+// closure must late-bind via `registry.getFocused()` instead.
+// ---------------------------------------------------------------------------
+
+describe("OAuth relay dialog focus is late-bound", () => {
+	const mainSrc = readFileSync(
+		new URL("../src/main.ts", import.meta.url),
+		"utf-8",
+	);
+
+	it("passes a getMainWindow closure that re-queries the registry per call", () => {
+		const callIdx = mainSrc.indexOf("relayOAuthCallback(");
+		expect(callIdx).toBeGreaterThan(-1);
+		const slice = mainSrc.slice(callIdx, callIdx + 500);
+
+		// The closure must call into the registry on each invocation.
+		expect(slice).toMatch(/getMainWindow:\s*\(\)\s*=>\s*registry\.getFocused\(\)/);
+		// And specifically must NOT capture the snapshot variable.
+		expect(slice).not.toMatch(/getMainWindow:\s*\(\)\s*=>\s*focusedWindow\b/);
+	});
+});
+

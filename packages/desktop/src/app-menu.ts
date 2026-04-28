@@ -51,16 +51,22 @@ export class AppMenu {
 
 		const editMenu: Electron.MenuItemConstructorOptions = {
 			label: "Edit",
+			// Edit roles delegate to the focused webContents and don't depend on
+			// the runtime being connected. Leaving them enabled means users on
+			// the disconnected screen can still copy error text, paste a config
+			// URL, etc. — which they'd otherwise have to do via the system
+			// keyboard shortcuts only.
 			submenu: [
-				{ role: "undo", enabled: ready },
-				{ role: "redo", enabled: ready },
+				{ role: "undo" },
+				{ role: "redo" },
 				{ type: "separator" },
-				{ role: "cut", enabled: ready },
-				{ role: "copy", enabled: ready },
-				{ role: "paste", enabled: ready },
-				{ role: "selectAll", enabled: ready },
+				{ role: "cut" },
+				{ role: "copy" },
+				{ role: "paste" },
+				{ role: "selectAll" },
 			],
 		};
+
 
 		const viewMenu: Electron.MenuItemConstructorOptions = {
 			label: "View",
