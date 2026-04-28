@@ -1,7 +1,9 @@
 import { EventEmitter } from "node:events";
+import { existsSync } from "node:fs";
 import { powerSaveBlocker } from "electron";
 
 import { RuntimeChildManager } from "./runtime-child.js";
+
 
 export interface RuntimeOrchestratorOptions {
 	host: string;
@@ -49,6 +51,17 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 	// counter so any captured gen is now stale.
 	private attachedProbeGen = 0;
 	private recoveryProbeGen = 0;
+	// Resolved + validated CLI shim path. Cached on first lookup so we
+	// don't re-resolve on every child spawn (the option's
+	// `resolveCliShimPath` is deterministic — it depends only on
+	// `app.isPackaged` and `process.platform` — but re-running the same
+	// `path.join` on every restart is wasteful, and more importantly we
+	// want validation to run *once* with a clear, actionable error so a
+	// missing shim doesn't surface as an opaque ENOENT from `child_process`
+	// at spawn time. Initial value `null` distinguishes "not yet looked
+	// up" from "looked up and resolved to a string".
+	private cachedShimPath: string | null = null;
+
 	// Latched once `shutdown()` / `dispose()` begin. Every `await` boundary
 	// in the lifecycle methods (`connect`, `restart`, `startOwnRuntime`)
 	// re-checks this flag and bails without side-effects when it flips.
@@ -319,11 +332,39 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 		}
 	}
 
+	/**
+	 * Resolve the CLI shim path on first call and validate it exists. The
+	 * path itself is deterministic (depends only on `app.isPackaged` and
+	 * `process.platform`), so we cache it after the first lookup. Validation
+	 * runs only once: a missing shim is a packaging or dev-stage issue,
+	 * not a transient one — re-checking on every restart would just delay
+	 * surfacing the same error.
+	 *
+	 * Throws with an actionable message rather than letting Node fail at
+	 * `child_process.spawn` time with an opaque ENOENT — the user sees
+	 * exactly which path was checked and the most likely remediation.
+	 */
+	private getValidatedShimPath(): string {
+		if (this.cachedShimPath !== null) return this.cachedShimPath;
+		const resolved = this.opts.resolveCliShimPath();
+		if (!existsSync(resolved)) {
+			throw new Error(
+				`CLI shim not found at ${resolved}. ` +
+					`In dev, run \`npm run stage:cli\` to populate build/bin/. ` +
+					`In packaged builds, this indicates a corrupted install — ` +
+					`expected the shim under Resources/bin/.`,
+			);
+		}
+		this.cachedShimPath = resolved;
+		return resolved;
+	}
+
 	private createManager(): RuntimeChildManager {
 		const manager = new RuntimeChildManager({
-			cliPath: this.opts.resolveCliShimPath(),
+			cliPath: this.getValidatedShimPath(),
 			shutdownTimeoutMs: DEFAULT_CHILD_SHUTDOWN_TIMEOUT_MS,
 		});
+
 
 		manager.on("crashed", (exitCode, signal, stderrTail) => {
 			console.error(
@@ -370,20 +411,24 @@ export class RuntimeOrchestrator extends EventEmitter<RuntimeOrchestratorEventMa
 
 	private setUrl(url: string | null, ownsChild: boolean): void {
 		const urlChanged = url !== this.url;
-		const ownsChanged = ownsChild !== this.ownsChild;
 		if (url) {
 			this.lastKnownOrigin = url;
 			this.stopRecoveryProbe();
 		}
 		this.url = url;
 		this.ownsChild = ownsChild;
-		// Emit only on actual transitions. Re-emitting `url-changed` for the
-		// same URL fires `loadUrlInAllWindows` in main.ts and forces every
-		// renderer to reload — wasteful and visible as a flash on restart
-		// when the new child binds to the same origin as the old one.
-		if (urlChanged || ownsChanged) {
+		// `url-changed` is the signal that drives `loadUrlInAllWindows()` in
+		// main.ts — fire it only when the URL itself actually changed.
+		// An ownership-only transition (same origin, owned ↔ attached) does
+		// not change what renderers should be loading, so triggering a full
+		// reload would be wasteful and visible as a flash. Currently no call
+		// site actually produces a same-URL/different-owns transition, but
+		// keeping this guard tight means any future hot-handover code path
+		// won't need to re-prove this property; it falls out of the contract.
+		if (urlChanged) {
 			this.emit("url-changed", url);
 		}
+
 
 		// Owned children emit "crashed" directly via process.exit; only
 		// attached runtimes need polling to detect crashes.

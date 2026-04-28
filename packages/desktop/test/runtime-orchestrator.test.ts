@@ -54,7 +54,7 @@ describe("RuntimeOrchestrator attached-runtime crash detection", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl: fetchImpl as unknown as typeof fetch,
 			attachedProbeIntervalMs: 100,
 			attachedProbeFailureThreshold: 3,
@@ -89,7 +89,7 @@ describe("RuntimeOrchestrator attached-runtime crash detection", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 100,
 			attachedProbeFailureThreshold: 2,
@@ -120,7 +120,7 @@ describe("RuntimeOrchestrator attached-runtime crash detection", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 100,
 			attachedProbeFailureThreshold: 3,
@@ -151,7 +151,7 @@ describe("RuntimeOrchestrator attached-runtime crash detection", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl: fetchImpl as unknown as typeof fetch,
 			attachedProbeIntervalMs: 100,
 			attachedProbeFailureThreshold: 2,
@@ -182,7 +182,7 @@ describe("RuntimeOrchestrator attached-runtime crash detection", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 10_000,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 100,
 			attachedProbeFailureThreshold: 5,
@@ -231,7 +231,7 @@ describe("RuntimeOrchestrator attached-runtime crash detection", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl: fetchImpl as unknown as typeof fetch,
 			attachedProbeIntervalMs: 100,
 			attachedProbeFailureThreshold: 2,
@@ -277,7 +277,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 100,
 			attachedProbeFailureThreshold: 2,
@@ -330,7 +330,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 100,
 			attachedProbeFailureThreshold: 2,
@@ -369,7 +369,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 100,
 			attachedProbeFailureThreshold: 2,
@@ -411,7 +411,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 100,
 			attachedProbeFailureThreshold: 2,
@@ -445,7 +445,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 0,
 			recoveryProbeIntervalMs: 0,
@@ -488,7 +488,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 0,
 			recoveryProbeIntervalMs: 0,
@@ -520,7 +520,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 0,
 			recoveryProbeIntervalMs: 200,
@@ -582,7 +582,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 10_000,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 100,
 			attachedProbeFailureThreshold: 2,
@@ -649,7 +649,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 0,
 			recoveryProbeIntervalMs: 200,
@@ -699,7 +699,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 0,
 			recoveryProbeIntervalMs: 0,
@@ -748,7 +748,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 0,
 			recoveryProbeIntervalMs: 0,
@@ -805,7 +805,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 0,
 			recoveryProbeIntervalMs: 0,
@@ -845,7 +845,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 10_000,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 100,
 			recoveryProbeIntervalMs: 200,
@@ -905,7 +905,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 0,
 			recoveryProbeIntervalMs: 0,
@@ -964,7 +964,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 0,
 			recoveryProbeIntervalMs: 0,
@@ -1026,7 +1026,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 0,
 			recoveryProbeIntervalMs: 0,
@@ -1060,7 +1060,7 @@ describe("RuntimeOrchestrator post-crash recovery probe", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 100,
 			attachedProbeFailureThreshold: 2,
@@ -1113,7 +1113,7 @@ describe("RuntimeOrchestrator dispose() vs late crash events", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl: vi.fn(async () =>
 				Promise.reject(new Error("ECONNREFUSED")),
 			) as unknown as typeof fetch,
@@ -1167,7 +1167,7 @@ describe("RuntimeOrchestrator dispose() vs late crash events", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl: vi.fn(async () =>
 				Promise.reject(new Error("ECONNREFUSED")),
 			) as unknown as typeof fetch,
@@ -1268,7 +1268,7 @@ describe("RuntimeOrchestrator dispose() vs late crash events", () => {
 			host: "127.0.0.1",
 			port: 3484,
 			healthTimeoutMs: 500,
-			resolveCliShimPath: () => "/unused",
+			resolveCliShimPath: () => process.execPath,
 			fetchImpl,
 			attachedProbeIntervalMs: 0,
 			recoveryProbeIntervalMs: 0,
@@ -1327,5 +1327,141 @@ describe("RuntimeOrchestrator dispose() vs late crash events", () => {
 		shutdownSpy.mockRestore();
 	});
 
+	// -----------------------------------------------------------------
+	// CLI shim path: cache + upfront validation
+	//
+	// Reviewer P2: `resolveCliShimPath` was called on every `createManager()`
+	// without upfront validation, so a missing shim surfaced as an opaque
+	// ENOENT from `child_process.spawn`. The fix caches the resolved path
+	// and validates it on first use with an actionable error message.
+	// -----------------------------------------------------------------
+
+	it("resolveCliShimPath is called once and cached across multiple child spawns", async () => {
+		const fetchImpl = vi.fn(async () => ({ ok: false }) as Response);
+		const resolveCliShimPath = vi.fn(() => process.execPath);
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath,
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+			attachedProbeIntervalMs: 0,
+			recoveryProbeIntervalMs: 0,
+		});
+
+		// First spawn — initial resolve + validate.
+		await orchestrator.connect();
+		expect(resolveCliShimPath).toHaveBeenCalledTimes(1);
+
+		// Second spawn via restart — should hit the cache, not re-resolve.
+		// (`restart()` tears down the manager and calls `startOwnRuntime()`
+		// again, which calls `createManager()` → `getValidatedShimPath()`.)
+		await orchestrator.restart();
+		expect(resolveCliShimPath).toHaveBeenCalledTimes(1);
+
+		// Third spawn — still cached.
+		await orchestrator.restart();
+		expect(resolveCliShimPath).toHaveBeenCalledTimes(1);
+
+		await orchestrator.shutdown();
+	});
+
+	it("throws an actionable error when the resolved shim path does not exist", async () => {
+		const fetchImpl = vi.fn(async () => ({ ok: false }) as Response);
+		const missingPath = "/this/path/intentionally/does/not/exist/kanban";
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => missingPath,
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+			attachedProbeIntervalMs: 0,
+			recoveryProbeIntervalMs: 0,
+		});
+
+		// `connect()` falls through to `startOwnRuntime()` which calls
+		// `createManager()` → `getValidatedShimPath()` and should throw
+		// before any child is spawned.
+		await expect(orchestrator.connect()).rejects.toThrow(
+			/CLI shim not found at .*intentionally.*does.*not.*exist/,
+		);
+		// And the error is *actionable* — it names the remediation path.
+		await expect(orchestrator.connect()).rejects.toThrow(
+			/npm run stage:cli/,
+		);
+		// No child was spawned (no FakeChildManager was constructed since
+		// the `new RuntimeChildManager(...)` line is past the validation).
+		expect(childManagers.length).toBe(0);
+
+		await orchestrator.dispose();
+	});
+
+	// -----------------------------------------------------------------
+	// setUrl: emit `url-changed` only on actual URL transitions
+	//
+	// Reviewer P2: `setUrl` previously emitted `url-changed` on either
+	// URL or ownership change. The reviewer correctly noted that no
+	// public-API path actually produces a same-URL/different-owns
+	// transition today — every ownership flip is bracketed by a setUrl
+	// to null — so the bug is currently unreachable. This makes a
+	// classic mutation-killing test impossible at the public-API level
+	// (toggling the OR vs single guard produces identical observable
+	// behavior across every reachable lifecycle).
+	//
+	// The test below is therefore a *contract-documenting* test, not a
+	// strict mutation-killer: it locks in the expected emission count
+	// across `connect → restart → shutdown` so any future code path
+	// that introduces a hot-handover (e.g. owned → attached at the same
+	// origin without an intermediate null) will fire `url-changed` and
+	// break this count, forcing the author to consciously decide
+	// whether the renderer reload is wanted. The structural source
+	// inspection — `if (urlChanged)` not `if (urlChanged || ownsChanged)`
+	// — is the actual mutation guard, asserted directly via the source
+	// shape elsewhere in this file's review history.
+	// -----------------------------------------------------------------
+
+	it("emits url-changed exactly once per public-API URL transition (contract-lock)", async () => {
+
+		const fetchImpl = vi.fn(async () => ({ ok: false }) as Response);
+		const orchestrator = new RuntimeOrchestrator({
+			host: "127.0.0.1",
+			port: 3484,
+			healthTimeoutMs: 500,
+			resolveCliShimPath: () => process.execPath,
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+			attachedProbeIntervalMs: 0,
+			recoveryProbeIntervalMs: 0,
+		});
+
+		const emitted: (string | null)[] = [];
+		orchestrator.on("url-changed", (url) => emitted.push(url));
+
+		// connect() → startOwnRuntime() → setUrl("http://127.0.0.1:3484", true)
+		// One transition: null → http://127.0.0.1:3484.
+		await orchestrator.connect();
+		expect(emitted).toEqual(["http://127.0.0.1:3484"]);
+
+		// restart() → setUrl(null, false) → manager.shutdown → startOwnRuntime →
+		// setUrl("http://127.0.0.1:3484", true). Two transitions:
+		//   url → null  (clear before shutdown)
+		//   null → url  (after fresh spawn)
+		await orchestrator.restart();
+		expect(emitted).toEqual([
+			"http://127.0.0.1:3484",
+			null,
+			"http://127.0.0.1:3484",
+		]);
+
+		// shutdown() → setUrl(null, false). One more transition: url → null.
+		await orchestrator.shutdown();
+		expect(emitted).toEqual([
+			"http://127.0.0.1:3484",
+			null,
+			"http://127.0.0.1:3484",
+			null,
+		]);
+	});
+
 });
+
 
