@@ -186,7 +186,7 @@ async function loadHomeGitMetadata(entry: WorkspaceMetadataEntry): Promise<Cache
 			repoRoot: probe.repoRoot,
 		};
 	} catch {
-		return entry.homeGit;
+		return { ...entry.homeGit, repoRoot: null };
 	}
 }
 
