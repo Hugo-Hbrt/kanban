@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.66]
+
+- Added a refresh button for LiteLLM and custom provider model lists, so you can re-fetch available models without leaving settings
+- Enforced origin and host validation on the Kanban websocket service to prevent unauthorized connections
+
+## [0.1.65]
+
+- Model catalog now auto-refreshes on startup so newly available models appear immediately
+- Fixed task cards resizing and causing layout shifts on the board
+- Fixed initial Cline message not being sent after starting a new session
+- Added runtime child process manager for the desktop app
+
+## [0.1.64]
+
+- Multi-line diff comments: Shift+click to select a range of lines, click the line number to open the comment box, and comments now include file path, line number, and column context
+- File tree panel in diff views can now be toggled open or closed
+- Task title editing now requires clicking the pencil icon that appears on card hover, preventing accidental edits when clicking the card
+
 ## [0.1.63]
 
 - Fixed task detail view being lost on page refresh
