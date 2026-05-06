@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { BoardColumn } from "@/components/board-column";
 import { DependencyOverlay } from "@/components/dependencies/dependency-overlay";
 import { useDependencyLinking } from "@/components/dependencies/use-dependency-linking";
+import { HelloWorldBanner } from "@/components/hello-world-banner";
 import type { RuntimeTaskSessionSummary } from "@/runtime/types";
 import { canCreateTaskDependency } from "@/state/board-state";
 import { findCardColumnId, type ProgrammaticCardMoveInFlight } from "@/state/drag-rules";
@@ -380,7 +381,9 @@ export function KanbanBoard({
 				className="kb-board kb-dependency-surface"
 				data-programmatic-card-move={programmaticCardMoveInFlight ? "true" : undefined}
 			>
-				{data.columns.map((column) => (
+				<HelloWorldBanner />
+				<div className="kb-board-columns">
+					{data.columns.map((column) => (
 					<BoardColumn
 						key={column.id}
 						column={column}
@@ -417,7 +420,8 @@ export function KanbanBoard({
 							}
 						}}
 					/>
-				))}
+					))}
+				</div>
 				<DependencyOverlay
 					containerRef={boardRef}
 					dependencies={dependencies}

@@ -288,6 +288,14 @@ body,
 
 .kb-board {
 	display: flex;
+	flex-direction: column;
+	flex: 1 1 0;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.kb-board-columns {
+	display: flex;
 	flex: 1 1 0;
 	min-height: 0;
 	overflow: hidden;
@@ -1118,6 +1126,10 @@ body.kb-dependency-link-mode {
 
 @media (max-width: 768px) {
 	.kb-board {
+		overflow: hidden;
+	}
+
+	.kb-board-columns {
 		overflow-x: auto;
 		overflow-y: hidden;
 		scroll-snap-type: x mandatory;
@@ -1126,14 +1138,14 @@ body.kb-dependency-link-mode {
 		padding-right: 4vw;
 	}
 
-	.kb-board > section {
+	.kb-board-columns > section {
 		flex: 0 0 auto !important;
 		min-width: 280px;
 		width: 92vw;
 		scroll-snap-align: center;
 	}
 
-	.kb-board > [role="separator"] {
+	.kb-board-columns > [role="separator"] {
 		display: none;
 	}
 
