@@ -6,6 +6,8 @@ import type { ReactElement } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AddProjectDialog } from "@/components/add-project-dialog";
+import { HelloWorldBanner } from "@/components/hello-world-banner";
+import { HelloWorldBanner2 } from "@/components/hello-world-banner-2";
 import { notifyError, showAppToast } from "@/components/app-toaster";
 import { CardDetailView } from "@/components/card-detail-view";
 import { ClearTrashDialog } from "@/components/clear-trash-dialog";
@@ -917,6 +919,8 @@ export default function App(): ReactElement {
 								</div>
 							) : (
 								<div className="flex flex-1 flex-col min-h-0 min-w-0">
+									<HelloWorldBanner />
+									<HelloWorldBanner2 />
 									<div className="flex flex-1 min-h-0 min-w-0">
 										{isGitHistoryOpen ? (
 											<GitHistoryView
