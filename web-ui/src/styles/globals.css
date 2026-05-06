@@ -286,10 +286,40 @@ body,
 
 /* -- Shared layout -- */
 
+.kb-board-shell {
+	display: flex;
+	flex: 1 1 0;
+	flex-direction: column;
+	min-height: 0;
+	min-width: 0;
+	overflow: hidden;
+	background: var(--color-surface-0);
+}
+
+.kb-hello-world-banner {
+	flex: 0 0 auto;
+	margin: 8px 8px 0;
+	padding: 10px 14px;
+	border: 1px solid color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+	border-radius: var(--radius-lg);
+	background: linear-gradient(
+		135deg,
+		color-mix(in srgb, var(--color-accent) 20%, var(--color-surface-1)),
+		color-mix(in srgb, var(--color-accent-2) 18%, var(--color-surface-1))
+	);
+	box-shadow: 0 10px 24px rgba(0, 0, 0, 0.16);
+	color: var(--color-text-primary);
+	font-size: 14px;
+	font-weight: 700;
+	letter-spacing: 0.01em;
+	text-align: center;
+}
+
 .kb-board {
 	display: flex;
 	flex: 1 1 0;
 	min-height: 0;
+	min-width: 0;
 	overflow: hidden;
 	gap: 8px;
 	padding: 8px;
@@ -1117,6 +1147,11 @@ body.kb-dependency-link-mode {
 /* -- Mobile board -- */
 
 @media (max-width: 768px) {
+	.kb-hello-world-banner {
+		margin-left: 4vw;
+		margin-right: 4vw;
+	}
+
 	.kb-board {
 		overflow-x: auto;
 		overflow-y: hidden;
