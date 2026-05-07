@@ -12,6 +12,7 @@ import { ClearTrashDialog } from "@/components/clear-trash-dialog";
 import { DebugDialog } from "@/components/debug-dialog";
 import { AgentTerminalPanel } from "@/components/detail-panels/agent-terminal-panel";
 import { GitHistoryView } from "@/components/git-history-view";
+import { HelloWorldPartTwoBanner } from "@/components/hello-world-part-two-banner";
 import { KanbanBoard } from "@/components/kanban-board";
 import { ProjectNavigationPanel } from "@/components/project-navigation-panel";
 import { RuntimeSettingsDialog, type RuntimeSettingsSection } from "@/components/runtime-settings-dialog";
@@ -887,6 +888,7 @@ export default function App(): ReactElement {
 						isGitHistoryOpen={isGitHistoryOpen}
 						hideProjectDependentActions={shouldHideProjectDependentTopBarActions}
 					/>
+					{!selectedCard && !hasNoProjects ? <HelloWorldPartTwoBanner /> : null}
 					<div className="relative flex flex-1 min-h-0 min-w-0 overflow-hidden">
 						<div
 							className="kb-home-layout"
