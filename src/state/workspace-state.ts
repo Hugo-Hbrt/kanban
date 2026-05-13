@@ -163,6 +163,10 @@ export function getRuntimeHomePath(): string {
 }
 
 export function getTaskWorktreesHomePath(): string {
+	const override = process.env.CLINE_WORKTREES_DIR?.trim();
+	if (override) {
+		return override;
+	}
 	return join(homedir(), RUNTIME_HOME_PARENT_DIR, RUNTIME_WORKTREES_DIR);
 }
 
